@@ -1,0 +1,14 @@
+*.iml
+.gradle/
+/local.properties
+/.idea/
+.DS_Store
+/build/
+/captures
+.externalNativeBuild
+.cxx
+**/build/
+# 地図データ（大きいので CI でビルド時にコピーする。手元で同梱する場合はここを外す）
+/app/src/main/assets/hwdb/*.hwdb
+/build/hwdb-work/
+*.hwdb.part

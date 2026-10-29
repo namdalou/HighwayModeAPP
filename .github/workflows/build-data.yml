@@ -1,0 +1,94 @@
+# 全国の地図データ（HWDB）を OpenStreetMap から作成し、GitHub Releases に公開する。
+# さらに、そのデータを同梱した APK も作る。
+#
+#  - 毎週月曜 3:17（日本時間）に自動実行。Actions 画面の「Run workflow」で手動実行も可。
+#  - 公開先:
+#      releases/download/hwdb-YYYYMMDD/japan-highways.hwdb   … データ本体（版ごと）
+#      releases/download/hwdb-latest/hwdb-manifest.json      … アプリが「地図データを更新」で読む目録（固定 URL）
+#      releases/download/hwdb-YYYYMMDD/app-release.apk       … データ同梱 APK
+#  - アプリの配布 URL は自動で
+#      https://github.com/<このリポジトリ>/releases/download/hwdb-latest/hwdb-manifest.json
+#    になる（ビルド時に埋め込み。アプリの設定画面で変更も可）。
+#  - リポジトリは公開（public）にしてください（非公開だとアプリから目録を取得できません）。
+name: build-hwdb
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 18 * * 0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-hwdb
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Make scripts executable
+        run: chmod +x gradlew scripts/build-hwdb.sh
+
+      - name: Install osmium-tool
+        run: sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
+
+      - name: Download Japan extract (Geofabrik)
+        run: |
+          curl -fL --retry 5 --retry-delay 30 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
+          ls -lh japan.osm.pbf
+
+      - name: Filter highways, rest areas, cameras, POIs
+        run: |
+          osmium tags-filter japan.osm.pbf \
+            w/highway=motorway,motorway_link,trunk,trunk_link \
+            w/toll=yes w/motorroad=yes \
+            nwr/highway=services,rest_area \
+            n/highway=motorway_junction,speed_camera n/barrier=toll_booth \
+            nwr/amenity=fuel,charging_station,restaurant,fast_food,food_court,cafe,toilets,shower,atm,bank,information \
+            nwr/shop nwr/tourism=information,hotel,motel,guest_house nwr/leisure=dog_park \
+            -o filtered.osm.pbf --overwrite
+          osmium add-locations-to-ways filtered.osm.pbf -o located.osm.gz -f osm.gz,locations_on_ways=true --overwrite
+          rm -f japan.osm.pbf
+          ls -lh filtered.osm.pbf located.osm.gz
+
+      - name: Build HWDB
+        run: |
+          TAG=$(date -u +%Y%m%d)
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          mkdir -p out
+          ./gradlew --no-daemon -q :datatool:run --args="osm --in $PWD/located.osm.gz --out $PWD/out/japan-highways.hwdb"
+          ./gradlew --no-daemon -q :datatool:run --args="manifest --base-url https://github.com/${{ github.repository }}/releases/download/hwdb-$TAG/ --out $PWD/out/hwdb-manifest.json $PWD/out/japan-highways.hwdb"
+          ls -lh out
+
+      - name: Build APK with bundled data
+        run: |
+          mkdir -p app/src/main/assets/hwdb
+          cp out/japan-highways.hwdb app/src/main/assets/hwdb/
+          ./gradlew --no-daemon :core:test :app:assembleRelease \
+            -Phwdb.manifestUrl=https://github.com/${{ github.repository }}/releases/download/hwdb-latest/hwdb-manifest.json
+          cp app/build/outputs/apk/release/app-release.apk out/HighwayMode-$TAG.apk
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete "hwdb-$TAG" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "hwdb-$TAG" out/japan-highways.hwdb out/hwdb-manifest.json out/HighwayMode-$TAG.apk \
+            --title "地図データ $TAG" \
+            --notes "全国の高速道路・有料道路・都市高速・主要バイパス・SA/PA・オービス（OpenStreetMap, © OpenStreetMap contributors, ODbL 1.0）。HighwayMode-$TAG.apk はこのデータを同梱したアプリです。"
+          if ! gh release view hwdb-latest >/dev/null 2>&1; then
+            gh release create hwdb-latest --title "地図データ（最新の目録）" --notes "アプリの「地図データを更新」が参照する目録です。" --latest=false
+          fi
+          gh release upload hwdb-latest out/hwdb-manifest.json --clobber
