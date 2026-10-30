@@ -1,0 +1,93 @@
+# アプリだけを作り直す（地図データは作り直さず、公開済みの最新データを同梱する）。
+#  - Actions 画面の「build-app」→「Run workflow」で実行。数分で終わる。
+#  - 先に build-hwdb を一度成功させておくこと（hwdb-latest の目録から最新データを取ってくる）。
+#  - できたファイルは、この実行の「Artifacts」（HighwayMode-app）からダウンロードできる:
+#      HighwayMode.aab … Google Play Console の内部テストへ上げるファイル（アップロード鍵を登録したときだけ）
+#      HighwayMode.apk … スマホへ直接入れる APK（Android Auto では表示されない）
+#  - 署名の鍵・アプリ ID・Play への自動公開の設定は build-data.yml の先頭の説明と同じ。
+name: build-app
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  app:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      HAS_PLAY_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON != '' }}
+      MANIFEST_URL: https://github.com/${{ github.repository }}/releases/download/hwdb-latest/hwdb-manifest.json
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Download latest map data
+        run: |
+          mkdir -p app/src/main/assets/hwdb dl
+          if curl -fsSL --retry 3 -o dl/manifest.json "$MANIFEST_URL"; then
+            python3 -I - dl/manifest.json "$MANIFEST_URL" > dl/files.txt <<'PY'
+          import json, sys, urllib.parse
+          m = json.load(open(sys.argv[1], encoding="utf-8"))
+          for f in m.get("files", []):
+              name, url = f["name"], f.get("url") or f["name"]
+              if not url.startswith("http"):
+                  url = urllib.parse.urljoin(sys.argv[2], url)
+              print(name, f["sha256"], url)
+          PY
+            while read -r NAME SHA URL; do
+              case "$NAME" in *[!A-Za-z0-9._-]*|"") echo "bad name: $NAME"; exit 1 ;; esac
+              curl -fL --retry 5 -o "app/src/main/assets/hwdb/$NAME" "$URL"
+              echo "$SHA  app/src/main/assets/hwdb/$NAME" | sha256sum -c -
+            done < dl/files.txt
+            ls -lh app/src/main/assets/hwdb
+          else
+            echo "::warning::公開済みの地図データが見つかりません（build-hwdb を先に実行してください）。データなしでビルドします。"
+          fi
+
+      - name: Prepare app id, version and signing key
+        env:
+          UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
+          APP_ID_VAR: ${{ vars.APP_ID }}
+          OWNER: ${{ github.repository_owner }}
+        run: bash scripts/ci-app-env.sh
+
+      - name: Build
+        env:
+          UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+          UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+          UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          TASKS=":core:test :app:assembleRelease"
+          if [ "$SIGNED" = true ]; then TASKS="$TASKS :app:bundleRelease"; fi
+          ./gradlew --no-daemon $TASKS -Phwdb.manifestUrl="$MANIFEST_URL" -Papp.id=$APP_ID -Papp.versionCode=$VERSION_CODE
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release.apk out/HighwayMode.apk
+          if [ "$SIGNED" = true ]; then cp app/build/outputs/bundle/release/app-release.aab out/HighwayMode.aab; fi
+          rm -f "$RUNNER_TEMP/upload.jks"
+          ls -lh out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HighwayMode-app
+          path: out/
+          retention-days: 30
+
+      - name: Upload to Google Play (internal testing)
+        if: env.SIGNED == 'true' && env.HAS_PLAY_JSON == 'true'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ env.APP_ID }}
+          releaseFiles: out/HighwayMode.aab
+          tracks: internal
+          status: completed

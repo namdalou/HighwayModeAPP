@@ -1,23 +1,54 @@
-# ハイウェイモード（Android / Android Auto）
+# Spectrum ハイウェイ（Spectrum ＋ ハイウェイモード / Android・Android Auto）
 
-カーナビの「ハイウェイモード」のように、走行中の高速道路・有料道路・都市高速・**主要バイパス**で
-**前方の IC / JCT / SA / PA / スマートIC / 本線料金所までの距離と到着予定時刻**、
-SA/PA の設備、ETC 専用かどうか、**渋滞・事故・通行止め**、**オービス（速度取締機）** を表示する Android アプリです。
-**Android Auto** にも対応し、車の画面に同じ表示を出せます（車速信号・ETC カード状態・航続距離も活用）。
+音楽プレーヤー表示とスペクトラムアナライザーの **Spectrum** と、カーナビの「ハイウェイモード」を 1 つにしたアプリです。
 
-| 縦画面（渋滞・オービス・ETC 警告） | Android Auto（800×480） | 主要バイパス（名豊道路） |
-|---|---|---|
-| ![縦画面](docs/preview_portrait.png) | ![Android Auto](docs/preview_android_auto.png) | ![バイパス](docs/preview_bypass.png) |
+- **高速道路の外**では Spectrum（再生中の曲・ジャケット・操作・スペアナ）を全画面で表示
+- **高速道路・有料道路・都市高速・主要バイパスに入ると自動で 2 画面**：左に Spectrum（スマホ縦画面と同じレイアウト）、右にハイウェイモード
+  （前方の IC / JCT / SA / PA / スマートIC / 本線料金所までの距離と到着予定時刻、SA/PA の設備、ETC 専用、渋滞・事故・通行止め、オービス）
+- 高速道路の間は**下部のバー**で［音楽］［2画面］［ハイウェイ］をワンタップで切替。出ると自動で Spectrum に戻ります
+- **Android Auto** の車の画面とスマホの両方に対応（車速信号・ETC カード状態・航続距離も活用）
 
-| 横画面 | 一覧表示（オービスも並べる設定） |
+| 高速道路の外（Spectrum） | 高速道路に入ると自動で 2 画面 |
 |---|---|
-| ![横画面](docs/preview_landscape.png) | ![一覧](docs/preview_list.png) |
+| ![音楽](docs/preview_dual_music.png) | ![2画面](docs/preview_dual_split.png) |
+| **音楽だけにしたとき**（バーに次の施設。オービス 2km 以内は警告を優先） | **ハイウェイだけにしたとき**（バーに再生中の曲と 再生/一時停止） |
+| ![音楽＋次の施設](docs/preview_dual_music_onhighway.png) | ![ハイウェイ](docs/preview_dual_highway.png) |
 
-※ 画像は実際の描画コード（`PanelRenderer`）を PC 上で描画したものです（数値はサンプル）。
+| スマホ縦画面の 2 画面（上下） | スマホ縦画面（ハイウェイモード） | 一覧表示（オービスも並べる設定） |
+|---|---|---|
+| ![スマホ 2 画面](docs/preview_phone_split.png) | ![縦画面](docs/preview_portrait.png) | ![一覧](docs/preview_list.png) |
+
+| スマホ横画面（ハイウェイモード） | 主要バイパス（名豊道路） |
+|---|---|
+| ![横画面](docs/preview_landscape.png) | ![バイパス](docs/preview_bypass.png) |
+
+※ 画像は実際の描画コード（`PlayerRenderer`・`PanelRenderer`・`ModeBarRenderer`）を PC 上で描画したものです（曲・数値はサンプル）。
+車の画面の右上のボタンは Android Auto が表示する部分のイメージで、形や位置は車種・画面の大きさによって変わります（狭い画面ではアイコン）。
 
 ---
 
-## 今回の更新（v1.1）
+## 今回の更新（v2.0）：Spectrum と統合
+
+| ご要望 | 対応 |
+|---|---|
+| Spectrum とハイウェイモードを 1 つのアプリに | Spectrum の音声解析・曲情報・操作（12 ファイル）を**元のまま**取り込み、車の画面とスマホの画面を 1 つにまとめました（[詳細](#spectrum-との統合)） |
+| 高速道路の外は Spectrum、入ったら左 Spectrum・右ハイウェイに自動切替 | ハイウェイモードの判定（地図照合）が「高速道路上」と **5 秒続いたら 2 画面**、「高速道路外」が **15 秒続いたら Spectrum に戻す**。IC のランプ・料金所・JCT・トンネル・SA/PA の停車では戻りません（走行シミュレーションで確認） |
+| 左は Spectrum をスマホ縦画面のような UI で | Spectrum の縦レイアウト（240×380）が余白なく収まる幅（画面の 20〜42%）で左に配置。右は残り全部をハイウェイモードに |
+| 下部に音楽 / ハイウェイの切替ボタン | 高速道路の間だけ下部に［♪ 音楽］［2画面］［ハイウェイ］。運転席に近い右側にまとめ、左側には**音楽だけのときは次の施設（オービス・通行止め・渋滞を優先）**、**ハイウェイだけのときは再生中の曲と 再生/一時停止** |
+| タッチできない車でも | 同じ切替を右上の「画面切替」ボタン（Android Auto の標準ボタン）にも。メニュー（表示・再探索・一般道モード・自動切替・終了）も右上から |
+| 使いやすさ | 切替時の短いフェード、ハイウェイだけの間は音声解析を止めて負荷を下げる、ハイウェイ側の画面は内容が変わったときだけ描き直す、右上のボタンと重なる時計は車の画面では省略 |
+
+## v1.2 の更新：Android Auto に表示されない問題
+
+| 内容 | 対応 |
+|---|---|
+| Android Auto の一覧（ランチャーのカスタマイズ）に出ない | 原因は Android Auto 17.7 以降の仕様（Play 以外から入れたナビ型アプリを表示しない）。アプリの宣言は正常。**Google Play の内部テストで配布できるように**し、手順を[下記](#android-auto-の一覧に表示させる重要)にまとめました |
+| Play へ上げられる形に | アプリ ID を `com.example…` から自分用の ID へ（Play は `com.example` を拒否）、版番号の自動採番、アップロード鍵での署名、`.aab` の作成、内部テストへの自動公開（任意）。アプリだけを数分で作り直す **build-app** ワークフローを追加 |
+| 原因がスマホで分かるように | メニュー →「**Android Auto の状態**」：インストール元・Android Auto の版・宣言の有無と対処を表示（該当するときは初回に一度だけ自動表示） |
+| APK を更新するとインストールできない | これまでは毎回違うデバッグ鍵で署名されていたため。アップロード鍵を登録すると同じ鍵で署名され、上書き更新できます |
+| プライバシーポリシー | Play Console の入力用に [docs/PRIVACY.md](docs/PRIVACY.md) を追加 |
+
+## v1.1 の更新
 
 | ご要望 | 対応 |
 |---|---|
@@ -40,6 +71,8 @@ SA/PA の設備、ETC 専用かどうか、**渋滞・事故・通行止め**、
 
 ## 主な機能
 
+- **Spectrum（音楽）**：再生中の曲のジャケット・曲名・アルバム・アーティスト、前/次/再生・一時停止、シーク、スペクトラムアナライザー（Spectrum と同じ）。
+- **画面の自動切替**：高速道路の対象エリアに入ると 2 画面、出ると Spectrum。下部のバーで手動切替も。
 - **対象道路**：高速自動車国道・都市高速（`motorway`）、有料道路（`toll=yes`）、自動車専用道路（`motorroad=yes`）、**IC のある主要バイパス**（一般国道 `trunk` のうち IC が並ぶ区間）。
 - **前方施設の一覧**：IC・JCT・SA・PA・スマートIC・本線料金所を近い順に（距離「3.9km」、到着予定「17:50」）。JCT で路線が変わっても同じ路線番号・名称の本線を辿ります。
 - **施設情報**：ガソリンスタンド（ブランド・営業時間）、EV 充電、レストラン、軽食、コンビニ、ショップ、トイレ、案内所、シャワー、宿泊、ドッグラン、ATM。タップで詳細。
@@ -65,12 +98,13 @@ SA/PA の設備、ETC 専用かどうか、**渋滞・事故・通行止め**、
 
 ```bash
 ./gradlew assembleDebug          # app/build/outputs/apk/debug/app-debug.apk
+./gradlew :app:bundleRelease -Papp.id=io.github.yourname.highwaymode   # Google Play 用 .aab（署名は下記「Android Auto」参照）
 ./gradlew :core:test             # 単体テスト＋走行シミュレーションによる精度レポート
 ./gradlew :datatool:run --args="help"   # 地図データ作成ツール
 ```
 
 構成：AGP 8.13.2 / Kotlin 2.2.21 / Gradle 8.14.3 / compileSdk・targetSdk 36 / minSdk 26。
-依存ライブラリは Android Auto 用の `androidx.car.app:app` / `app-projected` 1.7.0 と `androidx.core` のみ（演算部 `core` は Kotlin 標準ライブラリのみ）。
+依存ライブラリは Android Auto 用の `androidx.car.app:app` / `app-projected` 1.7.0、`androidx.core`、Spectrum の音声読み取り許可用の Shizuku（`dev.rikka.shizuku:api` / `provider` 13.1.5）のみ（演算部 `core` は Kotlin 標準ライブラリのみ）。
 
 ---
 
@@ -170,12 +204,74 @@ Geofabrik の日本全域データ（約 2GB）から抽出して作ります。
 
 ---
 
+## Spectrum との統合
+
+### 画面の切り替わり方
+
+| 状況 | 車の画面（Android Auto） | スマホ |
+|---|---|---|
+| 高速道路の外 | Spectrum を全画面（従来の Spectrum と同じ。下部のバーなし） | Spectrum ＋ 下部のバー |
+| 高速道路に入って 5 秒 | **2 画面**：左に Spectrum（縦レイアウト）、右にハイウェイモード ＋ 下部のバー | 縦画面: 上にハイウェイモード・下に Spectrum ／ 横画面: 車と同じ左右 |
+| 高速道路の間 | 下部のバーでいつでも［音楽］［2画面］［ハイウェイ］。選んだ画面は高速道路を出るまでそのまま | 同じ（右端の［⋮］でメニュー） |
+| 高速道路を出て 15 秒 | Spectrum の全画面に戻る | Spectrum に戻る |
+
+- 「高速道路」は、ハイウェイモードの対象（高速道路・有料道路・都市高速・IC のある主要バイパス）。判定はハイウェイモードの地図照合（上下線・ランプまで判定）をそのまま使います。
+- **戻らない場面**：IC のランプ・料金所・JCT・トンネル（推測航法）・SA/PA での停車。高架下や側道の一般道で一瞬だけ高速道路と判定されても切り替わりません（3〜5 秒続かないと数えない）。
+- **一般道モード**（メニュー）にすると、すぐ Spectrum に戻り、高速道路の判定を止めます。
+- **設定**：スマホのメニュー →「画面の自動切替」で「2画面（既定）／ハイウェイだけ／自動で切り替えない」。車のメニューでも自動切替のオン・オフができます。
+- **下部のバーの左側**：音楽だけの表示中は次の IC/SA などまでの距離と到着時刻（**オービス 2km 以内・通行止め・10km 以内の渋滞を優先**。タップで 2 画面）、ハイウェイだけの表示中は再生中の曲と 再生/一時停止。
+- 音声案内（オービス・渋滞・ETC カード・給油）はどの画面でも流れます（音楽は一時的に小さく）。
+
+### 車の画面の右上のボタン
+
+| 状況 | ボタン |
+|---|---|
+| 高速道路の外 | **ハイウェイ表示**（手動で 2 画面に）・**メニュー** |
+| 高速道路の間（バー表示中） | **画面切替**（2画面 → ハイウェイ → 音楽）・**施設**（一覧 → 詳細）・**オービス登録**・**メニュー** |
+
+メニュー: 画面の切替 / ハイウェイの表示（大きく・一覧・SA/PA）/ 再探索 / 一般道モード / 自動切替 オン・オフ / 終了。
+タッチ操作のできない車（ダイヤル・タッチパッド操作）でも、これらのボタンで同じ操作ができます。
+
+### 必要な許可
+
+| 許可 | 使い道 | 無い場合 |
+|---|---|---|
+| 位置情報（正確な位置） | 高速道路の判定・距離・到着予定 | 自動切替とハイウェイモードが動かない |
+| マイク | Spectrum のスペアナ（再生中の音を解析。**録音はしません**） | スペアナが動かない |
+| 通知へのアクセス | 曲名・ジャケット・操作（Spectrum） | 曲情報が出ない |
+| 音声の読み取り（DUMP・任意） | YouTube など音声の番号を知らせないアプリのスペアナ（Shizuku で許可） | そのアプリの音は端末全体の音で解析 |
+| 車速・燃料（Android Auto） | トンネル内の精度・給油の案内 | スマホのセンサーだけで判定 |
+
+足りない許可はスマホの画面の下にボタンで出ます（Spectrum と同じ）。
+
+### Spectrum のファイル（別スレッドでの更新を取り込むとき）
+
+`app/src/main/java/com/example/spectrum/` の次の 12 ファイルは **Spectrum のものをそのまま**入れています。Spectrum 側で更新したら、上書きするだけで取り込めます。
+
+`AudioSessionReceiver.kt` `Diagnostics.kt` `DiagnosticsActivity.kt` `MediaListenerService.kt` `MediaResumer.kt` `MediaTracker.kt` `NowPlaying.kt` `PlayerRenderer.kt` `PlayerView.kt` `SessionScanner.kt` `ShizukuHelper.kt` `SpectrumEngine.kt`
+
+次の 3 ファイルは 1 つのアプリにするため、中身を統合先に移しました（Spectrum 側でこれらを変えたときは、統合先に同じ変更を入れてください）。
+
+| Spectrum のファイル | 統合先 |
+|---|---|
+| `SpectrumScreen.kt`（車の画面） | `car/DualCarScreen.kt`（描画スレッド・音声解析の開始/停止・曲情報の取り直し・再生中のアプリを開く処理をそのまま移植） |
+| `SpectrumCarAppService.kt` | `car/HighwayCarAppService.kt` の `onCreate`（曲情報の読み込み開始） |
+| `MainActivity.kt`（スマホ） | `MainActivity.kt`（権限ボタンの並び・Shizuku の確認・通知リスナーの再接続） |
+
+統合した画面が使っている Spectrum 側の機能は `PlayerRenderer`（`draw` / `onTap` / `setSpectrum` / `onArtTap`）、`SpectrumEngine`（`acquire` / `release` / `listeners` / `retry` / `init`）、`NowPlaying`（曲情報・`playPause`）、`MediaTracker`（`start` / `heal`）です。これらの名前や引数を変えた場合だけ、統合側の修正が必要です。
+AndroidManifest.xml には Spectrum の権限・サービス・Shizuku の接続口・受信設定を統合済みです。
+
+### 1 つのアプリにしたことによる注意
+
+- アプリ名は「**Spectrum ハイウェイ**」（`app/src/main/res/values/strings.xml` で変更できます）。
+- 別々に入れていた「Spectrum」と「ハイウェイモード」は、Android Auto の一覧に並んで紛らわしいのでアンインストールしてください（Spectrum の設定・ハイウェイモードの登録オービスは引き継がれません。オービスは先に CSV で書き出しておけば移せます）。
+- アプリ ID は既定で `io.github.<GitHub のユーザー名>.highwaymode`。Spectrum を Google Play の内部テストで配っていて、**そのアプリとして更新したい**場合は、リポジトリ変数 `APP_ID` にそのアプリ ID を設定し、同じアップロード鍵で署名してください。
+
 ## Android Auto
 
-スマホを車につなぐと、車の画面にハイウェイモードが表示されます（スマホの画面と同時に使えます）。
+スマホを車につなぐと、車の画面に Spectrum とハイウェイモードが表示されます（上の「画面の切り替わり方」）。
 
-- 画面右上のボタン：**施設**（一覧 → 詳細）、**表示**（大きく / 一覧 / SA・PA）、**再探索**、**オービス登録**。
-- 対応車では地図面の施設をタップすると詳細が開きます。
+- 地図面のハイウェイモードの施設をタップすると詳細が開きます（タッチ対応の車）。
 - **車両から取得して使う情報**（車種・ヘッドユニットにより一部のみ）
   - **車速信号**：速度フィルタの主な入力にし、メーターの誤差（2〜5%）は GPS 速度で自動補正。
     トンネル内の推測航法の距離精度が大きく上がります（下表）。停止判定も車速で即座に行います。
@@ -183,27 +279,104 @@ Geofabrik の日本全域データ（約 2GB）から抽出して作ります。
   - **ETC カードの状態**：未挿入・無効なら画面と音声で警告。
   - **燃料・電池残量と航続可能距離**：前方の SA/PA の GS（EV なら充電設備）と照らして「次の○○SAで給油を」などを案内。
   - 車両の GPS：スマホの測位が止まったときの補助。
-- 初回は車の画面で権限（位置情報・車速・燃料）を確認し、スマホ側で許可します。
-- **ストア外からインストールしたアプリを Android Auto で表示するには**：スマホの Android Auto 設定 →「バージョン」を 10 回タップしてデベロッパー モード →
-  右上メニュー「デベロッパー設定」→「提供元不明のアプリ」をオン。PC の Desktop Head Unit（DHU）でも確認できます（車速などのセンサー値を模擬可能）。
-- ナビアプリ（`NAVIGATION` カテゴリ）として登録し、地図面にハイウェイモードを描いています（経路案内は行いません）。Google Play で公開する場合は Android for Cars のアプリ品質ガイドラインの確認が必要です。
+- 初回は車の画面で権限（位置情報・マイク・車速・燃料）を確認し、スマホ側で許可します。
+- ナビアプリ（`NAVIGATION` カテゴリ）として登録し、地図面に描いています（経路案内は行いません）。音楽アプリの枠は画面に自由に描けないため、Spectrum と同じくナビの枠を使っています。
+
+### Android Auto の一覧に表示させる（重要）
+
+**APK を直接インストールしたままでは、Android Auto の一覧（「ランチャーのカスタマイズ」を含む）に表示されません。**
+Android Auto 17.7 以降（2026 年秋）は、Car App Library で作ったアプリ（このアプリのようなナビ型）を
+「提供元不明のアプリ」の設定では通さなくなり、**Google Play からインストールしたもの（内部テスト配布を含む）だけ**を表示します。
+アプリのマニフェスト（Android Auto 用の宣言）は正しく入っていても、この確認で除外されます。
+
+スマホのメニュー →「**Android Auto の状態**」で、インストール元・Android Auto の版・宣言の有無と、必要な対処を確認できます。
+
+実車で使うには、次の **A**（Google Play の内部テストで自分に配布）を行ってください。審査はなく、費用は開発者登録の 25 米ドル（1 回だけ）です。
+
+#### A. Google Play Console の内部テストで配布する
+
+**1. アップロード鍵を作る（PC で 1 回だけ）**
+
+Android Studio に付属の `keytool` で作ります（Windows の例。パスワードは 2 回聞かれます）:
+
+```bat
+"C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe" -genkeypair -v -keystore upload.jks -alias upload -keyalg RSA -keysize 2048 -validity 10000
+```
+
+`upload.jks` とパスワードは大切に保管してください（GitHub には置かない）。
+
+**2. GitHub に鍵を登録して AAB を作る**
+
+`upload.jks` を base64 の文字列にします:
+
+```powershell
+# Windows（PowerShell）: クリップボードにコピーされる
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("upload.jks")) | Set-Clipboard
+# Mac: base64 -i upload.jks | pbcopy　／　Linux: base64 -w0 upload.jks
+```
+
+リポジトリの **Settings → Secrets and variables → Actions → New repository secret** で登録:
+
+| 名前 | 値 |
+|---|---|
+| `UPLOAD_KEYSTORE_BASE64` | 上でコピーした文字列 |
+| `UPLOAD_KEYSTORE_PASSWORD` | キーストアのパスワード |
+| `UPLOAD_KEY_ALIAS` | `upload` |
+| `UPLOAD_KEY_PASSWORD` | 鍵のパスワード（キーストアと同じなら同じ値） |
+
+**Actions → build-app → Run workflow**（数分）。終わったら実行結果の **Artifacts** から `HighwayMode-app` をダウンロードし、中の **`HighwayMode.aab`** を使います。
+アプリ ID は `io.github.<GitHub のユーザー名>.highwaymode` になります（実行ログの「アプリ ID」に表示。Google Play は `com.example` で始まる ID を受け付けないため変更しました。別の ID にしたいときはリポジトリ変数 `APP_ID` を設定）。
+毎週の build-hwdb でも、最新の地図データを同梱した `.aab` がリリースに添付されます。
+
+**3. Play Console でアプリを作る**
+
+1. [Play Console](https://play.google.com/console/signup) でデベロッパー登録（個人。本人確認あり、登録料 25 米ドル）
+2. **アプリを作成**：アプリ名「ハイウェイモード」、既定の言語「日本語」、「アプリ」「無料」を選び、宣言に同意
+3. **テストとリリース → 詳細設定 → フォーム ファクタ → フォーム ファクタを追加 → Android Auto** を選び、規約に同意
+4. **テストとリリース → テスト → 内部テスト → テスター** タブで、メーリングリストを作って**スマホで使っている Google アカウント**のメールアドレスを追加して保存
+5. 同じ画面の **新しいリリースを作成** → 「Play アプリ署名」は Google に任せる（既定）→ `HighwayMode.aab` をアップロード → **次へ → 保存して公開**
+   - プライバシーポリシーの URL などを求められたら `https://github.com/<ユーザー名>/<リポジトリ名>/blob/main/docs/PRIVACY.md` を使えます。
+6. テスター タブの **「リンクをコピー」**（テスト参加用の URL）をスマホで開き、「テスターになる」→ Play ストアのページから**インストール**（反映まで数分〜1 時間ほど）
+
+**4. スマホと車で**
+
+1. 先に、APK で入れた古い「ハイウェイモード」をアンインストール（アプリ ID が変わったため別のアプリ扱い。登録したオービスはメニュー →「オービス」→ CSV 書き出しで移せます。渋滞情報の API キーは入れ直し）
+2. Play ストアから入れたハイウェイモードを一度起動して権限を許可
+3. Android Auto の設定 →「ランチャーのカスタマイズ」で **ハイウェイモード** がオンになっているか確認 → 車につなぐ
+
+**更新するとき**：build-app（または毎週の build-hwdb）でできた `.aab` を「内部テスト → 新しいリリースを作成」で上げると、スマホの Play ストアから更新できます。
+自動化したい場合は、Play Console API 用のサービスアカウントの JSON をシークレット `PLAY_SERVICE_ACCOUNT_JSON` に登録すると、ワークフローが内部テストへ自動で公開します（最初の 1 回は上の手順 5 で手動アップロードが必要）。
+
+#### B. PC の Desktop Head Unit（DHU）で動作確認する（開発用）
+
+Google 公式の Android Auto エミュレーターで、PC の画面を車の画面として使えます（[公式手順](https://developer.android.com/training/cars/testing/dhu)）。
+
+1. Android Studio の SDK Manager → SDK Tools →「Android Auto Desktop Head Unit Emulator」をインストール（`<SDK>/extras/google/auto/`）
+2. スマホの Android Auto 設定 →「バージョン」を 10 回タップ → 右上メニュー「ヘッドユニット サーバーを起動」
+3. スマホを USB でつなぎ、`adb forward tcp:5277 tcp:5277` → `desktop-head-unit` を起動
+
+※ Android Auto の新しい確認が DHU にも適用されるかは Google 側の設定次第のため、表示されない場合は A の方法を使ってください。
+※ 一般公開（製品版トラック）するには Android for Cars のアプリ品質審査が必要です。内部テストは審査なしで、登録したテスター（最大 100 人）だけが使えます。
 
 ---
 
 ## 使い方
 
-1. 起動すると位置情報（**正確な位置**）と通知の許可を求めます。
+1. 起動すると位置情報（**正確な位置**）・マイク（スペアナ用）・通知の許可を求めます。曲名を出すには画面下の「通知アクセスを許可」から設定します。
 2. スマホを車に固定してください（向きは自動で学習。Android Auto で車速信号が使える場合は置き方の影響が小さくなります）。
-3. 高速道路・有料道路・主要バイパスに入ると自動で表示が始まります。
+3. 高速道路・有料道路・主要バイパスに入ると自動で 2 画面になり、ハイウェイモードの表示が始まります。
 
 | ボタン | 動作 |
 |---|---|
-| 表示変更 | 「大きく3〜4件」→「一覧」→「SA/PAのみ」 |
-| 再探索 | マップマッチングをやり直す |
-| メニュー | デモ走行／一般道モード／運転傾向リセット／**地図データ**／**渋滞情報**／**オービス**／このアプリについて／終了 |
+| 下部のバー［音楽］［2画面］［ハイウェイ］ | 画面の切替（高速道路を出ると自動で音楽に戻る） |
+| 下部のバー［⋮］ | メニュー：デモ走行／**画面の自動切替**／**音楽（Spectrum）の設定と診断**／一般道モード／運転傾向リセット／**地図データ**／**渋滞情報**／**オービス**／Android Auto の状態／このアプリについて／終了 |
+| 表示変更（ハイウェイ側） | 「大きく3〜4件」→「一覧」→「SA/PAのみ」 |
+| 再探索（ハイウェイ側） | マップマッチングをやり直す |
 | 施設の行をタップ | 設備の詳細、出口番号、方面、ETC 専用の根拠、手前の渋滞・事故、地図で開く |
+| ジャケットをタップ（音楽側） | 再生中の音楽アプリを開く |
+| 音楽側の何もない場所を 20 回連続タップ | Spectrum の診断画面（曲情報の取得元の選択など） |
 
-- **デモ走行**：実際の地図データ上を模擬走行（長野道 岡谷→中央道、中央道 談合坂、東名 海老名、首都高湾岸線、名神 京都東、現在地付近）。
+- **デモ走行**：実際の地図データ上を模擬走行（長野道 岡谷→中央道、中央道 談合坂、東名 海老名、首都高湾岸線、名神 京都東、現在地付近）。始めて数秒で 2 画面に切り替わるので、自動切替の確認にも使えます。
 - **一般道モード**：高架の高速道路の真下を走るときなど、判定を止めたい場合に。
 
 ---
@@ -266,9 +439,19 @@ HWDB の読み書き・都道府県単位の一括取得（Overpass、ヘッジ�
 | 渋滞 3km・**交通情報あり**（出発時に取得） | 3.3 | 22.5 | 53.1 | **38.2** |
 | （参考）距離÷現在速度、渋滞あり | 60.9 | 200.4 | 1461.0 | 921.0 |
 
+画面の自動切替（`DualModeTest`、同じ合成道路網を下り 0.5km → 46.5km 走行）
+
+| 項目 | 結果 |
+|---|---|
+| 高速道路と判定されてから 2 画面になるまで | 5.0 秒（走り出してから 6.3 秒） |
+| 走行中（JCT・5km トンネルの推測航法を含む）に音楽画面へ戻ってしまった回数 | **0 回** |
+| 高速道路を離れ始めてから音楽画面に戻るまで | 18.3 秒（道路から外れたと判定されるまで約 3 秒＋15 秒） |
+| 高架下で 3 秒だけ高速道路と判定 / ランプで 10 秒外れる / 並走中に 1 秒だけ当てはまる | 切り替わらない / 戻らない / 外にいた時間は通算 |
+| 画面の区画（800×480・1024×600・1280×480・1280×720・1920×720・2400×900） | Spectrum は縦長で画面の 21〜33%、ハイウェイ側は 55% 以上、重なりなし |
+
 そのほかのテスト：名称の無い出口・分岐ノードの無い IC・上下集約型 SA・ランプ無しの JCT の検出、オービスの車線判定（道路上・路側・登録方位）、
 主要バイパス区間の判定、HWDB の読み書き・境界タイルの結合・APK 内のオフセット読み、途中再開ダウンロード（SHA-256 検証）、
-Overpass のヘッジ要求、各社の交通情報の解析と車線への対応づけ、CSV 取り込み、オービス音声のタイミング（全 37 件）。
+Overpass のヘッジ要求、各社の交通情報の解析と車線への対応づけ、CSV 取り込み、オービス音声のタイミング（全 44 件）。
 
 ---
 
@@ -278,6 +461,8 @@ Overpass のヘッジ要求、各社の交通情報の解析と車線への対�
 - 主要バイパスは IC の登録がある区間だけが対象です。バイパスの側道（並行する一般道）を走っていると、本線と誤判定することがあります（「一般道モード」で回避）。
 - 渋滞情報の対応範囲・更新頻度・精度は取得元によります。API の利用料・無料枠は各社の最新の料金ページを確認してください。
 - Android Auto で取得できる車両情報（車速・ETC カード・燃料・ジャイロ）は車種・ヘッドユニットによって異なります。
+- 車の画面の下部バーはタッチ操作です。タッチできない車では右上の「画面切替」ボタンを使ってください。
+- Android Auto が右上のボタンの領域を表示範囲として知らせない車では、ハイウェイ側の見出しの右側を空けて重なりを避けています（車種によっては少し重なることがあります）。
 - 公開の Overpass API は混雑することがあります。全国データの同梱・ダウンロードを推奨します。
 - 運転中に画面を注視・操作しないでください。安全運転を最優先にしてください。
 
@@ -300,19 +485,27 @@ HighwayMode/
 │     ├─ camera/            オービス CSV・音声案内のタイミング
 │     ├─ vehicle/           車両情報（車速信号の倍率学習、車両ジャイロの軸判定）
 │     ├─ engine/            全体の統合（HighwayEngine）と表示用スナップショット
+│     ├─ dual/              画面の自動切替の判定（HighwayPresence）と区画割り（DualGeometry）
 │     └─ sim/               走行シミュレータ（テスト・デモ走行）
 ├─ app/                     Android アプリ
-│  └─ src/main/java/com/example/highwaymode/
-│     ├─ MainActivity.kt / TrackingService.kt
+│  └─ src/main/java/
+│   ├─ com/example/spectrum/   Spectrum（音声解析・曲情報・操作・描画。元のまま 12 ファイル）
+│   └─ com/example/highwaymode/
+│     ├─ MainActivity.kt / TrackingService.kt   スマホの画面（Spectrum とハイウェイを自動切替）
 │     ├─ engine/            センサー・GPS 入力、エンジン実行スレッド、デモ走行
 │     ├─ data/              地図データ管理（HWDB・タイル・ダウンロード/作成サービス）、設定、オービス登録
 │     ├─ traffic/           渋滞情報の定期取得
 │     ├─ alerts/            音声案内
-│     ├─ car/               Android Auto（画面・車両情報）
-│     └─ ui/                描画（PanelRenderer）、設定画面、詳細
+│     ├─ dual/              画面構成の共有（DualMode）、下部の切替バー（ModeBarRenderer）
+│     ├─ car/               Android Auto（DualCarScreen: Spectrum＋ハイウェイの車の画面、メニュー、車両情報、診断）
+│     └─ ui/                描画（PanelRenderer）、スマホの 2 画面（DualView）、設定画面、詳細
 ├─ datatool/                PC・CI 用の地図データ作成ツール
 ├─ scripts/build-hwdb.sh    PC で全国データを作るスクリプト
-└─ .github/workflows/build-data.yml   毎週の全国データ作成・公開・データ同梱 APK
+├─ scripts/ci-app-env.sh    CI 用：アプリ ID・版番号・アップロード鍵の準備
+├─ docs/PRIVACY.md          プライバシーポリシー（Play Console 用）
+└─ .github/workflows/
+   ├─ build-data.yml        毎週の全国データ作成・公開・データ同梱 APK / AAB
+   └─ build-app.yml         アプリだけを作り直す（公開済みの最新データを同梱、数分）
 ```
 
 ## 出典・ライセンス
@@ -320,3 +513,4 @@ HighwayMode/
 - データ取得：[Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API)、[Geofabrik](https://download.geofabrik.de/asia/japan.html)（日本全域の抽出）
 - 交通情報：[HERE Traffic API](https://www.here.com/docs/bundle/traffic-api-v7-api-reference/page/index.html)、[TomTom Traffic API](https://docs.tomtom.com/traffic-api/documentation/tomtom-maps/v1/traffic-incidents/incident-details)、[Google Routes API](https://developers.google.com/maps/documentation/routes)
 - Android Auto：[Android for Cars App Library](https://developer.android.com/training/cars/apps)
+- Spectrum の音声読み取りの許可：[Shizuku](https://github.com/RikkaApps/Shizuku-API)（Apache License 2.0）

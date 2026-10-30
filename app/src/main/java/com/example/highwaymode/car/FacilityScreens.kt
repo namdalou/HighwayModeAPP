@@ -160,11 +160,16 @@ class FacilityDetailScreen(carContext: CarContext, private val f: FacilityView) 
 class PermissionScreen(carContext: CarContext, private val missing: List<String>, private val onGranted: () -> Unit) : Screen(carContext) {
     override fun onGetTemplate(): Template {
         val needLocation = missing.contains(android.Manifest.permission.ACCESS_FINE_LOCATION)
-        val msg = if (needLocation) "現在地（正確な位置）の権限が必要です。「許可」を押して、スマホの画面で許可してください。"
-        else "車速・燃料の情報を使うと、トンネル内の位置や到着予定がより正確になります。スマホの画面で許可してください。"
+        val needMic = missing.contains(android.Manifest.permission.RECORD_AUDIO)
+        val msg = buildString {
+            if (needLocation) append("高速道路の判定に、現在地（正確な位置）の権限が必要です。")
+            if (needMic) append("スペクトラム表示に、音声の解析（マイク）の権限が必要です（録音はしません）。")
+            if (!needLocation && !needMic) append("車速・燃料の情報を使うと、トンネル内の位置や到着予定がより正確になります。")
+            append("「許可」を押して、スマホの画面で許可してください。")
+        }
         @Suppress("DEPRECATION")
         return MessageTemplate.Builder(msg)
-            .setTitle("ハイウェイモード")
+            .setTitle("Spectrum ハイウェイ")
             .setHeaderAction(Action.APP_ICON)
             .addAction(Action.Builder().setTitle("許可").setOnClickListener {
                 carContext.requestPermissions(missing) { _, _ ->

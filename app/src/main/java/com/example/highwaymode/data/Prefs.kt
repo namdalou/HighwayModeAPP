@@ -97,7 +97,25 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_TRAFFIC_VOICE, true)
         set(v) = sp.edit().putBoolean(KEY_TRAFFIC_VOICE, v).apply()
 
+    /** 高速道路の対象エリアに入ったら自動で 2 画面にし、出たら Spectrum（音楽）に戻す */
+    var autoSwitch: Boolean
+        get() = sp.getBoolean(KEY_AUTO_SWITCH, true)
+        set(v) = sp.edit().putBoolean(KEY_AUTO_SWITCH, v).apply()
+
+    /** 対象エリアに入ったときの画面（"SPLIT" / "HIGHWAY" / "MUSIC"） */
+    var highwayLayout: String
+        get() = sp.getString(KEY_HIGHWAY_LAYOUT, "SPLIT") ?: "SPLIT"
+        set(v) = sp.edit().putString(KEY_HIGHWAY_LAYOUT, v).apply()
+
+    /** 「Android Auto に表示されない場合」の案内を表示済みか（インストール元ごと） */
+    var autoHintShownFor: String?
+        get() = sp.getString(KEY_AUTO_HINT, null)
+        set(v) = sp.edit().putString(KEY_AUTO_HINT, v).apply()
+
     companion object {
+        private const val KEY_AUTO_HINT = "auto_hint_shown_for"
+        private const val KEY_AUTO_SWITCH = "dual_auto_switch"
+        private const val KEY_HIGHWAY_LAYOUT = "dual_highway_layout"
         private const val KEY_DRIVER = "driver_profile"
         private const val KEY_MODE = "display_mode"
         private const val KEY_ENDPOINTS = "overpass_endpoints"

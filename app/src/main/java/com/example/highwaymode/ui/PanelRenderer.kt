@@ -30,11 +30,24 @@ class PanelRenderer(var density: Float) {
     var showCamerasInList: Boolean = false
     /** 下部のボタン（スマホのみ。車載画面はアクションストリップを使う） */
     var showButtons: Boolean = true
+    /** ボタンを出さないとき、右下に地図データの出典を小さく出す（車載画面） */
+    var attribution: Boolean = false
+    /** 見出しの右端に時計を出す（車の画面では出さない） */
+    var showClock: Boolean = true
+    /** 時計を出さないとき、見出しの右側に空けておく幅（Android Auto の右上のボタンと重ならないように）[px] */
+    var headerRightReserve: Float = 0f
     var overlayMessage: String? = null
 
     class Hit(val rect: RectF, val facility: FacilityView?, val button: Int)
 
-    val hits = ArrayList<Hit>()
+    /** 描画中に作るタップ判定（描画スレッド専用） */
+    private val hits = ArrayList<Hit>()
+
+    /** 最後に描き終えた画面のタップ判定（別スレッドから読む） */
+    @Volatile
+    private var publishedHits: List<Hit> = emptyList()
+
+    private val bgFill = Paint().apply { color = 0xFF0A0C10.toInt() }
 
     private fun dp(v: Float) = v * density
 
@@ -73,8 +86,18 @@ class PanelRenderer(var density: Float) {
      * @param nowMs 時計表示用の現在時刻
      */
     fun draw(c: Canvas, l0: Float, t0: Float, r0: Float, b0: Float, s: HighwaySnapshot?, nowMs: Long) {
-        c.drawColor(cBg)
         hits.clear()
+        try {
+            drawPanel(c, l0, t0, r0, b0, s, nowMs)
+        } finally {
+            publishedHits = ArrayList(hits)
+        }
+    }
+
+    private fun drawPanel(c: Canvas, l0: Float, t0: Float, r0: Float, b0: Float, s: HighwaySnapshot?, nowMs: Long) {
+        // 自分の区画だけを塗る（2 画面表示では左側に Spectrum がある）
+        bgFill.color = cBg
+        c.drawRect(l0, t0, r0, b0, bgFill)
         val pad = dp(8f)
         val left = l0 + pad
         val right = r0 - pad
@@ -102,20 +125,32 @@ class PanelRenderer(var density: Float) {
             drawStatusRow(c, s, left, mainBottom - statusH, right, mainBottom)
             drawMainArea(c, s, left, top + headerH + pad, right, mainBottom - statusH - pad)
         }
+        if (!showButtons && attribution) {
+            textNormal.textSize = dp(9f)
+            textNormal.color = 0xFF5F6873.toInt()
+            textNormal.textAlign = Paint.Align.RIGHT
+            c.drawText("地図 © OpenStreetMap contributors", r0 - dp(6f), b0 - dp(2.5f), textNormal)
+            textNormal.textAlign = Paint.Align.LEFT
+        }
         overlayMessage?.let { drawOverlay(c, it, left, top, right, bottom) }
     }
 
     private fun drawHeader(c: Canvas, s: HighwaySnapshot?, l: Float, t: Float, r: Float, b: Float, showSubLine: Boolean, nowMs: Long) {
         val h = b - t
-        // 時計
-        val clock = Formats.clock(nowMs)
-        text.textSize = if (showSubLine) h * 0.46f else h * 0.62f
-        val cw = text.measureText(clock) + h * 0.4f
-        rect.set(r - cw, t, r, t + h * 0.78f)
-        fill.color = 0xFF1A1E25.toInt()
-        c.drawRoundRect(rect, h * 0.12f, h * 0.12f, fill)
-        text.color = cText
-        drawTextCentered(c, clock, rect.centerX(), rect.centerY(), text, Paint.Align.CENTER)
+        // 時計（車の画面では Android Auto が時刻を出すので省き、右上のボタンの分を空ける）
+        val cw: Float
+        if (showClock) {
+            val clock = Formats.clock(nowMs)
+            text.textSize = if (showSubLine) h * 0.46f else h * 0.62f
+            cw = text.measureText(clock) + h * 0.4f
+            rect.set(r - cw, t, r, t + h * 0.78f)
+            fill.color = 0xFF1A1E25.toInt()
+            c.drawRoundRect(rect, h * 0.12f, h * 0.12f, fill)
+            text.color = cText
+            drawTextCentered(c, clock, rect.centerX(), rect.centerY(), text, Paint.Align.CENTER)
+        } else {
+            cw = headerRightReserve.coerceIn(0f, (r - l) * 0.55f)
+        }
 
         var x = l
         val maxR = r - cw - dp(8f)
@@ -728,6 +763,6 @@ class PanelRenderer(var density: Float) {
         return max(size * 0.5f, size * maxWidth / w)
     }
 
-    /** タップ位置の施設・ボタン */
-    fun hitAt(x: Float, y: Float): Hit? = hits.firstOrNull { it.rect.contains(x, y) }
+    /** タップ位置の施設・ボタン（描画と別スレッドから呼んでよい） */
+    fun hitAt(x: Float, y: Float): Hit? = publishedHits.firstOrNull { it.rect.contains(x, y) }
 }

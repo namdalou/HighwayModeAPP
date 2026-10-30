@@ -10,9 +10,11 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import com.example.highwaymode.TrackingService
 import com.example.highwaymode.engine.EngineHost
+import com.example.spectrum.SpectrumEngine
 
 /**
- * Android Auto の 1 回の接続。エンジンを起動し、車両の情報（車速・ETC カード・燃料・ジャイロ）を流し込む。
+ * Android Auto の 1 回の接続。エンジン（測位・地図・渋滞情報）を起動し、
+ * 車両の情報（車速・ETC カード・燃料・ジャイロ）を流し込む。画面は Spectrum とハイウェイモードの共用画面。
  */
 class HighwaySession : Session() {
 
@@ -37,13 +39,14 @@ class HighwaySession : Session() {
                 if (!TrackingService.running) EngineHost.stop()
             }
         })
-        val main = HighwayCarScreen(ctx) { startVehicleInput() }
+        val main = DualCarScreen(ctx) { startVehicleInput() }
         val missing = PERMISSIONS.filter { ctx.checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         return if (missing.contains(Manifest.permission.ACCESS_FINE_LOCATION) || missing.isNotEmpty() && !askedOnce) {
             askedOnce = true
             ctx.getCarService(androidx.car.app.ScreenManager::class.java).push(main)
             PermissionScreen(ctx, missing) {
                 EngineHost.restartLocation()
+                SpectrumEngine.retry(ctx.applicationContext)
                 startVehicleInput()
             }
         } else {
@@ -66,6 +69,7 @@ class HighwaySession : Session() {
 
         val PERMISSIONS = listOf(
             Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.RECORD_AUDIO,
             CarVehicleInput.PERMISSION_CAR_SPEED,
             CarVehicleInput.PERMISSION_CAR_FUEL
         )
