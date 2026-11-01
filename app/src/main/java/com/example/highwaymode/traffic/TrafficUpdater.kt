@@ -1,8 +1,6 @@
 package com.example.highwaymode.traffic
 
 import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
@@ -15,6 +13,7 @@ import com.example.highwaymode.core.traffic.TomTomTrafficProvider
 import com.example.highwaymode.core.traffic.TrafficProvider
 import com.example.highwaymode.data.Prefs
 import com.example.highwaymode.engine.EngineHost
+import com.example.highwaymode.engine.RunDiagnostics
 import java.io.IOException
 
 /**
@@ -124,8 +123,10 @@ class TrafficUpdater(context: Context) {
         // 失敗が続いたら 1 → 2 → 4 分と間隔をあける
         val backoffOk = failures == 0 || now - lastAttemptMs >= (60_000L shl minOf(failures - 1, 2))
         if (!(due || leftCoverage) || !backoffOk) return
-        if (!online()) {
-            EngineHost.post { it.trafficMessage = "渋滞情報: 通信できません" }
+        val netProblem = RunDiagnostics.networkProblem(ctx)
+        if (netProblem != null) {
+            // 裏での通信が止められているときは、その旨を出す（メニュー →「動作状態」で確認・解除）
+            EngineHost.post { it.trafficMessage = "渋滞情報: $netProblem" }
             return
         }
         lastAttemptMs = now
@@ -157,13 +158,6 @@ class TrafficUpdater(context: Context) {
                 }
             }
         }
-    }
-
-    private fun online(): Boolean {
-        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val n = cm.activeNetwork ?: return false
-        val caps = cm.getNetworkCapabilities(n) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
     companion object {

@@ -54,7 +54,11 @@ class FacilityView(
     /** オービス: 取締速度 */
     val maxspeedKmh: Int? = null,
     val cameraType: String? = null,
-    val userDefined: Boolean = false
+    val userDefined: Boolean = false,
+    /** この進行方向には出口が無い IC（ハーフ IC）。「出口なし」と表示する */
+    val noExit: Boolean = false,
+    /** 手前の渋滞の先頭（解消地点）までの道のり [m]（渋滞の中にいるときなど、無ければ null） */
+    val jamEndM: Double? = null
 )
 
 /** 交通情報の状態 */
@@ -72,7 +76,9 @@ class TrafficView(
     /** 前方の出来事（距離 [m], 種類, 説明） */
     val events: List<Triple<Double, TrafficKind, String?>>,
     /** 交通情報を考慮した場合の、考慮しない場合からの遅れ（経路全体）[s] */
-    val routeDelaySec: Double?
+    val routeDelaySec: Double?,
+    /** 次の渋滞が 伸びている (+1) / 縮んでいる (-1) / 変わらない・不明 (0) */
+    val nextJamTrend: Int = 0
 )
 
 /** 車両の状態（Android Auto 接続時） */

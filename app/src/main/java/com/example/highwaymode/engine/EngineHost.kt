@@ -7,6 +7,7 @@ import android.os.Looper
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
+import com.example.highwaymode.TrackingService
 import com.example.highwaymode.alerts.AlertManager
 import com.example.highwaymode.core.engine.HighwayEngine
 import com.example.highwaymode.core.engine.HighwaySnapshot
@@ -54,6 +55,15 @@ object EngineHost {
     private var gpsMessage: String? = null
     private var lastProfileSave = 0L
 
+    /** スマホの GPS・車の GPS を最後に受信した時刻（elapsedRealtimeNanos、0 = 未受信） */
+    @Volatile
+    var lastPhoneFixNanos = 0L
+        private set
+
+    @Volatile
+    var lastVehicleFixNanos = 0L
+        private set
+
     @Volatile
     var latest: HighwaySnapshot? = null
         private set
@@ -81,10 +91,16 @@ object EngineHost {
             if (now - lastGpsCheck > 5_000_000_000L) {
                 lastGpsCheck = now
                 val loc = location
+                val phoneStale = lastPhoneFixNanos == 0L || now - lastPhoneFixNanos > 20_000_000_000L
+                val vehicleStale = lastVehicleFixNanos == 0L || now - lastVehicleFixNanos > 20_000_000_000L
                 gpsMessage = when {
                     demo != null || loc == null -> null
                     !loc.hasPermission() -> "位置情報の権限がありません"
                     !loc.gpsEnabled -> "端末の位置情報（GPS）がオフです"
+                    // Android Auto だけで使っていて、スマホの GPS が裏で止められている
+                    carConnected && phoneStale && vehicleStale &&
+                        TrackingService.mode != TrackingService.Mode.LOCATION ->
+                        "スマホの GPS を受信できません（メニュー →「動作状態」）"
                     else -> null
                 }
             }
@@ -159,6 +175,7 @@ object EngineHost {
         h.post {
             sensors = SensorInput(ctx, h, e).also { it.start() }
             location = LocationInput(ctx, h) { fix ->
+                lastPhoneFixNanos = SystemClock.elapsedRealtimeNanos()
                 if (demo == null) {
                     try {
                         e.onGps(fix)
@@ -223,6 +240,14 @@ object EngineHost {
     /** 位置権限が後から許可された場合などに GPS 受信を開始し直す */
     fun restartLocation() {
         handler?.post { location?.start() }
+    }
+
+    /** 常駐サービスが位置情報の種類になったときなど、GPS の受信を登録し直す */
+    fun reregisterLocation() {
+        handler?.post {
+            location?.stop()
+            location?.start()
+        }
     }
 
     // ------------------------------------------------------------------ 渋滞情報
@@ -294,6 +319,7 @@ object EngineHost {
     }
 
     fun onVehicleLocation(fix: GpsFix) {
+        lastVehicleFixNanos = SystemClock.elapsedRealtimeNanos()
         post { if (demo == null) it.onVehicleLocation(fix) }
     }
 

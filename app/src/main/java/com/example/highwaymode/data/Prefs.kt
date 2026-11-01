@@ -112,7 +112,19 @@ class Prefs(context: Context) {
         get() = sp.getString(KEY_AUTO_HINT, null)
         set(v) = sp.edit().putString(KEY_AUTO_HINT, v).apply()
 
+    /** Android Auto で使ったことがある（スマホを開かずに使うための案内に使う） */
+    var carUsedOnce: Boolean
+        get() = sp.getBoolean(KEY_CAR_USED, false)
+        set(v) = sp.edit().putBoolean(KEY_CAR_USED, v).apply()
+
+    /** 「Android Auto だけで使うための設定」の案内を表示済み */
+    var backgroundHintShown: Boolean
+        get() = sp.getBoolean(KEY_BG_HINT, false)
+        set(v) = sp.edit().putBoolean(KEY_BG_HINT, v).apply()
+
     companion object {
+        private const val KEY_CAR_USED = "car_used_once"
+        private const val KEY_BG_HINT = "background_hint_shown"
         private const val KEY_AUTO_HINT = "auto_hint_shown_for"
         private const val KEY_AUTO_SWITCH = "dual_auto_switch"
         private const val KEY_HIGHWAY_LAYOUT = "dual_highway_layout"

@@ -76,10 +76,12 @@
             android:exported="false"
             android:label="Spectrum 診断" />
 
+        <!-- 測位・地図・渋滞情報の常駐。location にできないとき（Android Auto だけで使っていて
+             位置情報が「使用中のみ」許可など）は dataSync で通信と動作を保つ -->
         <service
             android:name=".TrackingService"
             android:exported="false"
-            android:foregroundServiceType="location" />
+            android:foregroundServiceType="location|dataSync" />
 
         <service
             android:name=".data.DataSyncService"

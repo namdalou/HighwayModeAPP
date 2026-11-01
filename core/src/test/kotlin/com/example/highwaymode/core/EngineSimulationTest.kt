@@ -80,7 +80,8 @@ class EngineSimulationTest {
         title: String,
         params: SimParams,
         seed: Int,
-        setup: (HighwayEngine, TraceSimulator) -> Unit = { _, _ -> }
+        setup: (HighwayEngine, TraceSimulator) -> Unit = { _, _ -> },
+        perTick: (HighwayEngine, TraceSimulator, Double) -> Unit = { _, _, _ -> }
     ): DriveMetrics {
         val route = southboundRoute(500.0)
         val path = SimPath.fromRoute(route, graph)
@@ -113,6 +114,7 @@ class EngineSimulationTest {
             val snap = engine.onTick(sim.t, sim.wallMs())
             ticks++
             val tSec = (sim.t - t0) * 1e-9
+            perTick(engine, sim, tSec)
             val trueS = sim.s
             for ((id, d) in facDist) if (arrival[id] == null && trueS >= d) arrival[id] = tSec
             val tunnel = sim.inTunnel
@@ -236,7 +238,7 @@ class EngineSimulationTest {
         val jam = JamZone(11_500.0, 14_500.0, 20.0)
         val params = SimParams(driverRatio = 1.08, initialSpeedKmh = 95.0, jams = listOf(jam))
         val plain = runSouthboundDrive("（比較）同じ渋滞・交通情報なし", params, seed = 7)
-        val m = runSouthboundDrive("渋滞あり（11.5〜14.5km を 20km/h）・交通情報あり（出発時に取得）", params, seed = 7) { e, sim ->
+        val m = runSouthboundDrive("渋滞あり（11.5〜14.5km を 20km/h）・交通情報あり（出発時に取得）", params, seed = 7, setup = { e, sim ->
             // 経路上 500m 地点から走るので、道路上の位置は +500m
             val pts = (0..60).map { net.sbPoint(500.0 + jam.start + (jam.end - jam.start) * it / 60.0) }
             val cover = (0..300).map { net.sbPoint(500.0 + 200.0 * it) }
@@ -250,13 +252,50 @@ class EngineSimulationTest {
                     cover.map { it.lat }.toDoubleArray(), cover.map { it.lon }.toDoubleArray()
                 )
             )
-        }
+        })
         assertTrue(m.matchRate > 0.995)
         val far = m.etaMae["15-40km"]!![0]
         val farPlain = plain.etaMae["15-40km"]!![0]
         println("交通情報の効果（15-40km 先の到着予測誤差）: %.0f 秒 → %.0f 秒".format(farPlain, far))
         assertTrue("交通情報で遠方の到着予測が改善", far < 0.5 * farPlain)
         assertTrue(m.etaTotal[0] < 0.6 * plain.etaTotal[0])
+    }
+
+    @Test
+    fun trafficRefetch_detectsGrowingJamInEngine() {
+        // 交通情報を 2 回取得（2 回目は渋滞の最後尾が 1km 手前に伸びている）→ エンジンが「伸びている」と判定する
+        val jam = JamZone(11_500.0, 14_500.0, 20.0)
+        val params = SimParams(driverRatio = 1.08, initialSpeedKmh = 95.0, jams = listOf(jam))
+        fun data(tail: Double, sim: TraceSimulator): com.example.highwaymode.core.traffic.TrafficData {
+            val pts = (0..60).map { net.sbPoint(500.0 + tail + (jam.end - tail) * it / 60.0) }
+            val cover = (0..300).map { net.sbPoint(500.0 + 200.0 * it) }
+            val item = com.example.highwaymode.core.traffic.TrafficItem(
+                pts.map { it.lat }.toDoubleArray(), pts.map { it.lon }.toDoubleArray(),
+                com.example.highwaymode.core.traffic.TrafficKind.JAM, 0.2, speedKmh = 20.0, description = "渋滞"
+            )
+            return com.example.highwaymode.core.traffic.TrafficData(
+                "HERE", sim.wallMs(), listOf(item), true,
+                cover.map { it.lat }.toDoubleArray(), cover.map { it.lon }.toDoubleArray()
+            )
+        }
+        var fetched = 0
+        var trendSeen = false
+        var jamDistAfter: Double? = null
+        runSouthboundDrive("渋滞情報を 2 回取得（最後尾が伸びている）", params, seed = 7, setup = { _, _ -> }) { e, sim, t ->
+            if (fetched == 0 && t >= 20.0) {
+                e.setTraffic(data(jam.start, sim))
+                fetched = 1
+            } else if (fetched == 1 && t >= 200.0) {
+                e.setTraffic(data(jam.start - 1000.0, sim))
+                fetched = 2
+            } else if (fetched == 2 && t < 260.0) {
+                val tr = e.snapshot.traffic
+                if (tr?.nextJamTrend == 1) trendSeen = true
+                if (jamDistAfter == null && tr?.nextJamDistanceM != null) jamDistAfter = tr.nextJamDistanceM
+            }
+        }
+        println("2 回目の取得後: 伸びている=$trendSeen 次の渋滞まで=${jamDistAfter?.let { "%.0fm".format(it) }}")
+        assertTrue("2 回の取得結果から渋滞が伸びていると判定", trendSeen)
     }
 
     @Test

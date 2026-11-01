@@ -97,7 +97,8 @@ class AlertManager(context: Context) : TextToSpeech.OnInitListener {
             if (odometer + jd > announcedJamEnd + 500) {
                 announcedJamEnd = odometer + jd + jl
                 val delay = tr.nextJamDelaySec?.let { if (it >= 60) "、およそ${(it / 60).roundToInt()}分の遅れです" else "" } ?: ""
-                speak("この先${km(jd)}、渋滞${km(jl)}$delay", "jam")
+                val trend = if (tr.nextJamTrend == 1) "。渋滞は伸びています" else ""
+                speak("この先${km(jd)}、渋滞${km(jl)}$delay$trend", "jam")
                 return
             }
         }

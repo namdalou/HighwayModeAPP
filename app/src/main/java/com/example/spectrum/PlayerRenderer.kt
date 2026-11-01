@@ -9,6 +9,7 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
+import android.graphics.Typeface
 import android.os.SystemClock
 import android.text.TextPaint
 import android.text.TextUtils
@@ -25,6 +26,7 @@ import kotlin.math.sin
 class PlayerRenderer {
     companion object {
         private val ICON = Color.rgb(200, 225, 240)
+        private val BOLD: Typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
 
         /** スペアナのグラデーション: 一番下の色 / 一番上の色 */
         private val BAR_BOTTOM = Color.rgb(0, 90, 200)     // 深い青
@@ -122,7 +124,8 @@ class PlayerRenderer {
         // ---- スペアナの見え方 ----
         val segUnit: Float,       // 1 段の高さ(隙間込み)。小さいほど段が細かく、動きが滑らか
         val gain: Float,          // 表示上の伸び。大きいほどバーが高く上がる
-        val noiseFloor: Float     // これ以下の小さな値は 0 とみなす(下の段のちらつき防止)
+        val noiseFloor: Float,    // これ以下の小さな値は 0 とみなす(下の段のちらつき防止)
+        val boldTitle: Boolean = false
     )
 
     /**
@@ -173,6 +176,41 @@ class PlayerRenderer {
         )
     }
     private var portraitCache: Layout? = null
+
+    /**
+     * 2 画面（車の画面・スマホ横画面の左側）用の縦レイアウト: 運転中でも読めるよう、曲名・アーティスト・
+     * ボタンを大きくする（アルバム名とアイコンは省く）。幅 240 固定、高さは画面比率に合わせる（300〜560）。
+     */
+    private fun largePortraitLayout(vh: Float): Layout {
+        val ctrlCy = vh - 50f                       // 操作ボタンの中心
+        val playH = 54f
+        val artTop = 82f
+        val artSize = min(150f, ctrlCy - playH / 2 - 12f - artTop).coerceAtLeast(80f)
+        val artL = 120f - artSize / 2
+        val seekY = vh - 13f
+        return Layout(
+            vw = 240f, vh = vh,
+            art = RectF(artL, artTop, artL + artSize, artTop + artSize),
+            spec = RectF(10f, artTop + artSize * 0.5f, 230f, ctrlCy - playH / 2 - 6f),
+            specOnly = RectF(10f, 40f, 230f, ctrlCy - playH / 2 - 6f),
+            textX = 12f, textRight = 228f, iconX = -1f,
+            titleY = 34f, albumY = -1f, artistY = 64f,
+            titleSize = 23f, subSize = 18f,
+            prev = RectF(24f, ctrlCy - 23f, 70f, ctrlCy + 23f),
+            play = RectF(76f, ctrlCy - playH / 2, 164f, ctrlCy + playH / 2),
+            next = RectF(170f, ctrlCy - 23f, 216f, ctrlCy + 23f),
+            seekX0 = 56f, seekX1 = 184f, seekY = seekY,
+            timeY = seekY + 4f, timeSize = 11f,
+            seekTouch = RectF(50f, seekY - 13f, 190f, vh),
+            hintY = seekY + 4f,
+            segUnit = 5.5f, gain = 1.0f, noiseFloor = 0.03f,
+            boldTitle = true
+        )
+    }
+    private var largeCache: Layout? = null
+
+    /** 2 画面用の大きい表示にする（縦長の区画のとき） */
+    var large = false
 
     private var lay = landscape
 
@@ -246,7 +284,11 @@ class PlayerRenderer {
         c.drawRect(l, t, l + w, t + h, bg)
         updateAccent()
 
-        lay = if (h > w) {
+        lay = if (h > w && large) {
+            val vh = (240f * h / w).coerceIn(300f, 560f)
+            val lc = largeCache
+            if (lc != null && lc.vh == vh) lc else largePortraitLayout(vh).also { largeCache = it }
+        } else if (h > w) {
             val vh = (240f * h / w).coerceIn(380f, 560f)
             val pc = portraitCache
             if (pc != null && pc.vh == vh) pc else portraitLayout(vh).also { portraitCache = it }
@@ -378,29 +420,33 @@ class PlayerRenderer {
 
     private fun drawTexts(c: Canvas) {
         val ix = lay.iconX
-        val cx = ix + 7f
-        val k = lay.subSize / 13f        // アイコンの大きさを文字に合わせる
+        if (ix >= 0f) {
+            val cx = ix + 7f
+            val k = lay.subSize / 13f        // アイコンの大きさを文字に合わせる
 
-        // ♪ / ディスク / 人 のアイコン
-        text.color = ICON
-        text.textSize = lay.titleSize + 1f
-        c.drawText("♪", ix, lay.titleY, text)
+            // ♪ / ディスク / 人 のアイコン
+            text.color = ICON
+            text.textSize = lay.titleSize + 1f
+            c.drawText("♪", ix, lay.titleY, text)
 
-        shape.color = ICON
-        shape.style = Paint.Style.STROKE
-        shape.strokeWidth = 1.6f
-        val dy = lay.albumY - 5f * k
-        c.drawCircle(cx, dy, 7f * k, shape)
-        shape.style = Paint.Style.FILL
-        c.drawCircle(cx, dy, 2f * k, shape)
-        c.drawCircle(cx, lay.artistY - 10f * k, 3.2f * k, shape)
-        c.drawArc(
-            RectF(cx - 6.5f * k, lay.artistY - 6f * k, cx + 6.5f * k, lay.artistY + 8f * k),
-            180f, 180f, true, shape
-        )
+            shape.color = ICON
+            shape.style = Paint.Style.STROKE
+            shape.strokeWidth = 1.6f
+            val dy = lay.albumY - 5f * k
+            c.drawCircle(cx, dy, 7f * k, shape)
+            shape.style = Paint.Style.FILL
+            c.drawCircle(cx, dy, 2f * k, shape)
+            c.drawCircle(cx, lay.artistY - 10f * k, 3.2f * k, shape)
+            c.drawArc(
+                RectF(cx - 6.5f * k, lay.artistY - 6f * k, cx + 6.5f * k, lay.artistY + 8f * k),
+                180f, 180f, true, shape
+            )
+        }
 
+        text.typeface = if (lay.boldTitle) BOLD else null
         marqueeText(c, marquees[0], NowPlaying.title, lay.titleY, lay.titleSize, Color.WHITE)
-        marqueeText(c, marquees[1], NowPlaying.album, lay.albumY, lay.subSize, Color.rgb(215, 230, 240))
+        text.typeface = null
+        if (lay.albumY >= 0f) marqueeText(c, marquees[1], NowPlaying.album, lay.albumY, lay.subSize, Color.rgb(215, 230, 240))
         marqueeText(c, marquees[2], NowPlaying.artist, lay.artistY, lay.subSize, Color.rgb(215, 230, 240))
     }
 

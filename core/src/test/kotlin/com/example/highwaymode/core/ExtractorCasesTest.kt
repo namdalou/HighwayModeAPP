@@ -156,7 +156,8 @@ class ExtractorCasesTest {
                 FacilityType.SA to "中央SA",
                 FacilityType.CAMERA to "速度取締機",
                 FacilityType.CAMERA to "速度取締機",
-                FacilityType.JCT to "支線道路JCT"
+                // 名称の無い JCT は合流先の道路名で「○○方面」
+                FacilityType.JCT to "支線道路方面"
             ),
             list
         )

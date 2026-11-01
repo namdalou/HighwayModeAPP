@@ -109,6 +109,18 @@ class ParsingTest {
         check("東京インターチェンジ", "東京", FacilityType.IC)
         check("中央", "中央", null)
         check("新空港IC(ETC専用)", "新空港", FacilityType.IC, etc = true)
+        // v2.1: 表記ゆれ・IC 名＋向き・道路名の出口
+        check("新居弁天I.C", "新居弁天", FacilityType.IC)
+        check("篠原Ｉ．Ｃ．", "篠原", FacilityType.IC)
+        check("豊川IC入口", "豊川", FacilityType.IC)
+        check("真岡I.C北ランプ", "真岡", FacilityType.IC, dir = "北")
+        check("浜松西IC第二ランプ", "浜松西", FacilityType.IC, dir = "第二")
+        check("大和スマートIC北", "大和", FacilityType.SIC, etc = true, dir = "北")
+        check("幸田須美", "幸田須美", null)
+        val road = FacilityNameParser.parse("国道2号出口")
+        assertEquals("国道2号", road.base)
+        assertTrue("道路名＋出口は行き先の名前", road.entryWordOnly)
+        assertTrue(!FacilityNameParser.parse("豊川IC入口").entryWordOnly)
     }
 
     @Test

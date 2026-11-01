@@ -4,6 +4,7 @@ import androidx.car.app.CarContext
 import androidx.car.app.CarToast
 import androidx.car.app.Screen
 import androidx.car.app.model.Action
+import androidx.car.app.model.ActionStrip
 import androidx.car.app.model.ItemList
 import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.Row
@@ -98,6 +99,14 @@ class CarMenuScreen(carContext: CarContext) : Screen(carContext) {
             .setTitle("メニュー")
             .setHeaderAction(Action.BACK)
             .setSingleList(list.build())
+            // スマホでアプリを開かずに使えているかの確認（GPS・通信・常駐・曲情報）
+            .setActionStrip(
+                ActionStrip.Builder()
+                    .addAction(Action.Builder().setTitle("動作状態").setOnClickListener {
+                        screenManager.push(RunStatusScreen(carContext))
+                    }.build())
+                    .build()
+            )
             .build()
     }
 }

@@ -80,7 +80,11 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     private val main = Handler(Looper.getMainLooper())
 
     // ---- 描画部品
-    private val music = PlayerRenderer().apply { onArtTap = { openPlayingAppOnCar() } }
+    // 2 画面の左側は、運転中でも読めるよう曲名・ボタンを大きくした表示
+    private val music = PlayerRenderer().apply {
+        onArtTap = { openPlayingAppOnCar() }
+        large = true
+    }
     private val panel = PanelRenderer(1f).apply {
         showButtons = false
         attribution = true
@@ -215,7 +219,11 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         Action.Builder()
             .setTitle(title)
             .setIcon(CarIcon.Builder(IconCompat.createWithResource(carContext, icon)).build())
-            .setOnClickListener { onClick() }
+            .setOnClickListener {
+                // 車の画面の操作のたびに、スマホ側の常駐（GPS・通信）が動いているか確かめる
+                CarRuntime.ensure(carContext)
+                onClick()
+            }
             .build()
 
     /** 画面構成が変わった（自動切替・ボタン操作） */
@@ -276,6 +284,7 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     override fun onStableAreaChanged(stableArea: Rect) {}
 
     override fun onClick(x: Float, y: Float) {
+        CarRuntime.ensure(carContext)
         val f = lastFrame ?: return
         val b = f.bar
         if (b != null && b.contains(x, y)) {
@@ -297,8 +306,22 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         }
         val h = f.highway
         if (h != null && h.contains(x, y)) {
-            val fac = panel.hitAt(x, y)?.facility ?: return
-            screenManager.push(FacilityDetailScreen(carContext, fac))
+            val hit = panel.hitAt(x, y) ?: return
+            val fac = hit.facility
+            if (fac != null) {
+                screenManager.push(FacilityDetailScreen(carContext, fac))
+                return
+            }
+            // ［︿ この先］［﹀ 手前へ］: さらに先の施設・渋滞を見る
+            val moved = when (hit.button) {
+                PanelRenderer.BUTTON_PAGE_NEXT -> panel.pageNext()
+                PanelRenderer.BUTTON_PAGE_PREV -> panel.pagePrev()
+                else -> false
+            }
+            if (moved) {
+                panelInvalid = true
+                requestFrame()
+            }
         }
     }
 

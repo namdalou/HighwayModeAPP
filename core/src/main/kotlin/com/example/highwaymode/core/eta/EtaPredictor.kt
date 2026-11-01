@@ -5,6 +5,8 @@ import com.example.highwaymode.core.geo.Geo
 import com.example.highwaymode.core.geo.LocalFrame
 import com.example.highwaymode.core.graph.RoadGraph
 import com.example.highwaymode.core.route.RouteAhead
+import com.example.highwaymode.core.traffic.ExtTraffic
+import com.example.highwaymode.core.traffic.JamModel
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.ceil
@@ -68,6 +70,19 @@ class EtaResult(
         return cumTime[lo] + f * (cumTime[hi] - cumTime[lo])
     }
 
+    /** 区間 [d0, d1] の、自由流に比べた遅れ [s] */
+    fun delayBetween(d0: Double, d1: Double): Double {
+        if (d1 <= d0 || bound.size < 2) return 0.0
+        var d = 0.0
+        for (k in 0 until vPred.size) {
+            val a = max(bound[k], d0)
+            val b = min(bound[k + 1], d1)
+            if (b <= a) continue
+            d += (b - a) / max(vPred[k], 0.5) - (b - a) / max(vFree[k], 0.5)
+        }
+        return d
+    }
+
     /** 区間 [d0, d1] の「自由流所要時間 / 予測所要時間」（1=順調, 小さいほど渋滞） */
     fun flowRatio(d0: Double, d1: Double): Double {
         if (d1 <= d0 || bound.size < 2) return 1.0
@@ -94,7 +109,10 @@ class EtaResult(
  *    c_x   = 直近 2 分の「自由流所要時間 / 実所要時間」
  *            渋滞中（c_now<0.85 かつ c_x<0.9）: L_x = 1.5km + 0.5×既に渋滞を走った距離（〜12km）
  *            順調時: 渋滞サンプルを除いた直近 5 分の速度比（0.9〜1.15）, L_x = 15km（走り方の持続）
- * 3) 加速度制約（加速 0.6, 減速 0.9 m/s²）で前進・後退パスをかけた速度曲線を台形積分。
+ * 3) 外部の交通情報（渋滞の速さ・遅れ時間）は「1m あたりの所要時間」で扱い、取得元の遅れ時間を保つ。
+ *    渋滞の最後尾が伸びている／縮んでいる場合は、自分が追いつく時刻の最後尾の位置から渋滞が始まるとみなす。
+ *    渋滞の中では、近く（〜2km）は自分の実際の流れ、その先は交通情報の流れと渋滞の先頭の位置を使う。
+ * 4) 加速度制約（加速 0.8, 減速 0.9 m/s²）で前進・後退パスをかけた速度曲線を台形積分。
  */
 class EtaPredictor(private val driver: DriverProfile, val params: Params = Params()) {
 
@@ -119,6 +137,12 @@ class EtaPredictor(private val driver: DriverProfile, val params: Params = Param
         val jamNowThreshold: Double = 0.85,
         /** 順調時に直近の走り方が持続する距離 */
         val mediumTermLength: Double = 15000.0,
+        /** 渋滞の中で、自分の実際の流れ（直近 2 分）を交通情報より優先する距離 */
+        val ownJamBlendLength: Double = 2000.0,
+        /** 渋滞の中をこの距離走ったら、自分の流れを十分信頼する */
+        val ownJamTrustDistance: Double = 1000.0,
+        /** 渋滞中に「現在の速さ」を効かせる距離（停止・発進の繰り返しで揺れるため短く） */
+        val shortTermJamLength: Double = 300.0,
         val maxKmh: Double = 135.0,
         val minSpeed: Double = 0.8
     )
@@ -213,16 +237,14 @@ class EtaPredictor(private val driver: DriverProfile, val params: Params = Param
     /**
      * @param fromDist 現在地のルート始点からの道のり [m]
      * @param vNow 現在の車速 [m/s]
-     * @param ext 外部の交通情報による速度比（プロファイルと同じセル。NaN=情報なし）
-     * @param extWeight 外部情報の信頼度（取得からの経過時間で 1→0）
+     * @param ext 外部の交通情報（プロファイルと同じセル。渋滞の伸び縮みの推定つき）。null = 情報なし
      */
     fun predict(
         profile: RouteProfile,
         fromDist: Double,
         vNow: Double,
         traffic: TrafficState,
-        ext: DoubleArray? = null,
-        extWeight: Double = 1.0
+        ext: ExtTraffic? = null
     ): EtaResult {
         val cell = profile.cell
         val k0 = min(profile.cells - 1, max(0, floor(fromDist / cell).toInt()))
@@ -231,70 +253,228 @@ class EtaPredictor(private val driver: DriverProfile, val params: Params = Param
         bound[0] = fromDist
         for (i in 1..n) bound[i] = max(fromDist, profile.cellEnd(k0 + i - 1))
         val vFree = DoubleArray(n) { freeSpeed(profile, k0 + it) }
+        val mid = DoubleArray(n) { 0.5 * (bound[it] + bound[it + 1]) }
 
         val vFree0 = max(vFree[0], 1.0)
         val cNow = (vNow / vFree0).coerceIn(0.0, 1.6)
-        // 中期の流れ c_x と、その持続距離 L_x
-        var cX = 1.0
-        var lX = 0.0
+        // ---- 自車の流れ（直近の走行から）
         var jamMode = false
+        var cJam = 1.0      // 渋滞中の速度比（直近 2 分）
+        var lJam = 0.0      // 交通情報が無いとき、渋滞が続くとみなす長さ
         if (traffic.valid) {
             val cRec = traffic.ratio
             // 渋滞を抜けて加速中（速度比 0.4 以上で 0.3m/s² 超の加速が続く）なら渋滞は解消とみなす
             val recovering = cNow > 0.4 && traffic.accelTrend > 0.3
             if (cNow < params.jamNowThreshold && cRec < params.congestionThreshold && !recovering) {
                 jamMode = true
-                // 渋滞中: 直近 2 分の流れが「既に渋滞を走った距離に応じた長さ」続くとみなす
-                cX = cRec.coerceIn(0.03, 1.0)
-                lX = (params.congestionMinLength + params.congestionGrowth * traffic.congestedDistance)
+                cJam = cRec.coerceIn(0.03, 1.0)
+                lJam = (params.congestionMinLength + params.congestionGrowth * traffic.congestedDistance)
                     .coerceIn(params.congestionMinLength, params.congestionMaxLength)
-            } else if (traffic.freeValid) {
-                // 順調: 直近の（渋滞を除いた）走り方の学習値からのずれがしばらく続くとみなす
-                cX = traffic.freeRatio.coerceIn(0.9, 1.15)
-                lX = params.mediumTermLength
             }
         }
-        // 外部の交通情報（渋滞・速度）: 情報のある区間はそれを優先し、自車の渋滞持続の推定は情報の無い区間だけに使う
-        val w = extWeight.coerceIn(0.0, 1.0)
-        val useExt = ext != null && w > 0.05 && (0 until n).any { !ext.getOrElse(k0 + it) { Double.NaN }.isNaN() }
-        fun extAt(i: Int): Double {
-            val v = ext?.getOrElse(k0 + i) { Double.NaN } ?: Double.NaN
-            return if (v.isNaN()) v else 1.0 + (v.coerceIn(0.02, 1.2) - 1.0) * w
+        // 順調に走れる区間の速さ（運転のくせ・その日の流れのずれを、先へ行くほど薄めて反映）
+        val cFree = if (traffic.valid && traffic.freeValid) traffic.freeRatio.coerceIn(0.9, 1.15) else 1.0
+        val vBase = DoubleArray(n) { i -> vFree[i] * (1.0 + (cFree - 1.0) * exp(-(mid[i] - fromDist) / params.mediumTermLength)) }
+
+        // ---- 外部の交通情報（取得からの経過で薄める）と、渋滞の伸び縮み
+        val w = (ext?.weight ?: 0.0).coerceIn(0.0, 1.0)
+        val useExt = ext != null && w > 0.05
+        val absP = DoubleArray(n) { Double.NaN }
+        val extraP = DoubleArray(n) { Double.NaN }
+        // 自分がいま中にいる（またはすぐ先から始まる）交通情報の渋滞の先頭
+        var currentJamHead = Double.NaN
+        if (ext != null && useExt) {
+            for (i in 0 until n) {
+                absP[i] = ext.absPace.getOrElse(k0 + i) { Double.NaN }
+                extraP[i] = ext.extraPace.getOrElse(k0 + i) { Double.NaN }
+            }
+            currentJamHead = applyJamDynamics(ext, fromDist, n, bound, mid, vBase, absP, extraP)
         }
-        fun expected(i: Int, s: Double): Double {
-            val base = if (lX > 0) 1.0 + (cX - 1.0) * exp(-s / lX) else 1.0
-            if (!useExt) return base
-            val e = extAt(i)
-            return if (jamMode) (if (e.isNaN()) base else e) else base * (if (e.isNaN()) 1.0 else e)
-        }
-        val g0 = if (useExt) expected(0, 0.0) else cX
+
+        // ---- セルごとの速さ（1m あたりの所要時間で考える）
+        val pOwn = 1.0 / max(cJam * vFree0, params.minSpeed)
+        // 自分の流れ（直近 2 分の平均）は、渋滞に入った直後は渋滞前の走りを含むので、渋滞の中を 1km 走るまでは控えめに
+        val ownWeight = if (jamMode) (traffic.congestedDistance / params.ownJamTrustDistance).coerceIn(0.0, 1.0) else 0.0
+        val inProviderJam = jamMode && !currentJamHead.isNaN()
         val target = DoubleArray(n)
         for (i in 0 until n) {
-            val s = 0.5 * (bound[i] + bound[i + 1]) - fromDist
-            val factor = expected(i, s) + (cNow - g0) * exp(-s / params.shortTermLength)
-            target[i] = max(params.minSpeed, vFree[i] * factor.coerceIn(0.0, 1.6))
+            val s = mid[i] - fromDist
+            val vb = vBase[i]
+            val pProv = if (useExt) pace(vb, absP[i], extraP[i], w) else Double.NaN
+            val p = when {
+                !jamMode -> if (pProv.isNaN()) 1.0 / vb else pProv
+                inProviderJam -> if (mid[i] < currentJamHead) {
+                    // 渋滞の中: 近くは自分の実際の流れ、先は交通情報の流れ
+                    val a = ownWeight * exp(-s / params.ownJamBlendLength)
+                    a * pOwn + (1.0 - a) * (if (pProv.isNaN()) pOwn else pProv)
+                } else {
+                    if (pProv.isNaN()) 1.0 / vb else pProv
+                }
+                else -> {
+                    // 交通情報にいまの渋滞が無い（情報が古い・範囲外）: 自分の流れが既に渋滞を走った距離に応じて薄れていく
+                    // （いまは直近 2 分の流れ、先へ行くほど順調に走れる速さへ）
+                    val e = exp(-s / lJam)
+                    val own = 1.0 / max(vFree[i] * cJam * e + vb * (1.0 - e), params.minSpeed)
+                    if (pProv.isNaN()) own else max(own, pProv)
+                }
+            }
+            target[i] = 1.0 / p
+        }
+        // 現在の速さからのずれは、すぐ先だけに効かせる
+        // （交通情報の渋滞の中では、直近 2 分の自分の流れを使っているので弱めに・短く）
+        val shortL = if (inProviderJam) params.shortTermJamLength else params.shortTermLength
+        val dv = (vNow - target[0]) * (if (inProviderJam) 0.5 else 1.0)
+        for (i in 0 until n) {
+            val s = mid[i] - fromDist
+            target[i] = (target[i] + dv * exp(-s / shortL)).coerceIn(params.minSpeed, max(params.minSpeed, vFree[i] * 1.6))
         }
 
         // 加速度制約: 境界速度 vb[0..n]
-        val vb = DoubleArray(n + 1)
-        vb[0] = max(0.0, vNow)
+        val vbd = DoubleArray(n + 1)
+        vbd[0] = max(0.0, vNow)
         for (i in 0 until n) {
             val ds = bound[i + 1] - bound[i]
-            vb[i + 1] = min(target[i], sqrt(vb[i] * vb[i] + 2 * params.accel * ds))
+            vbd[i + 1] = min(target[i], sqrt(vbd[i] * vbd[i] + 2 * params.accel * ds))
         }
         for (i in n - 1 downTo 1) {
             val ds = bound[i + 1] - bound[i]
-            vb[i] = min(vb[i], sqrt(vb[i + 1] * vb[i + 1] + 2 * params.decel * ds))
+            vbd[i] = min(vbd[i], sqrt(vbd[i + 1] * vbd[i + 1] + 2 * params.decel * ds))
         }
         val cum = DoubleArray(n + 1)
         val vPred = DoubleArray(n)
         for (i in 0 until n) {
             val ds = bound[i + 1] - bound[i]
-            val avg = max(params.minSpeed, min(0.5 * (vb[i] + vb[i + 1]), max(target[i], vb[i])))
+            val avg = max(params.minSpeed, min(0.5 * (vbd[i] + vbd[i + 1]), max(target[i], vbd[i])))
             vPred[i] = avg
             cum[i + 1] = cum[i] + if (ds > 0) ds / avg else 0.0
         }
         return EtaResult(fromDist, bound, cum, vPred, vFree)
+    }
+
+    /**
+     * 1m あたりの所要時間 [s/m]。交通情報が無ければ NaN。
+     * 渋滞の実際の速さがわかればそれを、遅れ時間がわかれば「自由流 + 遅れ」を使う（w = 情報の信頼度）。
+     */
+    private fun pace(vBase: Double, absPace: Double, extraPace: Double, w: Double): Double {
+        val free = 1.0 / max(vBase, params.minSpeed)
+        val prov = when {
+            !absPace.isNaN() -> max(free, absPace)
+            !extraPace.isNaN() -> free + max(0.0, extraPace)
+            else -> return Double.NaN
+        }
+        return free + (prov - free) * w
+    }
+
+    /**
+     * 渋滞の伸び縮みを反映する（absP / extraP を書き換える）。
+     * 自分が最後尾に追いつく時刻を、渋滞が無いとした所要時間から求め、その時刻の最後尾の位置から渋滞が始まるとみなす。
+     *  - 伸びている: 最後尾より手前の区間も、最後尾付近と同じ流れにする
+     *  - 縮んでいる: 縮んだ区間は順調にする。着く前に解消するなら渋滞全体を順調にする
+     * @return 自分がいま中にいる（または 2.5km 以内に始まる）渋滞の先頭。無ければ NaN
+     */
+    private fun applyJamDynamics(
+        ext: ExtTraffic, fromDist: Double, n: Int, bound: DoubleArray, mid: DoubleArray,
+        vBase: DoubleArray, absP: DoubleArray, extraP: DoubleArray
+    ): Double {
+        if (ext.jams.isEmpty() || n == 0) return Double.NaN
+        val jams = ext.jams.sortedBy { it.tail }
+        // まだ伸び縮みを反映していない渋滞のセル（追いつく時刻の計算では、その渋滞は無いものとする）
+        val pending = BooleanArray(n)
+        for (j in jams) for (i in 0 until n) if (mid[i] >= j.tail && mid[i] < j.head) pending[i] = true
+        val t0 = DoubleArray(n + 1)
+        fun rebuildTimes() {
+            for (i in 0 until n) {
+                val free = 1.0 / max(vBase[i], params.minSpeed)
+                val p = if (pending[i]) free else pace(vBase[i], absP[i], extraP[i], 1.0).let { if (it.isNaN()) free else it }
+                t0[i + 1] = t0[i] + (bound[i + 1] - bound[i]) * p
+            }
+        }
+        rebuildTimes()
+        fun timeAt(x: Double): Double {
+            if (x <= bound[0]) return 0.0
+            if (x >= bound[n]) return t0[n] + (x - bound[n]) / 25.0
+            var lo = 0
+            var hi = n
+            while (hi - lo > 1) {
+                val m = (lo + hi) ushr 1
+                if (bound[m] <= x) lo = m else hi = m
+            }
+            val f = (x - bound[lo]) / (bound[hi] - bound[lo]).coerceAtLeast(1e-9)
+            return t0[lo] + f * (t0[hi] - t0[lo])
+        }
+        val horizon = (JamModel.MAX_EXTRAPOLATION_SEC - ext.ageSec).coerceAtLeast(0.0)
+        var current = Double.NaN
+        for (j in jams) {
+            // この渋滞を処理したら、以後の渋滞の「追いつく時刻」にはこの渋滞の遅れを含める
+            val doneAfter = {
+                for (i in 0 until n) if (mid[i] >= j.tail - JamModel.maxGrowth(j.length) && mid[i] < j.head) pending[i] = false
+                rebuildTimes()
+            }
+            if (j.head <= fromDist) {
+                doneAfter()
+                continue
+            }
+            val tailNow = j.tailAfter(ext.ageSec)
+            if (tailNow >= j.head - 100.0) {
+                // 取得からいままでに解消した
+                for (i in 0 until n) if (mid[i] >= j.tail && mid[i] < j.head) {
+                    absP[i] = Double.NaN
+                    extraP[i] = 0.0
+                }
+                doneAfter()
+                continue
+            }
+            var meet = tailNow
+            if (!j.tailSpeed.isNaN() && abs(j.tailSpeed) > 0.05 && tailNow > fromDist) {
+                val minTail = j.tail - JamModel.maxGrowth(j.length)
+                repeat(5) {
+                    val t = min(timeAt(meet), horizon)
+                    meet = (tailNow + j.tailSpeed * t).coerceIn(max(minTail, fromDist), j.head - 100.0)
+                }
+            }
+            if (meet >= j.head - 100.0) {
+                // 着く前に解消する
+                for (i in 0 until n) if (mid[i] >= j.tail && mid[i] < j.head) {
+                    absP[i] = Double.NaN
+                    extraP[i] = 0.0
+                }
+                doneAfter()
+                continue
+            }
+            if (meet < j.tail - 1.0) {
+                // 伸びた分: 最後尾付近の流れを手前へ延ばす
+                var a = Double.NaN
+                var e = Double.NaN
+                for (i in 0 until n) {
+                    if (mid[i] < j.tail) continue
+                    if (mid[i] >= j.head) break
+                    if (!absP[i].isNaN() || (!extraP[i].isNaN() && extraP[i] > 0.0)) {
+                        a = absP[i]
+                        e = extraP[i]
+                        break
+                    }
+                }
+                if (!a.isNaN() || !e.isNaN()) {
+                    for (i in 0 until n) {
+                        if (mid[i] < meet) continue
+                        if (mid[i] >= j.tail) break
+                        if (!a.isNaN()) absP[i] = if (absP[i].isNaN()) a else max(absP[i], a)
+                        if (!e.isNaN()) extraP[i] = if (extraP[i].isNaN()) e else max(extraP[i], e)
+                    }
+                }
+            } else if (meet > j.tail + 1.0) {
+                // 縮んだ分は順調
+                for (i in 0 until n) {
+                    if (mid[i] < j.tail) continue
+                    if (mid[i] >= meet) break
+                    absP[i] = Double.NaN
+                    extraP[i] = 0.0
+                }
+            }
+            if (current.isNaN() && meet <= fromDist + 2500.0) current = j.head
+            doneAfter()
+        }
+        return current
     }
 }
 

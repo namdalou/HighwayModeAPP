@@ -129,6 +129,10 @@ class MediaListenerService : NotificationListenerService() {
         }
         if (token != null) {
             MediaTracker.putNotificationController(sbn.packageName, token)
+            // 曲情報に画像を入れず、再生中の通知にだけ出すアプリ用
+            if (sbn.packageName == MediaTracker.currentPackage) {
+                MediaTracker.onPlayingNotification(sbn.packageName, largeIcon(n))
+            }
             return
         }
         // 通知の文字を使うのは、音楽アプリの再生情報(セッション)が無いときだけ
@@ -158,6 +162,28 @@ class MediaListenerService : NotificationListenerService() {
             .filter { !it.notification?.extras?.getCharSequence(Notification.EXTRA_TITLE).isNullOrBlank() }
             .maxByOrNull { it.postTime } ?: return
         applyNotification(sbn)
+    }
+
+    /**
+     * 同じアプリの再生中の通知(メディアの通知を優先)の大きい画像。ジャケットの代わりに使う。
+     * 無ければ null。
+     */
+    fun artFromNotification(pkg: String): Bitmap? {
+        val list = try { activeNotifications } catch (_: Exception) { null } ?: return null
+        @Suppress("DEPRECATION")
+        val mine = list.filter { it.packageName == pkg }
+            .sortedWith(compareByDescending<StatusBarNotification> {
+                it.notification?.extras?.getParcelable<MediaSession.Token>(Notification.EXTRA_MEDIA_SESSION) != null
+            }.thenByDescending { it.postTime })
+        for (sbn in mine) {
+            val n = sbn.notification ?: continue
+            // メディアの通知でなければ使わない(ダウンロードの進捗などのアイコンを避ける)
+            @Suppress("DEPRECATION")
+            val media = n.extras?.getParcelable<MediaSession.Token>(Notification.EXTRA_MEDIA_SESSION) != null
+            if (!media) continue
+            largeIcon(n)?.let { return it }
+        }
+        return null
     }
 
     /** 取得元に一致する最新の通知から曲情報を読み直す(診断画面からも呼ばれる) */

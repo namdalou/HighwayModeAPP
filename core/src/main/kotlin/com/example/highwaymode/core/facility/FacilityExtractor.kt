@@ -51,10 +51,30 @@ object FacilityExtractor {
         val etcReason: String?,
         val destination: String?,
         val otherRoadName: String?,
-        val linkName: String?
+        val linkName: String?,
+        /** ランプの先の道路が高速道路・有料道路・自動車専用道路（JCT とみなせる） */
+        val otherRoadHighway: Boolean = false
     )
 
-    private class NamedJunction(val lat: Double, val lon: Double, val base: String, val type: FacilityType)
+    /** 名称つき分岐。type が null は「豊川為当」のように種別の付かない名前（バイパスに多い） */
+    private class NamedJunction(val lat: Double, val lon: Double, val base: String, val type: FacilityType?)
+
+    /** 名称の無い分岐に付ける名前 */
+    private class Fallback(val base: String, val type: FacilityType?, val destination: Boolean)
+
+    /** 道路名・方面のような名前（施設名としては「○○方面」と表示する） */
+    private val ROAD_LIKE = Regex("^(国道|県道|府道|都道|道道|市道|E\\d)|号$|号線$|(自動車道|高速道路|有料道路|道路|バイパス|街道|環状線|線)$")
+
+    /** 施設名にならない一般語 */
+    private val GENERIC = setOf("出口", "入口", "出入口", "ランプ", "IC", "JCT", "SA", "PA", "本線")
+
+    fun looksLikeRoad(name: String): Boolean = ROAD_LIKE.containsMatchIn(name)
+
+    /** 同じ路線か（路線番号が共通、または名称が同じ）。前方経路の継続・反対車線の判定に使う */
+    fun sameRoute(a: RoadAttr, b: RoadAttr): Boolean {
+        if (a.normRefs.isNotEmpty() && b.normRefs.isNotEmpty()) return a.normRefs.any { it in b.normRefs }
+        return a.normName != null && a.normName == b.normName
+    }
 
     fun attach(graph: RoadGraph, data: OsmDataSet, params: Params = Params()) {
         val perEdge = Array<MutableList<FacilityAnchor>>(graph.edges.size) { ArrayList(0) }
@@ -102,7 +122,10 @@ object FacilityExtractor {
         val named = ArrayList<NamedJunction>()
         for (n in data.junctions.values) {
             val p = FacilityNameParser.parse(nameOf(n.tags))
-            if (p.base.isNotEmpty() && p.type != null && p.type != FacilityType.TB) named.add(NamedJunction(n.lat, n.lon, p.base, p.type))
+            if (p.base.isEmpty() || p.type == FacilityType.TB || p.base in GENERIC) continue
+            // 種別の付かない名前（「○○出口」なども）は、道路名・方面（「国道1号」等）でなければ IC 名として使う
+            if ((p.type == null || p.entryWordOnly) && looksLikeRoad(p.base)) continue
+            named.add(NamedJunction(n.lat, n.lon, p.base, p.type))
         }
 
         // ---- 出口分岐（IC/JCT/SA・PA出口/SIC）
@@ -121,18 +144,25 @@ object FacilityExtractor {
 
             var type = parsed.type ?: exit?.type ?: FacilityType.IC
             if (type == FacilityType.TB) type = FacilityType.IC
+            // 一般道のバイパスで、種別の付かない名前の分岐が別の一般道へ出る → JCT ではなく IC（「豊川為当」「幸田芦谷」）
+            if (parsed.type == null && type == FacilityType.JCT && mainEdge.attr.generalRoad && exit?.otherRoadHighway != true) type = FacilityType.IC
             val linkedArea = if (type.isRestArea || parsed.type == null) exit?.area else null
             if (parsed.type == null && linkedArea != null) {
                 type = areaFacility[linkedArea.key]?.type ?: type
             }
             var base = parsed.base
             var inferredByName = false
-            if (base.isEmpty()) {
+            var nameIsDestination = false
+            if (base.isEmpty() || base in GENERIC) {
                 val fb = fallbackName(node.tags, node.lat, node.lon, exit, linkedArea, areaFacility, named, type)
                 if (fb == null) continue
-                base = fb.first
-                if (parsed.type == null && fb.second != null) type = fb.second!!
+                base = fb.base
+                if (parsed.type == null && fb.type != null) type = fb.type
                 inferredByName = true
+                nameIsDestination = fb.destination
+            } else if ((parsed.type == null || parsed.entryWordOnly) && looksLikeRoad(base)) {
+                // 分岐ノードの名前が道路名（「国道23号」「国道2号出口」等）→ 行き先として表示
+                nameIsDestination = true
             }
 
             val etcByTag = node.tags["payment:cash"] == "no"
@@ -152,6 +182,7 @@ object FacilityExtractor {
             )
             f.directionNote = parsed.direction
             f.typeInferred = parsed.type == null || inferredByName
+            f.nameIsDestination = nameIsDestination
             if (type == FacilityType.JCT && f.destination == null) f.destination = exit?.otherRoadName
 
             if (type.isRestArea) {
@@ -168,6 +199,9 @@ object FacilityExtractor {
 
         // ---- 出口分岐ノードが登録されていないランプ分岐を「推定出口」として追加
         addInferredExits(graph, data, areas, areaFacility, named, perEdge, params)
+
+        // ---- 片方向にしか出口の無い IC を、反対車線にも「出口なし」として並べる
+        addNoExitCounterparts(graph, perEdge)
 
         // ---- SA/PA 区域
         for (a in areas) {
@@ -210,6 +244,99 @@ object FacilityExtractor {
         }
     }
 
+    // ------------------------------------------------------------------ 出口なしの IC
+
+    /**
+     * 上下線が別々の道路で、片方の車線にだけ出口のある IC（ハーフ IC・出口の無い側）を、
+     * 反対車線にも「出口なし」の施設として付ける。付けないと、反対方向ではその IC が一覧から消え、
+     * 「IC があるのに飛ばされる」ように見える。反対車線の 2.5km 以内に同名の施設があるとき、
+     * 150m 以内に別の出口があるとき（同じ IC を別の名前で登録）は付けない。
+     */
+    private fun addNoExitCounterparts(graph: RoadGraph, perEdge: Array<MutableList<FacilityAnchor>>) {
+        val done = HashSet<String>()
+        val additions = ArrayList<FacilityAnchor>()
+        val p = DoubleArray(2)
+        for (e in graph.edges) {
+            if (e.attr.isLink || e.twin >= 0) continue // 対面通行は両方向に付いている
+            for (a in perEdge[e.id]) {
+                val f = a.facility
+                if (f.type != FacilityType.IC && f.type != FacilityType.SIC) continue
+                if (f.noExit || f.nameIsDestination || f.baseName.isEmpty() || f.baseName in GENERIC || f.baseName.startsWith("出口")) continue
+                if (!done.add(f.id)) continue
+                e.pointAt(a.offset, p)
+                val brg = e.bearingAt(a.offset)
+                val opp = graph.nearby(p[0], p[1], 150.0) { c -> !c.attr.isLink && c.twin < 0 && c.id != e.id && sameRoute(c.attr, e.attr) }
+                    .filter { abs(Geo.diffDeg(graph.edges[it.edge].bearingAt(it.offset), brg + 180.0)) < 40.0 }
+                    .minByOrNull { it.dist } ?: continue
+                var paired = false
+                walkRoad(graph, opp.edge, opp.offset, 2500.0) { eid, from, to ->
+                    for (x in perEdge[eid]) {
+                        if (x.offset < from - 1e-6 || x.offset > to + 1e-6) continue
+                        val xf = x.facility
+                        if (xf.type == FacilityType.CAMERA || xf.type == FacilityType.TB) continue
+                        if (xf.baseName == f.baseName) paired = true
+                    }
+                }
+                if (paired) continue
+                var otherExit = false
+                walkRoad(graph, opp.edge, opp.offset, 150.0) { eid, from, to ->
+                    for (x in perEdge[eid]) {
+                        if (x.offset < from - 1e-6 || x.offset > to + 1e-6) continue
+                        if (x.facility.type != FacilityType.CAMERA && x.facility.type != FacilityType.TB) otherExit = true
+                    }
+                }
+                if (otherExit) continue
+                val g = Facility(
+                    id = f.id + "n", type = f.type, baseName = f.baseName, rawName = f.rawName,
+                    lat = opp.lat, lon = opp.lon, etcOnly = f.etcOnly, etcReason = f.etcReason,
+                    exitRef = null, destination = null
+                )
+                g.noExit = true
+                g.typeInferred = true
+                additions.add(FacilityAnchor(g, opp.edge, opp.offset))
+            }
+        }
+        for (x in additions) perEdge[x.edgeId].add(x)
+    }
+
+    /**
+     * 地点 (edge, offset) から同じ路線の本線を前後に dist だけたどり、通る区間 (エッジ, 始点, 終点) を渡す。
+     */
+    private fun walkRoad(graph: RoadGraph, edge: Int, offset: Double, dist: Double, visit: (Int, Double, Double) -> Unit) {
+        // 前方
+        var cur = graph.edges[edge]
+        var from = offset
+        var left = dist
+        var guard = 0
+        while (left > 0 && guard++ < 60) {
+            val to = min(cur.length, from + left)
+            visit(cur.id, from, to)
+            left -= to - from
+            if (left <= 0) break
+            val next = graph.outEdges(cur.to).map { graph.edges[it] }
+                .filter { !it.attr.isLink && it.id != cur.twin && sameRoute(it.attr, cur.attr) }
+                .minByOrNull { abs(Geo.diffDeg(it.startBearing, cur.endBearing)) } ?: break
+            cur = next
+            from = 0.0
+        }
+        // 後方
+        cur = graph.edges[edge]
+        var to = offset
+        left = dist
+        guard = 0
+        while (left > 0 && guard++ < 60) {
+            val fromB = maxOf(0.0, to - left)
+            visit(cur.id, fromB, to)
+            left -= to - fromB
+            if (left <= 0) break
+            val prev = graph.inEdges(cur.from).map { graph.edges[it] }
+                .filter { !it.attr.isLink && it.id != cur.twin && sameRoute(it.attr, cur.attr) }
+                .minByOrNull { abs(Geo.diffDeg(cur.startBearing, it.endBearing)) } ?: break
+            cur = prev
+            to = cur.length
+        }
+    }
+
     // ------------------------------------------------------------------ 推定出口
 
     private fun addInferredExits(
@@ -244,14 +371,21 @@ object FacilityExtractor {
             val f: Facility = if (area != null) {
                 areaFacility[area.key] ?: continue
             } else {
-                val type = exit.type ?: if (branchMains.isNotEmpty()) FacilityType.JCT else continue
+                var type = exit.type ?: if (branchMains.isNotEmpty()) FacilityType.JCT else continue
+                // 一般道どうしをランプでつなぐ分岐は IC 扱い（JCT は高速道路・有料道路への分岐だけ）
+                if (type == FacilityType.JCT && mainIn.attr.generalRoad && !exit.otherRoadHighway &&
+                    branchMains.none { !it.attr.generalRoad }
+                ) type = FacilityType.IC
                 val fb = fallbackName(emptyMap(), vert.lat, vert.lon, exit, null, areaFacility, named, type) ?: continue
                 Facility(
-                    id = "x${vert.nodeId}", type = fb.second ?: type, baseName = fb.first, rawName = "",
-                    lat = vert.lat, lon = vert.lon, etcOnly = exit.etcOnly || fb.second == FacilityType.SIC,
-                    etcReason = if (fb.second == FacilityType.SIC) "スマートIC（ETC専用）" else exit.etcReason,
+                    id = "x${vert.nodeId}", type = fb.type ?: type, baseName = fb.base, rawName = "",
+                    lat = vert.lat, lon = vert.lon, etcOnly = exit.etcOnly || fb.type == FacilityType.SIC,
+                    etcReason = if (fb.type == FacilityType.SIC) "スマートIC（ETC専用）" else exit.etcReason,
                     exitRef = null, destination = exit.destination ?: exit.otherRoadName
-                ).also { it.typeInferred = true }
+                ).also {
+                    it.typeInferred = true
+                    it.nameIsDestination = fb.destination
+                }
             }
             for (m in continuation) perEdge[m.id].add(FacilityAnchor(f, m.id, 0.0))
         }
@@ -281,7 +415,12 @@ object FacilityExtractor {
         return false
     }
 
-    /** 名称の無い出口の名前を補う。(基本名, 推定種別) を返す。見つからなければ null */
+    /**
+     * 名称の無い出口の名前を補う。見つからなければ null。
+     *  1. SA/PA 区域に入るランプ → その SA/PA
+     *  2. 2.5km 以内の名称つき分岐（反対車線の同じ IC。「豊川為当」のような種別の無い名前も使う）
+     *  3. exit_to / ランプの名前 / 案内方面 / 合流先の道路名 →「○○方面」と表示
+     */
     private fun fallbackName(
         tags: Map<String, String>,
         lat: Double,
@@ -291,39 +430,47 @@ object FacilityExtractor {
         areaFacility: Map<String, Facility>,
         named: List<NamedJunction>,
         type: FacilityType
-    ): Pair<String, FacilityType?>? {
+    ): Fallback? {
         if (linkedArea != null) {
             val af = areaFacility[linkedArea.key]
-            if (af != null) return af.baseName to af.type
+            if (af != null) return Fallback(af.baseName, af.type, false)
         }
         // 反対車線などにある同じ IC/JCT の名前（2.5km 以内で最も近いもの）
         var best: NamedJunction? = null
         var bestD = 2500.0
         for (n in named) {
             if (abs(n.lat - lat) > 0.03 || abs(n.lon - lon) > 0.04) continue
-            if (n.type.isRestArea && !type.isRestArea) continue
+            val nt = n.type
+            if (nt != null && nt.isRestArea && !type.isRestArea) continue
+            if (nt == null && type.isRestArea) continue
             val d = Geo.distance(lat, lon, n.lat, n.lon)
             if (d < bestD) {
                 bestD = d
                 best = n
             }
         }
-        if (best != null && (best.type == type || type == FacilityType.IC || best.type == FacilityType.SIC)) return best.base to best.type
+        if (best != null && (best.type == null || best.type == type || type == FacilityType.IC || best.type == FacilityType.SIC)) {
+            return Fallback(best.base, best.type, false)
+        }
         val exitTo = tags["exit_to"]
-        if (!exitTo.isNullOrBlank()) return exitTo.split(';').first().trim() to null
+        if (!exitTo.isNullOrBlank()) return Fallback(exitTo.split(';').first().trim(), null, true)
         val ln = exit?.linkName
         if (!ln.isNullOrBlank()) {
             val p = FacilityNameParser.parse(ln)
-            if (p.base.isNotEmpty()) return p.base to p.type
+            if (p.base.isNotEmpty() && p.base !in GENERIC) {
+                // ランプ名が「○○IC」なら IC 名、道路名なら方面として
+                return if (p.type != null) Fallback(p.base, p.type, false) else Fallback(p.base, null, true)
+            }
         }
         val dest = exit?.destination
-        if (!dest.isNullOrBlank()) return dest.split('・').first() to null
-        if (type == FacilityType.JCT && !exit?.otherRoadName.isNullOrBlank()) return exit!!.otherRoadName!! to FacilityType.JCT
-        if (best != null) return best.base to best.type
+        if (!dest.isNullOrBlank()) return Fallback(dest.split('・').first(), null, true)
+        if (type == FacilityType.JCT && !exit?.otherRoadName.isNullOrBlank()) return Fallback(exit!!.otherRoadName!!, FacilityType.JCT, true)
+        if (best != null) return Fallback(best.base, best.type, false)
+        if (!exit?.otherRoadName.isNullOrBlank()) return Fallback(exit!!.otherRoadName!!, null, true)
         val ref = tags["ref"]
-        if (!ref.isNullOrBlank()) return "出口$ref" to FacilityType.IC
+        if (!ref.isNullOrBlank()) return Fallback("出口$ref", FacilityType.IC, false)
         // 一般道へ出る出口は名称不明でも表示する
-        if (type == FacilityType.IC && exit?.type == FacilityType.IC) return "出口" to FacilityType.IC
+        if (type == FacilityType.IC && exit?.type == FacilityType.IC) return Fallback("出口", FacilityType.IC, false)
         return null
     }
 
@@ -524,7 +671,8 @@ object FacilityExtractor {
             val other = outs.map { graph.edges[it] }.firstOrNull { !it.attr.isLink && differentRoad(it.attr, mainAttr) }
             return ExitInfo(
                 if (other != null) FacilityType.JCT else null, null, false, null,
-                other?.attr?.destination, other?.attr?.displayName, null
+                other?.attr?.destination, other?.attr?.displayName, null,
+                otherRoadHighway = other != null && !other.attr.generalRoad
             )
         }
         val nearAreas = areas.filter { Geo.distance(it.centerLat, it.centerLon, v.lat, v.lon) < 3000.0 }
@@ -574,7 +722,10 @@ object FacilityExtractor {
             deadEnd -> FacilityType.IC
             else -> null
         }
-        return ExitInfo(type, reachedArea, etcOnly, etcReason, destination, otherRoad?.displayName, linkName)
+        return ExitInfo(
+            type, reachedArea, etcOnly, etcReason, destination, otherRoad?.displayName, linkName,
+            otherRoadHighway = otherRoad != null && !otherRoad.generalRoad
+        )
     }
 
     private fun areaTouchedBy(e: Edge, nearAreas: List<OsmArea>, params: Params): OsmArea? {

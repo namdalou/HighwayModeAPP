@@ -24,6 +24,10 @@ import com.example.highwaymode.core.route.RouteEnd
 import com.example.highwaymode.core.speed.ForwardAxisEstimator
 import com.example.highwaymode.core.speed.SpeedFilter
 import com.example.highwaymode.core.traffic.EdgeTraffic
+import com.example.highwaymode.core.traffic.ExtTraffic
+import com.example.highwaymode.core.traffic.JamModel
+import com.example.highwaymode.core.traffic.JamSpan
+import com.example.highwaymode.core.traffic.JamTracker
 import com.example.highwaymode.core.traffic.TrafficData
 import com.example.highwaymode.core.traffic.TrafficKind
 import com.example.highwaymode.core.traffic.TrafficMapper
@@ -132,6 +136,11 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
     // ---- 外部の交通情報（HERE / TomTom / Google）
     private var trafficData: TrafficData? = null
     private var edgeTraffic: EdgeTraffic? = null
+    /** 渋滞の最後尾の動き（取得のたびに前回と照合） */
+    private val jamTracker = JamTracker()
+    /** いまの経路上の渋滞（経路・交通情報が変わったときだけ作り直す） */
+    private var jamSpans: List<JamSpan> = emptyList()
+    private var jamSpansFor: TrafficMapper.RouteTraffic? = null
     private var routeTraffic: TrafficMapper.RouteTraffic? = null
     private var routeTrafficFor: RouteAhead? = null
     /** 交通情報の取得状況（ホストが設定。例:「渋滞情報: API キー未設定」） */
@@ -191,6 +200,23 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         edgeTraffic = if (data == null || graph.isEmpty) null else TrafficMapper.annotate(graph, data)
         routeTraffic = null
         routeTrafficFor = null
+        jamSpansFor = null
+        if (data == null) {
+            jamTracker.clear()
+            return
+        }
+        // 前回の取得結果と照合して、渋滞の最後尾が伸びているか・縮んでいるかを求める
+        val rt = route
+        val pf = profile
+        val et = edgeTraffic
+        if (rt != null && pf != null && et != null && rt.graphGeneration == graph.generation) {
+            try {
+                val rtf = TrafficMapper.forRoute(rt, graph, et, pf.cell)
+                jamTracker.update(rt, graph, JamModel.spans(rtf, rt, graph, null), data.fetchedWallMs)
+            } catch (e: Exception) {
+                // 照合できなくても予測は続ける（伸び縮みは不明として扱う）
+            }
+        }
     }
 
     val trafficFetchedWallMs: Long? get() = trafficData?.fetchedWallMs
@@ -770,7 +796,15 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         }
         val rtf = routeTraffic
         val tw = trafficWeight(wallMs)
-        val res = eta.predict(pf, progress, speedFilter.v, traffic.state(), rtf?.ratio, tw)
+        // 渋滞（量・位置・最後尾の動き）を含めた交通情報
+        val ext: ExtTraffic? = if (rtf != null) {
+            if (jamSpansFor !== rtf) {
+                jamSpans = JamModel.spans(rtf, rt, graph, jamTracker)
+                jamSpansFor = rtf
+            }
+            ExtTraffic(rtf.absPace, rtf.extraPace, jamSpans, tw, max(0.0, rtf.ageSec(wallMs)))
+        } else null
+        val res = eta.predict(pf, progress, speedFilter.v, traffic.state(), ext)
         lastEta = res
         val events = if (rtf != null && tw > 0.05) rtf.events.filter { it.end > progress } else emptyList()
 
@@ -803,14 +837,15 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
                 } else if (note == null) note = ev.kind.label
             }
             val v = FacilityView(
-                id = f.id, type = f.type, name = f.baseName, displayName = f.displayName,
+                id = f.id, type = f.type, name = f.listName, displayName = f.displayName,
                 distanceM = uf.distance - progress, etaEpochMs = shown, travelSec = travel,
                 amenities = f.sortedAmenities(), etcOnly = f.etcOnly, etcReason = f.etcReason,
                 pois = f.pois.toList(), lat = f.lat, lon = f.lon, exitRef = f.exitRef,
                 destination = f.destination, directionNote = f.directionNote,
                 typeInferred = f.typeInferred, flowBefore = res.flowRatio(prevDist, uf.distance),
                 jamBeforeM = jam, trafficNote = note, closedBefore = closed,
-                maxspeedKmh = f.maxspeedKmh, cameraType = f.cameraType, userDefined = f.userDefined
+                maxspeedKmh = f.maxspeedKmh, cameraType = f.cameraType, userDefined = f.userDefined,
+                noExit = f.noExit
             )
             if (isCam) cams.add(v) else {
                 views.add(v)
@@ -857,7 +892,7 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
             driverRatio = driver.ratio(lim.kmh), trafficRatio = if (tr.valid) tr.ratio else null,
             lat = r.lat, lon = r.lon, dataMessage = dataMessage,
             routeLengthM = rt.length - progress, routeTruncated = rt.end == RouteEnd.DATA_BOUNDARY,
-            cameras = cams, traffic = trafficView(rtf, events, wallMs, progress, res),
+            cameras = cams, traffic = trafficView(rtf, events, wallMs, progress, res, ext),
             vehicle = vehicleView(t, rt, progress), speedSource = speedSource,
             generalRoad = e.attr.generalRoad
         )
@@ -879,7 +914,7 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
                 ((wallMs + f.travelSec * 1000.0) / 60_000.0).let { Math.round(it) * 60_000L },
                 f.travelSec, f.amenities, f.etcOnly, f.etcReason, f.pois, f.lat, f.lon,
                 f.exitRef, f.destination, f.directionNote, f.typeInferred, f.flowBefore,
-                f.jamBeforeM, f.trafficNote, f.closedBefore, f.maxspeedKmh, f.cameraType, f.userDefined
+                f.jamBeforeM, f.trafficNote, f.closedBefore, f.maxspeedKmh, f.cameraType, f.userDefined, f.noExit, f.jamEndM
             )
         }
         val hdg = if (heading.initialized) heading.headingDeg else null
@@ -907,7 +942,8 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         events: List<TrafficMapper.RouteEvent>?,
         wallMs: Long,
         progress: Double,
-        res: EtaResult? = null
+        res: EtaResult? = null,
+        ext: ExtTraffic? = null
     ): TrafficView? {
         val td = trafficData
         if (td == null && trafficMessage == null) return null
@@ -915,7 +951,24 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         val jam = ev.firstOrNull { (it.kind == TrafficKind.JAM || it.kind == TrafficKind.SLOW) && it.end > progress + 50 }
         var jamDelay: Double? = null
         var jamLen: Double? = null
-        if (jam != null) {
+        var jamDist: Double? = jam?.let { max(0.0, it.start - progress) }
+        var trend = 0
+        // 渋滞の伸び縮みがわかれば、いまの最後尾の推定位置から。遅れは到着予測（伸び縮み込み）から
+        val useSpans = ext != null && ext.weight > 0.05 && ext.jams.isNotEmpty()
+        // 取得からいままでに解消したとみられる渋滞は除く
+        val span = if (useSpans) ext!!.jams.filter { it.head > progress + 50 && it.tailAfter(ext.ageSec) < it.head - 100.0 }.minByOrNull { it.tail } else null
+        if (useSpans) {
+            jamDist = null
+            if (span != null && res != null) {
+                val tailNow = span.tailAfter(ext!!.ageSec)
+                jamDist = max(0.0, tailNow - progress)
+                jamLen = span.head - max(tailNow, progress)
+                trend = span.trend
+                // 1 つ手前の渋滞の先頭から、この渋滞の先頭までの遅れ（最後尾が伸びた分を含む）
+                val prevHead = ext.jams.filter { it.head <= span.tail && it.head > progress }.maxOfOrNull { it.head } ?: progress
+                jamDelay = res.delayBetween(max(progress, prevHead), span.head).takeIf { it >= 0.0 }
+            }
+        } else if (jam != null) {
             // 連続する渋滞・混雑を 1 つにまとめて長さと遅れを出す
             var end = jam.end
             var delay = 0.0
@@ -944,9 +997,10 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         } else null
         return TrafficView(
             provider = td?.provider, fetchedWallMs = td?.fetchedWallMs, message = trafficMessage,
-            nextJamDistanceM = jam?.let { max(0.0, it.start - progress) }, nextJamLengthM = jamLen, nextJamDelaySec = jamDelay,
+            nextJamDistanceM = if (jamLen != null) jamDist else null, nextJamLengthM = jamLen, nextJamDelaySec = jamDelay,
             events = ev.filter { it.kind.isEvent || it.kind == TrafficKind.JAM }.take(8).map { Triple(max(0.0, it.start - progress), it.kind, it.description) },
-            routeDelaySec = routeDelay
+            routeDelaySec = routeDelay,
+            nextJamTrend = trend
         )
     }
 

@@ -35,8 +35,8 @@ class DualFrame(
 /**
  * 車の画面・スマホ画面の区画割り（描画とタップ判定の両方で使う）。
  *
- * 2 画面の左側の幅は、Spectrum の縦レイアウト（仮想座標 240×380）が余白なく収まる幅にする
- * （画面幅の 20〜42% の範囲）。横長の画面ほど右側のハイウェイモードが広くなる。
+ * 2 画面の左側の幅は、Spectrum の 2 画面用の縦レイアウト（文字・ボタンを大きくしたもの。幅:高さ = 0.70）が
+ * 余白なく収まる幅にする（画面幅の 22〜42% の範囲）。横長の画面ほど右側のハイウェイモードが広くなる。
  */
 object DualGeometry {
 
@@ -46,8 +46,11 @@ object DualGeometry {
     /** Spectrum の横レイアウトの「高さ ÷ 幅」（PlayerRenderer の横画面 400×214） */
     const val LANDSCAPE_H_PER_W = 214f / 400f
 
+    /** 2 画面の左側（Spectrum）の「幅 ÷ 高さ」（運転中に読みやすい大きい表示） */
+    const val SPLIT_MUSIC_W_PER_H = 0.70f
+
     /** 2 画面の左側の幅の範囲（画面幅に対する割合） */
-    const val SPLIT_MIN = 0.20f
+    const val SPLIT_MIN = 0.22f
     const val SPLIT_MAX = 0.42f
 
     /** 車の画面の下部バーの高さ（画面の 12.5%、56〜84dp、画面の 22% まで） */
@@ -110,7 +113,7 @@ object DualGeometry {
             DualLayout.HIGHWAY -> DualFrame(layout, null, Box(l, hwTop, r, areaB), bar, null)
             DualLayout.SPLIT -> {
                 val w = r - l
-                val musicW = (PORTRAIT_W_PER_H * areaB).coerceIn(w * SPLIT_MIN, w * SPLIT_MAX)
+                val musicW = (SPLIT_MUSIC_W_PER_H * areaB).coerceIn(w * SPLIT_MIN, w * SPLIT_MAX)
                 val div = dividerWidth(density)
                 val mx = l + musicW
                 DualFrame(

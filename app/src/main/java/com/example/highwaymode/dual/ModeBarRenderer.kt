@@ -232,12 +232,37 @@ class ModeBarRenderer(var density: Float) {
                 }
             }
             DualLayout.HIGHWAY -> drawNowPlaying(c, l, t, r, b)
-            DualLayout.SPLIT -> splitHint?.let { hint ->
-                textN.color = cSub
-                textN.textSize = fitSize(textN, hint, r - l, min((b - t) * 0.32f, dp(14f)))
-                drawTextCentered(c, ellipsize(textN, hint, r - l), l, (t + b) / 2, textN, Paint.Align.LEFT)
+            DualLayout.SPLIT -> {
+                // 前方の渋滞があれば、その距離・長さ・遅れを出す（無ければ案内）
+                val jam = jamSummary(s)
+                if (jam != null) {
+                    textN.color = Color.rgb(255, 120, 110)
+                    textN.textSize = fitSize(textN, jam, r - l, min((b - t) * 0.40f, dp(18f)))
+                    drawTextCentered(c, ellipsize(textN, jam, r - l), l, (t + b) / 2, textN, Paint.Align.LEFT)
+                } else splitHint?.let { hint ->
+                    textN.color = cSub
+                    textN.textSize = fitSize(textN, hint, r - l, min((b - t) * 0.32f, dp(14f)))
+                    drawTextCentered(c, ellipsize(textN, hint, r - l), l, (t + b) / 2, textN, Paint.Align.LEFT)
+                }
             }
         }
+    }
+
+    /** 「5.2km先 渋滞2.6km +9分」（前方 40km 以内に渋滞があるとき） */
+    private fun jamSummary(s: HighwaySnapshot?): String? {
+        if (s == null || s.status != EngineStatus.ON_HIGHWAY) return null
+        val tr = s.traffic ?: return null
+        val d = tr.nextJamDistanceM ?: return null
+        val len = tr.nextJamLengthM ?: return null
+        if (d > 40_000) return null
+        val delay = tr.nextJamDelaySec?.let { if (it >= 60) " +${(it / 60).roundToInt()}分" else "" } ?: ""
+        // 取得のたびの比較で、渋滞の最後尾が手前に伸びている／縮んでいる
+        val trend = when (tr.nextJamTrend) {
+            1 -> "（伸びています）"
+            -1 -> "（縮んでいます）"
+            else -> ""
+        }
+        return if (d < 50) "渋滞中 残り${Formats.distance(len)}$delay$trend" else "${Formats.distance(d)}先 渋滞${Formats.distance(len)}$delay$trend"
     }
 
     /** 次の施設（注意があればそちらを優先）。タップで 2 画面へ */
@@ -248,7 +273,9 @@ class ModeBarRenderer(var density: Float) {
         val tr = s.traffic
         val jamD = tr?.nextJamDistanceM
         val jamL = tr?.nextJamLengthM
-        val next = s.facilities.firstOrNull { it.type != FacilityType.CAMERA }
+        // この方向に出口の無い IC（出口なし）より、降りられる施設を先に案内する
+        val next = s.facilities.firstOrNull { it.type != FacilityType.CAMERA && !it.noExit }
+            ?: s.facilities.firstOrNull { it.type != FacilityType.CAMERA }
         val badge: String
         val badgeColor: Int
         val main: String

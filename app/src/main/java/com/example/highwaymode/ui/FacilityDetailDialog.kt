@@ -24,7 +24,8 @@ object FacilityText {
             out.add("情報元" to if (f.userDefined) "利用者の登録" else "OpenStreetMap")
             return out
         }
-        out.add("到着予定" to if (f.closedBefore) "手前に通行止めの情報あり（参考 ${Formats.clock(f.etaEpochMs)}）" else Formats.clock(f.etaEpochMs))
+        if (f.noExit) out.add("出口" to "この方向には出口がありません（反対方向だけに出口のある IC）")
+        out.add((if (f.noExit) "通過予定" else "到着予定") to if (f.closedBefore) "手前に通行止めの情報あり（参考 ${Formats.clock(f.etaEpochMs)}）" else Formats.clock(f.etaEpochMs))
         if (f.jamBeforeM >= 200) out.add("手前の渋滞" to Formats.distance(f.jamBeforeM))
         f.trafficNote?.let { out.add("交通情報" to it) }
         f.exitRef?.let { out.add("出口番号" to it) }

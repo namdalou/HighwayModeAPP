@@ -26,6 +26,16 @@ class PlayerView(context: Context) : View(context) {
     }
     private val specListener: (FloatArray) -> Unit = { renderer.setSpectrum(it) }
 
+    /** 2 画面（横画面の左側）用の大きい表示 */
+    var large: Boolean
+        get() = renderer.large
+        set(v) {
+            if (renderer.large != v) {
+                renderer.large = v
+                invalidate()
+            }
+        }
+
     /** 診断画面用の連続タップの数 */
     private var tapCount = 0
     private var lastTapTime = 0L

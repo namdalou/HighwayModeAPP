@@ -93,15 +93,19 @@ class GraphFacilityTest {
         val start = net.nbPoint(59_000.0)
         val r = routeFrom(start.lat, start.lon, net.nbWayIds)
         println("上り前方施設: " + r.facilities.joinToString { "${it.facility.displayName}@${"%.1f".format(it.distance / 1000)}km" })
-        val types = r.facilities.map { it.facility.type to it.facility.baseName }
+        // 上り線から利用できる施設（下り線にだけ出口のある IC は「出口なし」として並ぶ）
+        val usable = r.facilities.filter { !it.facility.noExit }
+        val types = usable.map { it.facility.type to it.facility.baseName }
         assertEquals(
             listOf(FacilityType.TB to "テスト", FacilityType.SA to "テスト", FacilityType.IC to "テスト北"),
             types
         )
-        val sa = r.facilities[1].facility
+        val noExit = r.facilities.filter { it.facility.noExit }.map { it.facility.type to it.facility.baseName }
+        assertEquals("下り線だけの出口は上りでは「出口なし」", listOf(FacilityType.IC to "テスト南", FacilityType.SIC to "テスト"), noExit)
+        val sa = usable[1].facility
         assertTrue("上りSAはコンビニ", Amenity.CONVENIENCE in sa.amenities)
         assertFalse("下りSAのガソリンスタンドは見えない", Amenity.GAS in sa.amenities)
-        assertEquals(39_000.0, r.facilities[1].distance, 400.0)
+        assertEquals(39_000.0, usable[1].distance, 400.0)
     }
 
     @Test

@@ -67,6 +67,8 @@ class HighwayPanelView(context: Context) : View(context) {
 
     override fun onDraw(c: Canvas) {
         renderer.draw(c, insetL.toFloat(), insetT.toFloat(), (width - insetR).toFloat(), (height - insetB).toFloat(), snap, System.currentTimeMillis())
+        // 先のページを表示中は、操作が無ければ現在地に戻すため描き直しを続ける
+        if (renderer.page > 0) postInvalidateDelayed(1000L)
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
@@ -90,10 +92,13 @@ class HighwayPanelView(context: Context) : View(context) {
                     callbacks?.onFacilityTap(f)
                 } else {
                     when (h.button) {
-                        0 -> callbacks?.onToggleDisplay()
-                        1 -> callbacks?.onReroute()
-                        2 -> callbacks?.onMenu()
+                        PanelRenderer.BUTTON_DISPLAY -> callbacks?.onToggleDisplay()
+                        PanelRenderer.BUTTON_REROUTE -> callbacks?.onReroute()
+                        PanelRenderer.BUTTON_MENU -> callbacks?.onMenu()
+                        PanelRenderer.BUTTON_PAGE_NEXT -> renderer.pageNext()
+                        PanelRenderer.BUTTON_PAGE_PREV -> renderer.pagePrev()
                     }
+                    invalidate()
                 }
                 return true
             }

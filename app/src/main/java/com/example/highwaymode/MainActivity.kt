@@ -27,6 +27,7 @@ import com.example.highwaymode.data.UserCameraStore
 import com.example.highwaymode.dual.DualMode
 import com.example.highwaymode.engine.DemoPreset
 import com.example.highwaymode.engine.EngineHost
+import com.example.highwaymode.engine.RunDiagnostics
 import com.example.highwaymode.ui.DualView
 import com.example.highwaymode.ui.FacilityDetailDialog
 import com.example.highwaymode.ui.HighwayPanelView
@@ -116,6 +117,7 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         ensurePermissionsAndStart()
         SettingsDialogs.checkUpdateOnStart(this)
         AutoDiagnostics.maybeShowOnce(this, prefs)
+        maybeShowBackgroundHint()
     }
 
     override fun onResume() {
@@ -307,6 +309,14 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
     override fun onMenu() {
         val generalOn = EngineHost.latest?.status == EngineStatus.GENERAL_ROAD_MODE
         val items = ArrayList<Pair<String, () -> Unit>>()
+        // 横画面ではハイウェイモードの下のボタンを出さない（一覧を大きくするため）ので、ここにも置く
+        val modeLabel = when (panel.displayMode) {
+            1 -> "一覧"
+            2 -> "SA/PA のみ"
+            else -> "大きく"
+        }
+        items.add("ハイウェイの表示を切替（いま: $modeLabel）" to { onToggleDisplay() })
+        items.add("現在地の道路を再探索（上下線を取り違えたとき）" to { onReroute() })
         if (EngineHost.demoRunning) items.add("デモ走行を停止" to { EngineHost.stopDemo() })
         else items.add("デモ走行…（自動切替も確認できます）" to { showDemoMenu() })
         items.add("画面の自動切替（高速道路で 2 画面）" to { showDualSettings() })
@@ -324,6 +334,7 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         items.add("オービス（音声・登録・CSV）" to {
             SettingsDialogs.showCameras(this, this)
         })
+        items.add("Android Auto だけで使うための設定（動作状態）" to { showRunStatus() })
         items.add("Android Auto の状態（一覧に出ないとき）" to { AutoDiagnostics.show(this) })
         items.add("このアプリについて" to { showAbout() })
         items.add("終了" to {
@@ -333,6 +344,57 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("メニュー")
             .setItems(items.map { it.first }.toTypedArray()) { _, which -> items[which].second.invoke() }
+            .show()
+    }
+
+    /**
+     * スマホでアプリを開かずに Android Auto だけで使うための設定と、いまの動作状態。
+     * 問題のある項目の設定画面へのボタンを出す。
+     */
+    private fun showRunStatus() {
+        val items = RunDiagnostics.collect(this)
+        val fixes = items.filter { !it.ok }.mapNotNull { it.fix }.distinct()
+        val msg = RunDiagnostics.GUIDE + "\n\n" + RunDiagnostics.asText(items)
+        val b = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Android Auto だけで使うための設定")
+            .setMessage(msg)
+            .setNegativeButton("閉じる", null)
+        val primary = fixes.firstOrNull() ?: RunDiagnostics.Fix.BATTERY.takeIf {
+            // 問題が無くても、電池の設定はいつでも開けるようにする
+            items.none { i -> i.title == "電池" && i.ok }
+        }
+        if (primary != null) b.setPositiveButton(primary.label) { _, _ -> openFix(primary) }
+        val second = fixes.getOrNull(1)
+        if (second != null) b.setNeutralButton(second.label) { _, _ -> openFix(second) }
+        b.show()
+    }
+
+    private fun openFix(fix: RunDiagnostics.Fix) {
+        for (i in RunDiagnostics.intentFor(this, fix)) {
+            try {
+                startActivity(i)
+                if (fix == RunDiagnostics.Fix.BATTERY) {
+                    Toast.makeText(this, "一覧（すべてのアプリ）から「Spectrum ハイウェイ」を「最適化しない」にしてください", Toast.LENGTH_LONG).show()
+                }
+                return
+            } catch (e: Exception) {
+                // 次の画面を試す
+            }
+        }
+        Toast.makeText(this, "設定を開けませんでした", Toast.LENGTH_SHORT).show()
+    }
+
+    /** Android Auto で使ったことがあり、電池の最適化が有効なままなら、一度だけ案内する */
+    private fun maybeShowBackgroundHint() {
+        if (!prefs.carUsedOnce || prefs.backgroundHintShown) return
+        val pm = getSystemService(POWER_SERVICE) as android.os.PowerManager
+        if (pm.isIgnoringBatteryOptimizations(packageName)) return
+        prefs.backgroundHintShown = true
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Android Auto だけで使う場合")
+            .setMessage(RunDiagnostics.GUIDE + "\n\n（あとからメニュー →「Android Auto だけで使うための設定」でも確認できます）")
+            .setPositiveButton(RunDiagnostics.Fix.BATTERY.label) { _, _ -> openFix(RunDiagnostics.Fix.BATTERY) }
+            .setNegativeButton("あとで", null)
             .show()
     }
 

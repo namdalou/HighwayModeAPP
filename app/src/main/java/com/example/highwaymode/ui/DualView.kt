@@ -82,6 +82,8 @@ class DualView(
         setMeasuredDimension(w, h)
         val f = DualGeometry.phone(w.toFloat(), h.toFloat(), layoutMode, density)
         frame = f
+        // 横画面の 2 画面では、左側の Spectrum を大きい表示（曲名・ボタンを大きく）にする
+        (music as? com.example.spectrum.PlayerView)?.large = layoutMode == DualLayout.SPLIT && !f.stacked
         if (music.parent != null) measureChild(music, f.music)
         measureChild(panel, f.highway)
         measureChild(bar, f.bar)

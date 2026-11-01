@@ -79,13 +79,33 @@ class Facility(
     var cameraType: String? = null
     /** 利用者が登録したデータ */
     var userDefined: Boolean = false
+    /**
+     * この進行方向には出口が無い IC（反対車線にだけ出口がある、いわゆるハーフ IC）。
+     * 一覧で飛ばすと「IC があるのに表示されない」ことになるため、「出口なし」として並べる。
+     */
+    var noExit: Boolean = false
+    /** 名称の無い分岐に、行き先（道路名・方面）を名前として付けた（「国道23号方面」と表示する） */
+    var nameIsDestination: Boolean = false
 
     val displayName: String
-        get() = when (type) {
-            FacilityType.TB -> if (baseName.isEmpty()) "本線料金所" else "${baseName}料金所"
-            FacilityType.SIC -> "${baseName}スマートIC"
-            FacilityType.CAMERA -> baseName
+        get() = when {
+            type == FacilityType.TB -> if (baseName.isEmpty()) "本線料金所" else "${baseName}料金所"
+            type == FacilityType.CAMERA -> baseName
+            nameIsDestination -> "${baseName}方面"
+            // 名前のわからない出口（「出口」「出口3」）は「出口IC」としない
+            type.isExit && baseName.startsWith("出口") -> baseName
+            // 「道の駅○○」「○○ハイウェイオアシス」は SA/PA を付けない
+            type.isRestArea && (baseName.startsWith("道の駅") || baseName.endsWith("オアシス")) -> baseName
+            type == FacilityType.SIC -> "${baseName}スマートIC"
             else -> baseName + type.badge
+        }
+
+    /** 一覧に出す名前（種別のバッジと並べるので種別は付けない。行き先の名前は「○○方面」） */
+    val listName: String
+        get() = when {
+            nameIsDestination -> "${baseName}方面"
+            type.isRestArea && (baseName.startsWith("道の駅") || baseName.endsWith("オアシス")) -> baseName
+            else -> baseName
         }
 
     fun sortedAmenities(): List<Amenity> = amenities.sortedBy { it.order }

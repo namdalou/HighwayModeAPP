@@ -106,7 +106,11 @@ object TrafficMapper {
         val cell: Double,
         val ratio: DoubleArray,
         val events: List<RouteEvent>,
-        val totalDelaySec: Double?
+        val totalDelaySec: Double?,
+        /** 渋滞区間の実際の速さ（取得元が速さを出す場合）の逆数 [s/m]。NaN = なし */
+        val absPace: DoubleArray = DoubleArray(ratio.size) { Double.NaN },
+        /** 自由流からの遅れ [s/m]（取得元の遅れ時間をそのまま保つ）。NaN = 情報なし、0 = 順調 */
+        val extraPace: DoubleArray = DoubleArray(ratio.size) { Double.NaN }
     ) {
         val hasCoverage: Boolean = ratio.any { !it.isNaN() }
 
@@ -116,16 +120,50 @@ object TrafficMapper {
     /** 経路上の出来事（渋滞・事故・通行止めなど）。距離はルート始点から */
     class RouteEvent(val start: Double, val end: Double, val kind: TrafficKind, val description: String?, val delaySec: Double?, val ratio: Double?)
 
+    /**
+     * 1 件の情報から、渋滞の「実際の速さの逆数」と「自由流からの遅れ」[s/m] を求める（無ければ NaN）。
+     *  - 渋滞・混雑（速度比 0.6 未満）: 渋滞の中は誰でも同じように進むので、実際の速さを使う。
+     *    速さがわかる取得元（HERE）はその速さ、遅れ時間がわかる取得元（TomTom）は「自由流 80km/h ＋ 遅れ」から、
+     *    速度比だけ（Google）は 80km/h × 速度比。
+     *  - 流れが少し悪い程度: 自由流からの遅れ（遅れ時間 ÷ 長さ、または速度比から）を、自分の自由流の速さに足す
+     *    （運転のくせによる速さの違いを残す）。
+     */
+    fun paces(item: TrafficItem): Pair<Double, Double> {
+        val r = item.ratio ?: return Double.NaN to Double.NaN
+        if (r >= 0.98) return Double.NaN to 0.0
+        val d = item.delaySec
+        val len = item.length
+        val hasDelay = d != null && d > 0 && len > 50
+        if (r < 0.6) {
+            val sp = item.speedKmh?.let { it / 3.6 }
+            val v = when {
+                sp != null && sp > 0.5 -> sp
+                hasDelay -> len / (len / REF_FREE_MS + d!!)
+                else -> r.coerceAtLeast(0.02) * REF_FREE_MS
+            }.coerceAtLeast(0.3)
+            return (1.0 / v) to max(0.0, 1.0 / v - 1.0 / REF_FREE_MS)
+        }
+        return Double.NaN to (if (hasDelay) d!! / len else (1.0 / r - 1.0) / REF_FREE_MS)
+    }
+
+    /** 取得元の遅れ・速度比の基準にする自由流の速さ（80km/h） */
+    private const val REF_FREE_MS = 22.2
+
     fun forRoute(route: RouteAhead, graph: RoadGraph, et: EdgeTraffic, cell: Double): RouteTraffic {
         val n = max(1, ceil(route.length / cell).toInt())
         val ratio = DoubleArray(n) { Double.NaN }
+        val absPace = DoubleArray(n) { Double.NaN }
+        val extraPace = DoubleArray(n) { Double.NaN }
         val rawEvents = ArrayList<RouteEvent>()
         for (seg in route.segments) {
             val covered = seg.edge in et.coveredEdges
             if (covered) {
                 val k0 = (seg.startDist / cell).toInt().coerceIn(0, n - 1)
                 val k1 = (seg.endDist / cell).toInt().coerceIn(0, n - 1)
-                for (k in k0..k1) if (ratio[k].isNaN()) ratio[k] = 1.0
+                for (k in k0..k1) {
+                    if (ratio[k].isNaN()) ratio[k] = 1.0
+                    if (extraPace[k].isNaN()) extraPace[k] = 0.0
+                }
             }
             val list = et.spans[seg.edge] ?: continue
             for (sp in list) {
@@ -138,9 +176,12 @@ object TrafficMapper {
                 if (r != null) {
                     val k0 = (d0 / cell).toInt().coerceIn(0, n - 1)
                     val k1 = ((d1 - 1e-6) / cell).toInt().coerceIn(0, n - 1)
+                    val (pa, pe) = paces(sp.item)
                     for (k in k0..k1) {
                         // 同じセルに複数の情報があれば遅い方
                         ratio[k] = if (ratio[k].isNaN() || covered && ratio[k] == 1.0) r else min(ratio[k], r)
+                        if (!pa.isNaN()) absPace[k] = if (absPace[k].isNaN()) pa else max(absPace[k], pa)
+                        if (!pe.isNaN()) extraPace[k] = if (extraPace[k].isNaN()) pe else max(extraPace[k], pe)
                     }
                 }
                 if (sp.item.kind != TrafficKind.FLOW) rawEvents.add(RouteEvent(d0, d1, sp.item.kind, sp.item.description, sp.item.delaySec, r))
@@ -156,6 +197,6 @@ object TrafficMapper {
                     if (last.ratio != null && e.ratio != null) min(last.ratio, e.ratio) else last.ratio ?: e.ratio)
             } else events.add(e)
         }
-        return RouteTraffic(et.data.provider, et.data.fetchedWallMs, cell, ratio, events, et.data.totalDelaySec)
+        return RouteTraffic(et.data.provider, et.data.fetchedWallMs, cell, ratio, events, et.data.totalDelaySec, absPace, extraPace)
     }
 }
