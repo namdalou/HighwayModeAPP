@@ -11,10 +11,12 @@ import android.location.LocationManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.os.SystemClock
 import com.example.highwaymode.core.model.GpsFix
+import kotlin.math.abs
 
 /**
- * GNSS（GPS_PROVIDER）の生の測位を 1Hz 以上で受け取る。
+ * GNSS（GPS_PROVIDER）の生の測位を受け取る。通常は 1Hz 以上、電池の節約中は [setInterval] の間隔で。
  * ドップラー速度・方位とその精度（Android 8.0+）をそのままエンジンへ渡す。
  * コールバックはエンジン用スレッド（handler）で呼ばれる。
  */
@@ -26,6 +28,11 @@ class LocationInput(
 
     private val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
     private var started = false
+    private var gnssRegistered = false
+
+    /** 測位の間隔 [ms]（0 = できるだけ頻繁に。10 秒以上にすると GPS は合間に休む） */
+    var intervalMs = 0L
+        private set
 
     @Volatile
     var satellitesUsed = 0
@@ -47,26 +54,52 @@ class LocationInput(
     fun hasPermission(): Boolean =
         context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
-    @SuppressLint("MissingPermission")
     fun start(): Boolean {
         if (started) return true
         if (!hasPermission()) return false
-        return try {
-            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 0L, 0f, this, handler.looper)
-            lm.registerGnssStatusCallback(gnssCallback, handler)
-            started = true
-            true
-        } catch (e: SecurityException) {
-            false
-        } catch (e: IllegalArgumentException) {
-            false // GPS プロバイダが無い端末
+        return request()
+    }
+
+    /** 測位の間隔を変える（受信中なら登録し直す） */
+    fun setInterval(ms: Long) {
+        if (ms == intervalMs) return
+        intervalMs = ms
+        if (started) {
+            try {
+                lm.removeUpdates(this)
+            } catch (e: Exception) {
+                // 登録し直す
+            }
+            started = false
+            request()
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun request(): Boolean = try {
+        lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, intervalMs, 0f, this, handler.looper)
+        started = true
+        // 衛星の状態は毎秒届く（その都度 CPU が起きる）ので、毎秒測位しているときだけ受け取る
+        if (intervalMs == 0L) {
+            if (!gnssRegistered) gnssRegistered = lm.registerGnssStatusCallback(gnssCallback, handler)
+        } else if (gnssRegistered) {
+            lm.unregisterGnssStatusCallback(gnssCallback)
+            gnssRegistered = false
+        }
+        true
+    } catch (e: SecurityException) {
+        false
+    } catch (e: IllegalArgumentException) {
+        false // GPS プロバイダが無い端末
     }
 
     fun stop() {
         if (!started) return
         lm.removeUpdates(this)
-        lm.unregisterGnssStatusCallback(gnssCallback)
+        if (gnssRegistered) {
+            lm.unregisterGnssStatusCallback(gnssCallback)
+            gnssRegistered = false
+        }
         started = false
     }
 
@@ -82,11 +115,17 @@ class LocationInput(
     }
 
     companion object {
-        /** android.location.Location → エンジンの測位（車両の GPS でも使う） */
+        /**
+         * android.location.Location → エンジンの測位（車両の GPS でも使う）。
+         * 測位時刻が端末の時計（elapsedRealtimeNanos）とかけ離れている場合（車両の GPS で時計の基準が違うなど）は、
+         * 受け取った時刻を使う（時刻が前後すると、上下線・ランプの判定が乱れるため）。
+         */
         fun toFix(loc: Location): GpsFix {
             val speedAcc = if (Build.VERSION.SDK_INT >= 26 && loc.hasSpeedAccuracy()) loc.speedAccuracyMetersPerSecond.toDouble() else null
             val bearingAcc = if (Build.VERSION.SDK_INT >= 26 && loc.hasBearingAccuracy()) loc.bearingAccuracyDegrees.toDouble() else null
-            val t = if (loc.elapsedRealtimeNanos > 0) loc.elapsedRealtimeNanos else android.os.SystemClock.elapsedRealtimeNanos()
+            val now = SystemClock.elapsedRealtimeNanos()
+            val lt = loc.elapsedRealtimeNanos
+            val t = if (lt > 0 && abs(now - lt) < 5_000_000_000L) lt else now
             return GpsFix(
                 timeNanos = t,
                 wallTimeMs = System.currentTimeMillis(),

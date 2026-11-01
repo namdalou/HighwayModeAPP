@@ -95,8 +95,7 @@ class HighwayPanelView(context: Context) : View(context) {
                         PanelRenderer.BUTTON_DISPLAY -> callbacks?.onToggleDisplay()
                         PanelRenderer.BUTTON_REROUTE -> callbacks?.onReroute()
                         PanelRenderer.BUTTON_MENU -> callbacks?.onMenu()
-                        PanelRenderer.BUTTON_PAGE_NEXT -> renderer.pageNext()
-                        PanelRenderer.BUTTON_PAGE_PREV -> renderer.pagePrev()
+                        else -> renderer.pageButton(h.button)
                     }
                     invalidate()
                 }

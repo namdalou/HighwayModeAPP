@@ -311,6 +311,9 @@ class TileRepository(
     /** 表示用: 読み込み済みタイル数と、そのうち地図データ（HWDB）から読んだ数 */
     fun loadedStats(): Pair<Int, Int> = synchronized(lock) { loaded.size to fromStore.size }
 
+    /** このタイルは地図データが無い（端末の地図データに無く、オンライン取得もしない）と分かっている */
+    fun hasNoData(t: TileId): Boolean = synchronized(lock) { t in missing }
+
     fun shutdown() {
         HwdbManager.removeListener(dataListener)
         worker.execute {

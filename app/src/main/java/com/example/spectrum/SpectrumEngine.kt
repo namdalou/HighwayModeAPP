@@ -22,7 +22,10 @@ import kotlin.math.sqrt
  * 解析する音声:
  *  1. 音楽アプリが公開したオーディオセッション(イコライザー用の通知で受け取る)
  *     → Android Auto 接続中でも、そのアプリの音を直接解析できる
- *  2. 上が無いときは端末全体の出力音(セッション 0)
+ *  2. DUMP 権限(Shizuku・パソコンで許可)があれば、Android の内部情報から読み取った番号
+ *  3. 番号を知らせないアプリ(Amazon Music など)で無音が続くときは、音が出ている番号を自動で探す
+ *     ([SessionProber]。Shizuku は不要)
+ *  4. どれも無いときは端末全体の出力音(セッション 0)
  * 必要な権限は RECORD_AUDIO のみ。
  */
 object SpectrumEngine {
@@ -41,6 +44,15 @@ object SpectrumEngine {
 
     /** 音楽アプリから通知されたオーディオセッション(パッケージ名 → セッション番号) */
     val appSessions = ConcurrentHashMap<String, Int>()
+
+    /** 番号を知らせないアプリについて、自動で探して見つけた番号(パッケージ名 → セッション番号) */
+    val probedSessions = ConcurrentHashMap<String, Int>()
+    private const val PROBE_PREFIX = "probe:"
+    /** 探す処理を次に行ってよい時刻(パッケージごと。見つからなければ間隔をあける) */
+    private val probeNotBefore = ConcurrentHashMap<String, Long>()
+    private val probeFailures = ConcurrentHashMap<String, Int>()
+    /** 再生中なのに無音と判断するまで(ms) */
+    private const val SILENT_PROBE_MS = 2500L
     @Volatile private var lastOpenedPkg: String? = null
 
     // ---- 感度調整用の値 ----
@@ -110,13 +122,14 @@ object SpectrumEngine {
         for ((k, v) in p.all) {
             if (k == "_last") continue
             val id = (v as? Int) ?: continue
-            appSessions.putIfAbsent(k, id)
+            if (k.startsWith(PROBE_PREFIX)) probedSessions.putIfAbsent(k.removePrefix(PROBE_PREFIX), id)
+            else appSessions.putIfAbsent(k, id)
         }
         if (lastOpenedPkg == null) lastOpenedPkg = p.getString("_last", null)
     }
 
     fun onAudioSessionOpened(pkg: String, session: Int) {
-        if (session <= 0 || pkg.isEmpty() || pkg == "_last") return
+        if (session <= 0 || pkg.isEmpty() || pkg == "_last" || pkg.startsWith(PROBE_PREFIX)) return
         appSessions[pkg] = session
         lastOpenedPkg = pkg
         prefs?.edit()?.putInt(pkg, session)?.putString("_last", pkg)?.apply()
@@ -172,33 +185,111 @@ object SpectrumEngine {
         for (l in listeners) l(zero)
     }
 
+    /** いま曲情報を出しているアプリ */
+    private fun currentPackage(): String = NowPlaying.controller?.packageName ?: NowPlaying.sourcePackage
+
     /**
      * 解析したいセッション:
-     *  再生中アプリが知らせた番号 → 再生中アプリの読み取った番号 → 最後に知らされた番号
-     *  → 読み取った中の再生中の番号 → 端末全体(0)
+     *  再生中アプリが知らせた番号 → 再生中アプリの読み取った番号 → 曲情報に添えられた番号
+     *  → 自動で探して見つけた番号 → 最後に知らされた番号 → 読み取った中の再生中の番号 → 端末全体(0)
      */
-    private fun desiredSession(): Int {
-        val pkg = NowPlaying.controller?.packageName ?: NowPlaying.sourcePackage
+    private fun desiredSession(pkg: String): Int {
         if (pkg.isNotEmpty()) {
             appSessions[pkg]?.let { return it }
             scannedSessions[pkg]?.let { return it }
+            sessionFromExtras()?.let { return it }
+            probedSessions[pkg]?.let { return it }
         }
         lastOpenedPkg?.let { p -> appSessions[p]?.let { return it } }
         scannedSessions.values.firstOrNull()?.let { return it }
         return 0
     }
 
-    /** 再生中アプリの番号がまだ分からないときだけ、dumpsys audio から読み取る */
-    private fun scanIfNeeded() {
-        val c = appContext ?: return
+    /** 一部のアプリはメディアセッションの付加情報に音声の番号を入れている */
+    private fun sessionFromExtras(): Int? {
+        val c = NowPlaying.controller ?: return null
+        val bundles = try {
+            listOfNotNull(c.extras, c.playbackState?.extras)
+        } catch (e: Exception) {
+            return null
+        }
+        for (b in bundles) {
+            for (k in EXTRA_SESSION_KEYS) {
+                val v = try {
+                    b.getInt(k, 0)
+                } catch (e: Exception) {
+                    0
+                }
+                if (v > 0) return v
+            }
+        }
+        return null
+    }
+
+    private val EXTRA_SESSION_KEYS = listOf(
+        "android.media.extra.AUDIO_SESSION", "audio_session_id", "audioSessionId", "AUDIO_SESSION_ID"
+    )
+
+    /**
+     * dumpsys audio から再生中の音声の番号を読み取る(DUMP 権限があるときだけ)。
+     * 重い処理なので、番号が分からない・鳴っていないときは 2 秒ごと、分かっていて鳴っている間は 30 秒ごと。
+     */
+    private fun scanIfNeeded(pkg: String, silentWhilePlaying: Boolean, sinceLastScanMs: Long): Boolean {
+        val c = appContext ?: return false
         if (!SessionScanner.hasPermission(c) && !ShizukuHelper.isRunning()) {
             scannedSessions = emptyMap()
-            return
+            return false
         }
-        val pkg = NowPlaying.controller?.packageName ?: NowPlaying.sourcePackage
-        if (pkg.isNotEmpty() && appSessions.containsKey(pkg)) return   // アプリが知らせてくれている
+        if (pkg.isNotEmpty() && appSessions.containsKey(pkg)) return false   // アプリが知らせてくれている
+        val known = pkg.isNotEmpty() && scannedSessions.containsKey(pkg)
+        if (known && !silentWhilePlaying && sinceLastScanMs < 30_000L) return false
+        if (pkg.isEmpty() && sinceLastScanMs < 10_000L) return false
         scannedSessions = SessionScanner.scan(c)
+        return true
     }
+
+    /** 自動で探した番号が鳴らなくなった(アプリが再生の仕組みを作り直した)ので忘れる */
+    private fun forgetProbed(pkg: String) {
+        probedSessions.remove(pkg)
+        prefs?.edit()?.remove(PROBE_PREFIX + pkg)?.apply()
+    }
+
+    /**
+     * 番号を知らせないアプリで無音が続くとき、音が出ている番号を別スレッドで探す。
+     * 見つからなければ 30 秒 → 1 分 → 2 分 → 5 分と間隔をあける(電池のため)。
+     */
+    private fun maybeProbe(pkg: String, now: Long) {
+        val c = appContext ?: return
+        if (SessionProber.running) return
+        if ((probeNotBefore[pkg] ?: 0L) > now) return
+        // DUMP 権限で読み取れるなら、そちらが確実
+        if (SessionScanner.hasPermission(c) || ShizukuHelper.isRunning()) return
+        probeNotBefore[pkg] = now + 30_000L
+        val exclude = HashSet<Int>()
+        for ((p, id) in appSessions) if (p != pkg) exclude.add(id)
+        for ((p, id) in probedSessions) if (p != pkg) exclude.add(id)
+        currentSession.takeIf { it > 0 }?.let { exclude.add(it) }
+        Thread({
+            val found = try {
+                SessionProber.probe(c, exclude) { running && NowPlaying.isPlaying && currentPackage() == pkg }
+            } catch (e: Exception) {
+                null
+            }
+            val t = SystemClock.uptimeMillis()
+            if (found != null) {
+                probedSessions[pkg] = found
+                prefs?.edit()?.putInt(PROBE_PREFIX + pkg, found)?.apply()
+                probeFailures.remove(pkg)
+                probeNotBefore[pkg] = t + 20_000L
+            } else {
+                val n = (probeFailures[pkg] ?: 0) + 1
+                probeFailures[pkg] = n
+                probeNotBefore[pkg] = t + PROBE_BACKOFF_MS[minOf(n - 1, PROBE_BACKOFF_MS.size - 1)]
+            }
+        }, "spectrum-probe").apply { isDaemon = true }.start()
+    }
+
+    private val PROBE_BACKOFF_MS = longArrayOf(30_000L, 60_000L, 120_000L, 300_000L)
 
     private fun open(session: Int): Analyzer? = try {
         val v = Visualizer(session)
@@ -217,11 +308,17 @@ object SpectrumEngine {
         var a: Analyzer? = null
         var lastCheck = 0L
         var lastScan = 0L
+        var lastScanDone = 0L
         var lastVolCheck = 0L
         var lastVolume = -1
         val am = appContext?.getSystemService(AudioManager::class.java)
         while (running) {
             val now = SystemClock.uptimeMillis()
+            val pkg = currentPackage()
+            // 再生中なのに、いま解析している音声が鳴っていない(番号が違う・端末全体の音に出てこない)
+            val cur = a
+            val silentWhilePlaying = cur != null && NowPlaying.isPlaying &&
+                now - cur.openedAt > SILENT_PROBE_MS && now - cur.lastAudibleAt > SILENT_PROBE_MS
             // スマホの音量を変えたら、強弱の基準をその場で今の音に合わせ直す
             // (音量を下げてもバーが小さくならず、音が出ていればいつも同じように動く)
             if (am != null && now - lastVolCheck >= VOLUME_CHECK_MS) {
@@ -234,11 +331,18 @@ object SpectrumEngine {
             }
             if (now - lastScan >= SCAN_MS) {
                 lastScan = now
-                try { scanIfNeeded() } catch (_: Exception) { }
+                try {
+                    if (scanIfNeeded(pkg, silentWhilePlaying, now - lastScanDone)) lastScanDone = now
+                } catch (_: Exception) { }
             }
             if (a == null || now - lastCheck >= 1000) {
                 lastCheck = now
-                val want = desiredSession()
+                if (silentWhilePlaying && cur != null && pkg.isNotEmpty() && !appSessions.containsKey(pkg)) {
+                    // 自動で探した番号が鳴らなくなったら忘れて、探し直す
+                    if (probedSessions[pkg] == cur.session && now - cur.lastAudibleAt > 6000L) forgetProbed(pkg)
+                    if (!scannedSessions.containsKey(pkg) && probedSessions[pkg] == null) maybeProbe(pkg, now)
+                }
+                val want = desiredSession(pkg)
                 if (a == null || a.session != want) {
                     val next = open(want) ?: (if (want != 0 && a == null) open(0) else null)
                     if (next != null) {
@@ -258,6 +362,10 @@ object SpectrumEngine {
 
     /** 1 つの Visualizer とその解析用バッファ */
     private class Analyzer(val v: Visualizer, val session: Int) {
+        /** 開いた時刻と、最後に音が出ていた時刻(SystemClock.uptimeMillis) */
+        val openedAt = SystemClock.uptimeMillis()
+        var lastAudibleAt = 0L
+            private set
         private val size = v.captureSize
         private val fft = ByteArray(size)
         private val bins = size / 2
@@ -337,6 +445,7 @@ object SpectrumEngine {
             val rmsDb = readRmsDb()
             val silent = frameMaxMag < GATE || (rmsDb != null &&
                 (rmsDb < DIGITAL_SILENCE_DB || rmsDb < loudRef - SILENCE_BELOW_REF_DB))
+            if (!silent) lastAudibleAt = now
             if (silent) {
                 out.fill(0f)                       // ほぼ無音
                 loudness = 0f

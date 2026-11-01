@@ -8,6 +8,11 @@ import android.view.MotionEvent
 import android.view.View
 import android.widget.Toast
 
+/**
+ * スマホの音楽画面。
+ * 電池の節約のため、画面に見えている間だけ音声を解析し（アプリを裏にした・画面を消したら止める）、
+ * 描き直しは再生中で約 60fps（高リフレッシュレートの画面でも 60fps まで）、一時停止中は約 15fps にする。
+ */
 class PlayerView(context: Context) : View(context) {
 
     companion object {
@@ -15,6 +20,10 @@ class PlayerView(context: Context) : View(context) {
         private const val DIAG_TAP_COUNT = 20
         /** 連続タップとみなす間隔(ms)。これより間が空くと数え直し */
         private const val DIAG_TAP_INTERVAL_MS = 600L
+        /** 再生中の描き直しの間隔（60fps。120Hz の画面でも 1 フレームおき） */
+        private const val PLAYING_FRAME_MS = 15L
+        /** 一時停止中の描き直しの間隔（曲名の流し表示用） */
+        private const val PAUSED_FRAME_MS = 66L
     }
 
     private val renderer = PlayerRenderer().apply {
@@ -26,7 +35,7 @@ class PlayerView(context: Context) : View(context) {
     }
     private val specListener: (FloatArray) -> Unit = { renderer.setSpectrum(it) }
 
-    /** 2 画面（横画面の左側）用の大きい表示 */
+    /** 2 画面（横画面の左側）用の表示 */
     var large: Boolean
         get() = renderer.large
         set(v) {
@@ -36,20 +45,41 @@ class PlayerView(context: Context) : View(context) {
             }
         }
 
+    /** 音声の解析を使っている（見えている間だけ） */
+    private var acquired = false
+    private val redraw = Runnable { invalidate() }
+
     /** 診断画面用の連続タップの数 */
     private var tapCount = 0
     private var lastTapTime = 0L
 
+    override fun onVisibilityAggregated(isVisible: Boolean) {
+        super.onVisibilityAggregated(isVisible)
+        setSpectrumInUse(isVisible && isAttachedToWindow)
+        if (isVisible) invalidate()
+    }
+
     override fun onAttachedToWindow() {
         super.onAttachedToWindow()
-        SpectrumEngine.listeners.add(specListener)
-        SpectrumEngine.acquire(context.applicationContext)
+        if (isShown) setSpectrumInUse(true)
     }
 
     override fun onDetachedFromWindow() {
-        SpectrumEngine.listeners.remove(specListener)
-        SpectrumEngine.release()
+        removeCallbacks(redraw)
+        setSpectrumInUse(false)
         super.onDetachedFromWindow()
+    }
+
+    private fun setSpectrumInUse(use: Boolean) {
+        if (use == acquired) return
+        acquired = use
+        if (use) {
+            SpectrumEngine.listeners.add(specListener)
+            SpectrumEngine.acquire(context.applicationContext)
+        } else {
+            SpectrumEngine.listeners.remove(specListener)
+            SpectrumEngine.release()
+        }
     }
 
     private var lastHeal = 0L
@@ -61,7 +91,10 @@ class PlayerView(context: Context) : View(context) {
             lastHeal = now
             MediaTracker.heal(context)
         }
-        postInvalidateOnAnimation()
+        // 次の描き直し（画面の更新に合わせて）
+        removeCallbacks(redraw)
+        val delay = if (NowPlaying.isPlaying || renderer.animating) PLAYING_FRAME_MS else PAUSED_FRAME_MS
+        postOnAnimationDelayed(redraw, delay)
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
@@ -70,6 +103,7 @@ class PlayerView(context: Context) : View(context) {
             // ボタンやジャケット以外の場所の連続タップだけを数える(誤って再生操作しないように)
             if (!handled) countDiagnosticsTap() else tapCount = 0
             performClick()
+            invalidate()
         }
         return true
     }

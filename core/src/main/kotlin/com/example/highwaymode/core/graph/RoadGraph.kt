@@ -155,6 +155,31 @@ class RoadGraph(
         return best.values.sortedBy { it.dist }
     }
 
+    /**
+     * いちばん近い道路（エッジ）までの距離 [m]。maxRadius 以内に無ければ null。
+     * 近くから順に範囲を広げて調べる（電池の節約の判定で数秒ごとに呼ぶため、近くに道路があればすぐ終わる）。
+     */
+    fun nearestDistance(lat: Double, lon: Double, maxRadius: Double): Double? {
+        if (edges.isEmpty()) return null
+        val frame = LocalFrame(lat, lon)
+        val proj = SegmentProjection()
+        var r = minOf(400.0, maxRadius)
+        while (true) {
+            var best = Double.POSITIVE_INFINITY
+            index.query(lat, lon, r) { edgeId, seg ->
+                val e = edges[edgeId]
+                val ax = frame.x(e.lon[seg]); val ay = frame.y(e.lat[seg])
+                val bx = frame.x(e.lon[seg + 1]); val by = frame.y(e.lat[seg + 1])
+                SegmentMath.project(0.0, 0.0, ax, ay, bx, by, proj)
+                if (proj.dist < best) best = proj.dist
+            }
+            // 調べた範囲（半径 r の円）の中で見つかったものが最も近い
+            if (best <= r) return best
+            if (r >= maxRadius) return null
+            r = minOf(r * 3.0, maxRadius)
+        }
+    }
+
     /** 指定エッジへの最近傍射影 */
     fun projectOnEdge(edgeId: Int, lat: Double, lon: Double): EdgeProjection {
         val e = edges[edgeId]

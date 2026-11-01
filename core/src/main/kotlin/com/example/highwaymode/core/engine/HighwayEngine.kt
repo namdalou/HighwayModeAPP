@@ -292,6 +292,23 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         }
     }
 
+    /**
+     * 電池の節約でセンサーを止めたとき。止まる直前の「停車中」の判定が残って
+     * 速度が 0 に固定されないよう、判定材料を捨てる（再開後は GPS の方位から方位を取り直す）。
+     */
+    fun onSensorsPaused() {
+        still.reset()
+        stationary = false
+        stillSince = Long.MIN_VALUE
+        stillRateSum = 0.0
+        stillRateN = 0
+        lastAccelT = Long.MIN_VALUE
+        upDeviateSince = Long.MIN_VALUE
+    }
+
+    /** 直近の GPS 測位の速度 [m/s]（無ければ NaN）。電池の節約の判定に使う */
+    val lastGpsSpeedMs: Double get() = lastFixSpeed
+
     /** 車両の GPS（スマホの測位が止まっているときだけ使う） */
     fun onVehicleLocation(fix: GpsFix) {
         vehicle.connected = true

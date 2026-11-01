@@ -237,8 +237,9 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         locBtn.visibility = if (has(Manifest.permission.ACCESS_FINE_LOCATION)) View.GONE else View.VISIBLE
         micBtn.visibility = if (has(Manifest.permission.RECORD_AUDIO)) View.GONE else View.VISIBLE
         accessBtn.visibility = if (isListenerEnabled()) View.GONE else View.VISIBLE
-        val hidden = getSharedPreferences(MediaListenerService.PREFS, MODE_PRIVATE).getBoolean(KEY_HIDE_DUMP_BUTTON, false)
-        dumpBtn.visibility = if (SessionScanner.hasPermission(this) || hidden) View.GONE else View.VISIBLE
+        // Amazon Music など音声の番号を知らせないアプリも Shizuku なしで自動で探すので、
+        // Shizuku のボタンは常には出さない（メニュー →「音楽（Spectrum）」から使える）
+        dumpBtn.visibility = View.GONE
     }
 
     private fun isListenerEnabled(): Boolean {
@@ -259,8 +260,9 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("音声の読み取りを許可")
             .setMessage(
-                "YouTube やらじるらじるなど、音声の番号を知らせないアプリでも\n" +
-                    "Android Auto 接続中にスペアナを動かすための設定です。\n\n" +
+                "Amazon Music・YouTube など音声の番号を知らせないアプリは、Shizuku が無くても\n" +
+                    "再生中の音を自動で探してスペアナを動かします（見つかるまで数秒〜1 分ほど）。\n\n" +
+                    "それでもスペアナが動かないときだけ、この設定を使ってください。\n" +
                     "Shizuku アプリを起動した状態で「許可する」を押してください。\n" +
                     "(Shizuku はワイヤレスデバッグで開始できます。一度許可すれば Shizuku は止めても大丈夫です)"
             )
@@ -441,7 +443,7 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         if (!has(Manifest.permission.RECORD_AUDIO)) {
             items.add("マイク権限を許可（スペアナ用・録音はしません）" to { requestRuntime(arrayOf(Manifest.permission.RECORD_AUDIO)) })
         }
-        items.add((if (SessionScanner.hasPermission(this)) "音声の読み取り（許可済み）" else "音声の読み取りを許可（Shizuku・YouTube などの音用）") to {
+        items.add((if (SessionScanner.hasPermission(this)) "音声の読み取り（許可済み）" else "音声の読み取りを許可（Shizuku・自動で見つからないとき用）") to {
             getSharedPreferences(MediaListenerService.PREFS, MODE_PRIVATE).edit().putBoolean(KEY_HIDE_DUMP_BUTTON, false).apply()
             requestDumpWithShizuku()
         })

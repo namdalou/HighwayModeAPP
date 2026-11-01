@@ -178,38 +178,67 @@ class PlayerRenderer {
     private var portraitCache: Layout? = null
 
     /**
-     * 2 画面（車の画面・スマホ横画面の左側）用の縦レイアウト: 運転中でも読めるよう、曲名・アーティスト・
-     * ボタンを大きくする（アルバム名とアイコンは省く）。幅 240 固定、高さは画面比率に合わせる（300〜560）。
+     * 2 画面（車の画面・スマホ横画面の左側。Spectrum 4 : ハイウェイ 5）用: 幅 400 固定、高さは区画の比率に合わせる。
+     * 上に曲名・アルバム名・アーティスト名（アイコン付き。運転中でも読めるよう大きく）、
+     * 中段にジャケットとスペアナ、下に操作ボタンとシーク。
+     * 中段に高さがあるとき（縦長の区画）は、従来の縦画面と同じくジャケットの下半分にスペアナを重ねる。
      */
-    private fun largePortraitLayout(vh: Float): Layout {
-        val ctrlCy = vh - 50f                       // 操作ボタンの中心
-        val playH = 54f
-        val artTop = 82f
-        val artSize = min(150f, ctrlCy - playH / 2 - 12f - artTop).coerceAtLeast(80f)
-        val artL = 120f - artSize / 2
-        val seekY = vh - 13f
+    private fun splitLayout(vh: Float): Layout {
+        val roomy = vh >= 290f
+        val titleSize = if (roomy) 27f else 24f
+        val subSize = if (roomy) 20f else 18f
+        val titleY = if (roomy) 33f else 30f
+        val albumY = titleY + subSize + (if (roomy) 9f else 8f)
+        val artistY = albumY + subSize + (if (roomy) 8f else 7f)
+        val textBottom = artistY + subSize * 0.5f
+
+        val seekY = vh - 12f
+        val playH = if (roomy) 50f else 44f
+        val ctrlCy = seekY - 17f - playH / 2
+        val side = playH * 0.92f
+        val midTop = textBottom + 6f
+        val midBottom = ctrlCy - playH / 2 - 9f
+        val midH = midBottom - midTop
+
+        val art: RectF
+        val spec: RectF
+        val stacked = midH >= 230f
+        if (stacked) {
+            // 縦長: ジャケットを中央に、下半分にスペアナを重ねる（従来の縦画面と同じ見え方）
+            val a = min(midH - 60f, 210f)
+            art = RectF(200f - a / 2, midTop, 200f + a / 2, midTop + a)
+            spec = RectF(12f, midTop + a * 0.5f, 388f, midBottom)
+        } else {
+            // 横長: 左にジャケット、右にスペアナ
+            val a = min(midH, 172f).coerceAtLeast(40f)
+            val at = midTop + (midH - a) / 2
+            art = RectF(12f, at, 12f + a, at + a)
+            spec = RectF(12f + a + 16f, midTop, 388f, midBottom)
+        }
         return Layout(
-            vw = 240f, vh = vh,
-            art = RectF(artL, artTop, artL + artSize, artTop + artSize),
-            spec = RectF(10f, artTop + artSize * 0.5f, 230f, ctrlCy - playH / 2 - 6f),
-            specOnly = RectF(10f, 40f, 230f, ctrlCy - playH / 2 - 6f),
-            textX = 12f, textRight = 228f, iconX = -1f,
-            titleY = 34f, albumY = -1f, artistY = 64f,
-            titleSize = 23f, subSize = 18f,
-            prev = RectF(24f, ctrlCy - 23f, 70f, ctrlCy + 23f),
-            play = RectF(76f, ctrlCy - playH / 2, 164f, ctrlCy + playH / 2),
-            next = RectF(170f, ctrlCy - 23f, 216f, ctrlCy + 23f),
-            seekX0 = 56f, seekX1 = 184f, seekY = seekY,
+            vw = 400f, vh = vh,
+            art = art,
+            spec = spec,
+            specOnly = RectF(12f, 40f, 388f, midBottom),
+            textX = 46f, textRight = 388f, iconX = 16f,
+            titleY = titleY, albumY = albumY, artistY = artistY,
+            titleSize = titleSize, subSize = subSize,
+            prev = RectF(130f - side * 1.55f, ctrlCy - side / 2, 130f - side * 0.55f, ctrlCy + side / 2),
+            play = RectF(200f - playH, ctrlCy - playH / 2, 200f + playH, ctrlCy + playH / 2),
+            next = RectF(270f + side * 0.55f, ctrlCy - side / 2, 270f + side * 1.55f, ctrlCy + side / 2),
+            seekX0 = 66f, seekX1 = 334f, seekY = seekY,
             timeY = seekY + 4f, timeSize = 11f,
-            seekTouch = RectF(50f, seekY - 13f, 190f, vh),
+            seekTouch = RectF(60f, seekY - 13f, 340f, vh),
             hintY = seekY + 4f,
-            segUnit = 5.5f, gain = 1.0f, noiseFloor = 0.03f,
+            segUnit = if (stacked) 5.5f else 4.4f,
+            gain = if (stacked) 1.0f else 1.2f,
+            noiseFloor = if (stacked) 0.03f else 0.05f,
             boldTitle = true
         )
     }
-    private var largeCache: Layout? = null
+    private var splitCache: Layout? = null
 
-    /** 2 画面用の大きい表示にする（縦長の区画のとき） */
+    /** 2 画面（左右に並べたとき）の表示にする */
     var large = false
 
     private var lay = landscape
@@ -275,6 +304,14 @@ class PlayerRenderer {
         System.arraycopy(v, 0, target, 0, min(v.size, n))
     }
 
+    /** バー・ピーク・再生バーの波がまだ動いている（描き直す間隔を決めるのに使う） */
+    val animating: Boolean
+        get() {
+            if (waveAmp > 0.05f) return true
+            for (i in 0 until n) if (target[i] > 0.01f || level[i] > 0.01f || peak[i] > 0.01f) return true
+            return false
+        }
+
     fun draw(c: Canvas, left: Int, top: Int, w: Int, h: Int) {
         val l = left.toFloat()
         val t = top.toFloat()
@@ -284,10 +321,12 @@ class PlayerRenderer {
         c.drawRect(l, t, l + w, t + h, bg)
         updateAccent()
 
-        lay = if (h > w && large) {
-            val vh = (240f * h / w).coerceIn(300f, 560f)
-            val lc = largeCache
-            if (lc != null && lc.vh == vh) lc else largePortraitLayout(vh).also { largeCache = it }
+        val aspect = if (h > 0) w.toFloat() / h else 1f
+        lay = if (large && aspect in 0.62f..1.75f) {
+            // 2 画面: 区画の比率に合わせた表示（曲名・アルバム名・アーティスト名を大きく）
+            val vh = (400f / aspect).coerceIn(250f, 600f)
+            val sc = splitCache
+            if (sc != null && sc.vh == vh) sc else splitLayout(vh).also { splitCache = it }
         } else if (h > w) {
             val vh = (240f * h / w).coerceIn(380f, 560f)
             val pc = portraitCache

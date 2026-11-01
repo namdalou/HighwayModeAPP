@@ -54,16 +54,22 @@ import com.example.spectrum.SpectrumEngine
  *  - 対象エリア内は下部に切替バー（音楽 / 2画面 / ハイウェイ）
  *  - タッチ操作のできない車でも使えるよう、同じ切替を右上のボタン（画面切替）にも置く
  *
- * 描画は専用スレッドで行う。Spectrum が見えている間は約 60fps、ハイウェイだけのときは 10fps。
+ * 描画は専用スレッドで行う。Spectrum が再生中で見えている間は約 30fps（Android Auto の映像と同じ程度）、
+ * 一時停止中は約 15fps、ハイウェイだけのときは 10fps（電池の節約）。
  * ハイウェイモードの画面は内容が変わったとき（約 1 秒ごと）だけ描き直し、間は記録した描画を再生する。
+ *
+ * 表示する状態は、毎フレーム エンジンの最新の状態（EngineHost.latest）を読む。
+ * 画面の状態（他の画面を重ねた・Android Auto の別のアプリを前に出した）によらず、スマホの画面と同じ内容になる。
  */
 class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     Screen(carContext), SurfaceCallback, DualMode.Listener {
 
     companion object {
         private const val TAG = "DualCarScreen"
-        /** Spectrum が見えているときの描画間隔（約 60fps） */
-        private const val FRAME_MS = 16L
+        /** Spectrum が再生中で見えているときの描画間隔（約 30fps） */
+        private const val FRAME_MS = 33L
+        /** Spectrum が見えていて一時停止中の描画間隔（曲名の流し表示用。約 15fps） */
+        private const val PAUSED_FRAME_MS = 66L
         /** ハイウェイモードだけのときの描画間隔 */
         private const val IDLE_FRAME_MS = 100L
         /** 曲情報の取りこぼしを確認する間隔 */
@@ -80,10 +86,9 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     private val main = Handler(Looper.getMainLooper())
 
     // ---- 描画部品
-    // 2 画面の左側は、運転中でも読めるよう曲名・ボタンを大きくした表示
+    // 2 画面の左側は、運転中でも読めるよう曲名・アルバム名・アーティスト名を大きくした表示（large）
     private val music = PlayerRenderer().apply {
         onArtTap = { openPlayingAppOnCar() }
-        large = true
     }
     private val panel = PanelRenderer(1f).apply {
         showButtons = false
@@ -312,13 +317,8 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
                 screenManager.push(FacilityDetailScreen(carContext, fac))
                 return
             }
-            // ［︿ この先］［﹀ 手前へ］: さらに先の施設・渋滞を見る
-            val moved = when (hit.button) {
-                PanelRenderer.BUTTON_PAGE_NEXT -> panel.pageNext()
-                PanelRenderer.BUTTON_PAGE_PREV -> panel.pagePrev()
-                else -> false
-            }
-            if (moved) {
+            // ［︿ この先］［現在地へ］［﹀ 手前へ］: さらに先の施設・渋滞を見る / 戻る
+            if (panel.pageButton(hit.button)) {
                 panelInvalid = true
                 requestFrame()
             }
@@ -397,6 +397,13 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         // ハイウェイモードは右上のボタンと重ならないよう、表示範囲の上端から描く。
         val v = synchronized(visible) { Rect(visible) }
         val layout = DualMode.layout
+        // エンジンの最新の状態（画面の開始・停止の通知に頼らない）
+        val latest = EngineHost.latest
+        if (latest != null && latest !== snap) {
+            snap = latest
+            panelInvalid = true
+        }
+        music.large = layout == DualLayout.SPLIT
         val f = DualGeometry.car(
             w, h,
             left = if (v.isEmpty) 0f else v.left.toFloat(),
@@ -444,7 +451,12 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         }
         lastFrame = f
         val fading = now - DualMode.changedAtMs < FADE_MS
-        return if (f.music != null || fading) FRAME_MS else IDLE_FRAME_MS
+        return when {
+            fading -> FRAME_MS
+            f.music == null -> IDLE_FRAME_MS
+            NowPlaying.isPlaying || music.animating -> FRAME_MS
+            else -> PAUSED_FRAME_MS
+        }
     }
 
     /**

@@ -1,0 +1,16 @@
+# 改行コードを LF に統一する（Windows でも LF のまま取り出す）
+* text=auto eol=lf
+
+# Windows 用のバッチファイルだけは CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# バイナリ（改行変換しない）
+*.jar binary
+*.jks binary
+*.keystore binary
+*.png binary
+*.jpg binary
+*.webp binary
+*.zip binary
+*.hwdb binary

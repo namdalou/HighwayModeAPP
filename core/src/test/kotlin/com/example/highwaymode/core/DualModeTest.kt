@@ -164,7 +164,7 @@ class DualModeTest {
     private fun overlap(a: Box, b: Box) = a.l < b.r - 0.01f && b.l < a.r - 0.01f && a.t < b.b - 0.01f && b.t < a.b - 0.01f
 
     @Test
-    fun geometry_carSplitKeepsSpectrumPortraitAndHighwayWide() {
+    fun geometry_carSplitIsFourToFive() {
         // 一般的な車載画面の解像度（幅, 高さ, 密度）
         val screens = listOf(
             Triple(800f, 480f, 1.0f), Triple(1280f, 720f, 1.25f), Triple(1920f, 720f, 1.5f),
@@ -178,9 +178,10 @@ class DualModeTest {
             val bar = f.bar!!
             listOf(m, hw, bar).forEach { assertTrue("$w×$h: 画面内 $it", it.inside(full)) }
             assertFalse(overlap(m, hw)); assertFalse(overlap(m, bar)); assertFalse(overlap(hw, bar))
-            // 左の Spectrum は縦レイアウト（高さ > 幅）。右のハイウェイモードは画面の半分以上
-            assertTrue("$w×$h: Spectrum は縦長 $m", m.h > m.w * 1.2f)
-            assertTrue("$w×$h: ハイウェイ側は半分以上 $hw", hw.w >= w * 0.55f)
+            // Spectrum : ハイウェイ = 4 : 5（どちらも細くならない）
+            assertEquals("$w×$h: Spectrum は 4/9", w * 4f / 9f, m.w, 1f)
+            assertTrue("$w×$h: ハイウェイ側は半分以上 $hw", hw.w >= w * 0.54f)
+            assertTrue("$w×$h: ハイウェイ側は 6 割未満 $hw", hw.w < w * 0.6f)
             // 下部バーは押しやすい高さ（56dp 以上）で、画面の 22% 以下
             assertTrue(bar.h >= minOf(56f * d, h * 0.22f) - 0.01f && bar.h <= h * 0.22f + 0.01f)
             println("  %4.0f×%3.0f: Spectrum %s（%.0f%%）/ ハイウェイ %s / バー高さ %.0f".format(w, h, m, m.w / w * 100, hw, bar.h))
@@ -221,6 +222,7 @@ class DualModeTest {
         val land = DualGeometry.phone(2200f, 1080f, DualLayout.SPLIT, 2.75f)
         assertFalse(land.stacked)
         assertTrue(land.music!!.r <= land.highway!!.l)
+        assertEquals("横画面も 4 : 5", 2200f * 4f / 9f, land.music!!.w, 1f)
         for (lay in DualLayout.values()) {
             val f = DualGeometry.phone(1080f, 2200f, lay, 2.75f)
             assertNotNull("スマホは常にバーを表示", f.bar)

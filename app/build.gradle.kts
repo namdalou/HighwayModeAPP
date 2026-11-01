@@ -28,7 +28,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = appVersionCode
-        versionName = "2.1.0"
+        versionName = "2.2.0"
         // 地図データ（HWDB）の配布目録。GitHub Actions では自動で設定される:
         //   ./gradlew :app:assembleRelease -Phwdb.manifestUrl=https://github.com/<user>/<repo>/releases/download/hwdb-latest/hwdb-manifest.json
         val manifestUrl = (project.findProperty("hwdb.manifestUrl") as String?) ?: ""

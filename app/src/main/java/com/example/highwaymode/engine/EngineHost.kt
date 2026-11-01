@@ -11,8 +11,11 @@ import com.example.highwaymode.TrackingService
 import com.example.highwaymode.alerts.AlertManager
 import com.example.highwaymode.core.engine.HighwayEngine
 import com.example.highwaymode.core.engine.HighwaySnapshot
+import com.example.highwaymode.core.engine.PowerLevel
+import com.example.highwaymode.core.engine.PowerPolicy
 import com.example.highwaymode.core.graph.RoadGraph
 import com.example.highwaymode.core.model.GpsFix
+import com.example.highwaymode.core.osm.TileId
 import com.example.highwaymode.core.traffic.TrafficQuery
 import com.example.highwaymode.core.vehicle.TollCardState
 import com.example.highwaymode.data.Prefs
@@ -20,11 +23,16 @@ import com.example.highwaymode.data.TileRepository
 import com.example.highwaymode.data.UserCameraStore
 import com.example.highwaymode.traffic.TrafficUpdater
 import java.util.concurrent.CopyOnWriteArraySet
+import kotlin.math.cos
+import kotlin.math.max
 
 /**
  * エンジン・センサー・GPS・地図データ・渋滞情報・音声案内をまとめて動かすプロセス内シングルトン。
  * エンジンへのアクセスはすべて専用スレッド（engine handler）上で行う。
  * 画面（スマホの Activity・Android Auto の車載画面）と常駐サービスは、メインスレッドでスナップショットを受け取る。
+ *
+ * 電池の節約（[PowerPolicy]）: 高速道路から離れている・停車しているときは GPS の間隔をあけ、
+ * センサーと処理の周期を減らす。高速道路上・高速道路の近くを走行中は、これまでどおり毎秒測位する。
  */
 object EngineHost {
     private const val TAG = "EngineHost"
@@ -68,6 +76,21 @@ object EngineHost {
     var latest: HighwaySnapshot? = null
         private set
 
+    /** いまの電池の節約の段階（動作状態の画面用） */
+    @Volatile
+    var powerLevel: PowerLevel = PowerLevel.ACTIVE
+        private set
+
+    private val power = PowerPolicy()
+    private var lastPowerEval = 0L
+    private var nearestM: Double? = null
+    private var nearestAt = 0L
+    /** 最後に動き出しを検知した時刻 [秒]（elapsedRealtime 基準） */
+    private var motionAtSec = Double.NaN
+    private var sensorMovingSince = 0L
+    private var lastSensorCheck = 0L
+    private var tickMs = 250L
+
     @Volatile
     var running = false
         private set
@@ -91,8 +114,10 @@ object EngineHost {
             if (now - lastGpsCheck > 5_000_000_000L) {
                 lastGpsCheck = now
                 val loc = location
-                val phoneStale = lastPhoneFixNanos == 0L || now - lastPhoneFixNanos > 20_000_000_000L
-                val vehicleStale = lastVehicleFixNanos == 0L || now - lastVehicleFixNanos > 20_000_000_000L
+                // 電池の節約で測位の間隔をあけている間は、その分だけ待ってから「受信できない」と判断する
+                val staleNanos = max(20_000L, powerLevel.gpsIntervalMs + 20_000L) * 1_000_000L
+                val phoneStale = lastPhoneFixNanos == 0L || now - lastPhoneFixNanos > staleNanos
+                val vehicleStale = lastVehicleFixNanos == 0L || now - lastVehicleFixNanos > staleNanos
                 gpsMessage = when {
                     demo != null || loc == null -> null
                     !loc.hasPermission() -> "位置情報の権限がありません"
@@ -113,7 +138,16 @@ object EngineHost {
                 e.forceRematch()
                 e.snapshot
             }
-            if (now - lastTileRequest > 2_000_000_000L) {
+            if (now - lastPowerEval > 2_000_000_000L) {
+                lastPowerEval = now
+                try {
+                    evaluatePower(e, now)
+                } catch (ex: Exception) {
+                    Log.w(TAG, "power policy failed", ex)
+                }
+            }
+            val tileEvery = if (powerLevel == PowerLevel.ACTIVE) 2_000_000_000L else 10_000_000_000L
+            if (now - lastTileRequest > tileEvery) {
                 lastTileRequest = now
                 try {
                     repo?.request(e.wantedTiles())
@@ -131,8 +165,97 @@ object EngineHost {
                 latest = snap
                 main.post { for (l in listeners) l.onSnapshot(snap) }
             }
-            h.postDelayed(this, 250L)
+            h.postDelayed(this, tickMs)
         }
+    }
+
+    // ------------------------------------------------------------------ 電池の節約
+
+    /** エンジン用スレッドで呼ぶ */
+    private fun evaluatePower(e: HighwayEngine, now: Long) {
+        val fix = e.lastFix
+        val tSec = now / 1e9
+        if (fix != null && (nearestAt == 0L || now - nearestAt > 5_000_000_000L)) {
+            nearestM = nearestHighwayM(e, fix.lat, fix.lon)
+            nearestAt = now
+        }
+        val fixAgeSec = fix?.let { (now - it.timeNanos) / 1e9 } ?: Double.MAX_VALUE
+        val recentFix = fixAgeSec <= max(3.0, power.level.gpsIntervalMs / 1000.0 + 5.0)
+        val gpsSpeed = fix?.speedMs ?: e.lastGpsSpeedMs.takeUnless { it.isNaN() }
+        val vehicleFresh = e.vehicle.speedFresh(now)
+        val sensorsOn = sensors?.running == true
+        // 停車中か: 車速信号 → 直近の GPS の速度（歩く程度は停車とみなす）→ センサー
+        val stationary = when {
+            vehicleFresh -> e.vehicle.speedMs < 0.3
+            recentFix && gpsSpeed != null -> gpsSpeed < 1.5
+            sensorsOn -> e.stationary
+            else -> false
+        }
+        // 節約中にセンサーが 5 秒以上 揺れをとらえたら、走り出したか確かめる（2 分に 1 回まで）
+        if (power.level != PowerLevel.ACTIVE && sensorsOn && !e.stationary && !vehicleFresh) {
+            if (sensorMovingSince == 0L) {
+                sensorMovingSince = now
+            } else if (now - sensorMovingSince > 5_000_000_000L && now - lastSensorCheck > 120_000_000_000L) {
+                lastSensorCheck = now
+                motionAtSec = tSec
+            }
+        } else {
+            sensorMovingSince = 0L
+        }
+        val input = PowerPolicy.Input(
+            tSec = tSec, status = e.snapshot.status, demo = demo != null, nearestHighwayM = nearestM,
+            accuracyM = fix?.accuracyM ?: 50.0, stationary = stationary, motionAtSec = motionAtSec
+        )
+        if (power.update(input)) applyPower(e, power.level)
+    }
+
+    /** 段階に合わせて GPS の間隔・センサー・処理の周期を変える（エンジン用スレッド） */
+    private fun applyPower(e: HighwayEngine, level: PowerLevel) {
+        Log.i(TAG, "power: ${powerLevel.name} -> ${level.name}")
+        powerLevel = level
+        tickMs = level.tickMs
+        if (demo == null) location?.setInterval(level.gpsIntervalMs)
+        val s = sensors ?: return
+        if (level.sensors) {
+            s.start()
+        } else if (s.running) {
+            s.stop()
+            e.onSensorsPaused()
+        }
+        // 節約中は「動き出し」の検知を待つ（検知したらすぐ測位を増やす）
+        if (level == PowerLevel.ACTIVE) s.disarmMotion() else s.armMotion()
+    }
+
+    /** 動き出しを検知した（エンジン用スレッド） */
+    private fun onMotion() {
+        val e = engine ?: return
+        if (powerLevel == PowerLevel.ACTIVE) return
+        val now = SystemClock.elapsedRealtimeNanos()
+        motionAtSec = now / 1e9
+        lastPowerEval = now
+        evaluatePower(e, now)
+        // 次の検知も待つ（節約中のまま）
+        if (powerLevel != PowerLevel.ACTIVE) sensors?.armMotion()
+    }
+
+    /**
+     * いちばん近い高速道路（ハイウェイモードの対象の道路）までの距離 [m]。
+     * 周辺 3.5km の地図データがまだそろっていなければ null（不明 → 節約しない）。
+     */
+    private fun nearestHighwayM(e: HighwayEngine, lat: Double, lon: Double): Double? {
+        val g = e.graph
+        val dLat = 3500.0 / 111_000.0
+        val dLon = 3500.0 / (111_000.0 * cos(Math.toRadians(lat)).coerceAtLeast(0.2))
+        val probes = arrayOf(
+            doubleArrayOf(lat, lon), doubleArrayOf(lat + dLat, lon), doubleArrayOf(lat - dLat, lon),
+            doubleArrayOf(lat, lon + dLon), doubleArrayOf(lat, lon - dLon)
+        )
+        for (p in probes) {
+            val t = TileId.of(p[0], p[1])
+            if (!t.inJapan) continue
+            if (t !in g.loadedTiles && repo?.hasNoData(t) != true) return null
+        }
+        return g.nearestDistance(lat, lon, 4500.0) ?: Double.POSITIVE_INFINITY
     }
 
     /** メインスレッドから呼ぶ */
@@ -173,7 +296,10 @@ object EngineHost {
         cameraStore = cs
         r.setUserCameras(cs.load().map { it.toNode() })
         h.post {
-            sensors = SensorInput(ctx, h, e).also { it.start() }
+            sensors = SensorInput(ctx, h, e).also {
+                it.onMotion = { onMotion() }
+                it.start()
+            }
             location = LocationInput(ctx, h) { fix ->
                 lastPhoneFixNanos = SystemClock.elapsedRealtimeNanos()
                 if (demo == null) {
@@ -203,6 +329,7 @@ object EngineHost {
             demo = null
             sensors?.stop()
             location?.stop()
+            sensors?.disarmMotion()
             if (e != null) prefs?.driverProfile = e.driver.serialize()
             h.removeCallbacksAndMessages(null)
             t?.quitSafely()
@@ -221,6 +348,12 @@ object EngineHost {
         location = null
         running = false
         demoRunning = false
+        power.reset()
+        powerLevel = PowerLevel.ACTIVE
+        tickMs = 250L
+        nearestM = null
+        nearestAt = 0L
+        motionAtSec = Double.NaN
     }
 
     fun addListener(l: SnapshotListener) {

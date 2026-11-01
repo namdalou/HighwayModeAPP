@@ -89,6 +89,8 @@ class DiagnosticsActivity : Activity() {
         line("読み取った再生中の音声: ${if (sc.isEmpty()) "なし" else sc.entries.joinToString { "${it.key}=${it.value}" }}")
         val apps = SpectrumEngine.appSessions
         line("音楽アプリから届いた音声セッション: ${if (apps.isEmpty()) "なし" else apps.entries.joinToString { "${it.key}=${it.value}" }}")
+        val probed = SpectrumEngine.probedSessions
+        line("自動で見つけた音声(Shizuku なし): ${if (probed.isEmpty()) "なし" else probed.entries.joinToString { "${it.key}=${it.value}" }}  / ${SessionProber.lastStatus}")
 
         header("いま表示している曲情報")
         line("取得元: ${sourceName(NowPlaying.source)}  ${NowPlaying.sourcePackage}")

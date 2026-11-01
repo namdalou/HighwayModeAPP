@@ -51,6 +51,16 @@ class StationaryDetector {
         winStart = t
     }
 
+    /** センサーを止めたとき: 古い判定材料を捨てる（止まったままの判定が残らないように） */
+    fun reset() {
+        winStart = Long.MIN_VALUE
+        gyroSq = 0.0; gyroN = 0
+        accSum = 0.0; accSq = 0.0; accN = 0
+        gyroRms = 1.0
+        accStd = 1.0
+        hasWindow = false
+    }
+
     /** strict = GPS が無い状況用の厳しい閾値 */
     fun isQuiet(strict: Boolean): Boolean {
         if (!hasWindow) return false

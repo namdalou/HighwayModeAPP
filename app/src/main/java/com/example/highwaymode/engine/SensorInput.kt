@@ -6,6 +6,8 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.hardware.TriggerEvent
+import android.hardware.TriggerEventListener
 import android.os.Handler
 import android.os.SystemClock
 import android.util.Log
@@ -16,6 +18,8 @@ import kotlin.math.sqrt
 /**
  * ジャイロ・重力・加速度・回転ベクトル（コンパス）・磁気センサーをエンジンへ流す。
  * コールバックはエンジン用スレッド（handler）で呼ばれる。
+ * 電池の節約中（高速道路から離れている・停車中）は、端末の「動き出し」の検知（significant motion）を使って
+ * 動き出したらすぐ知らせる（[onMotion]）。
  */
 class SensorInput(
     context: Context,
@@ -38,17 +42,63 @@ class SensorInput(
     var hasGyro = false
         private set
 
+    /** センサーを受信中 */
+    var running = false
+        private set
+
+    /** 動き出しを検知したとき（エンジン用スレッドで呼ぶ） */
+    var onMotion: (() -> Unit)? = null
+
+    private val sigMotion: Sensor? = sm.getDefaultSensor(Sensor.TYPE_SIGNIFICANT_MOTION)
+    @Volatile
+    private var motionArmed = false
+    private val motionTrigger = object : TriggerEventListener() {
+        override fun onTrigger(event: TriggerEvent?) {
+            motionArmed = false
+            handler.post { onMotion?.invoke() }
+        }
+    }
+
     fun start() {
+        if (running) return
         hasGyro = register(Sensor.TYPE_GYROSCOPE, SensorManager.SENSOR_DELAY_GAME)
         hasGravitySensor = register(Sensor.TYPE_GRAVITY, SensorManager.SENSOR_DELAY_GAME)
         register(Sensor.TYPE_ACCELEROMETER, SensorManager.SENSOR_DELAY_GAME)
         register(Sensor.TYPE_ROTATION_VECTOR, 100_000)
         register(Sensor.TYPE_MAGNETIC_FIELD, 100_000)
+        running = true
     }
 
     fun stop() {
         sm.unregisterListener(this)
+        running = false
+        lpInit = false
     }
+
+    /** 動き出しの検知を 1 回分だけ待つ（検知すると自動で解除される） */
+    fun armMotion() {
+        val s = sigMotion ?: return
+        if (motionArmed) return
+        motionArmed = try {
+            sm.requestTriggerSensor(motionTrigger, s)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    fun disarmMotion() {
+        val s = sigMotion ?: return
+        if (!motionArmed) return
+        try {
+            sm.cancelTriggerSensor(motionTrigger, s)
+        } catch (e: Exception) {
+            // 解除済み
+        }
+        motionArmed = false
+    }
+
+    /** 動き出しの検知に対応した端末か */
+    val hasMotionTrigger: Boolean get() = sigMotion != null
 
     private fun register(type: Int, rate: Int): Boolean {
         val s = sm.getDefaultSensor(type) ?: return false

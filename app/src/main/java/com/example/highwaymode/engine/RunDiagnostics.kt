@@ -56,11 +56,14 @@ object RunDiagnostics {
         val coarse = ctx.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val phoneAge = EngineHost.lastPhoneFixNanos.takeIf { it > 0 }?.let { (now - it) / 1e9 }
         val carAge = EngineHost.lastVehicleFixNanos.takeIf { it > 0 }?.let { (now - it) / 1e9 }
+        // 電池の節約で測位の間隔をあけている間は、その間隔の分だけ待つ
+        val power = EngineHost.powerLevel
+        val okAge = 10.0 + power.gpsIntervalMs / 1000.0
         out += when {
             !fine && !coarse -> Item("位置情報", "権限がありません（スマホで許可してください）", false, Fix.APP_SETTINGS)
             !fine -> Item("位置情報", "「おおよその位置」だけ許可されています（「正確な位置」を許可）", false, Fix.APP_SETTINGS)
-            phoneAge != null && phoneAge < 10 -> Item("位置情報", "スマホの GPS を受信中", true)
-            carAge != null && carAge < 10 -> Item("位置情報", "車の GPS を受信中（スマホの GPS は停止中）", true)
+            phoneAge != null && phoneAge < okAge -> Item("位置情報", "スマホの GPS を受信中", true)
+            carAge != null && carAge < okAge -> Item("位置情報", "車の GPS を受信中（スマホの GPS は停止中）", true)
             else -> Item(
                 "位置情報",
                 "GPS を受信していません" + (phoneAge?.let { "（最後の受信 ${ageText(it)}前）" } ?: ""),
@@ -85,6 +88,9 @@ object RunDiagnostics {
         }
         if (pm.isPowerSaveMode) {
             out += Item("省電力モード", "オン（GPS・通信が止められることがあります）", false)
+        }
+        if (EngineHost.running) {
+            out += Item("電池の節約", power.label, true)
         }
 
         // ---- 通信
