@@ -1,9 +1,11 @@
 package com.example.spectrum
 
 import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Rect
@@ -13,19 +15,31 @@ import android.graphics.Typeface
 import android.os.SystemClock
 import android.text.TextPaint
 import android.text.TextUtils
+import java.util.concurrent.Executors
 import kotlin.math.PI
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.sin
 
 /**
  * 画面全体(ジャケット/スペアナ/曲情報/操作/シーク)を描く。
  * 横長なら横レイアウト、縦長なら縦レイアウトに自動で切り替える。
  * スマホの View と Android Auto の Surface の両方から使う。
+ *
+ * 軽く・なめらかに描くための工夫:
+ *  - スペアナの段(LED)は、段の色と隙間を描いた細い画像を模様として使い、1 本のバーを 1 回で描く
+ *    (従来は段ごとに描いていたので 1 フレームで数百回)
+ *  - バーの動きは経過時間で計算する(描く間隔が多少ぶれても、動く速さが変わらない)
+ *  - ジャケットの縮小と代表色の計算は別スレッドで行う(曲が変わった瞬間に描画が止まらない)
+ *  - 毎フレーム作り直していた背景のグラデーション・時刻の文字などは使い回す
  */
 class PlayerRenderer {
     companion object {
         private val ICON = Color.rgb(200, 225, 240)
+        private val SUB_TEXT = Color.rgb(215, 230, 240)
         private val BOLD: Typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
 
         /** スペアナのグラデーション: 一番下の色 / 一番上の色 */
@@ -53,6 +67,35 @@ class PlayerRenderer {
         private const val ACCENT_VALUE = 0.97f
         /** 曲が変わったときの色の切り替わりの速さ(1 フレームあたり。大きいほど速い) */
         private const val ACCENT_FADE = 0.08f
+
+        /** ジャケットの縮小・代表色の計算用(描画のスレッドを止めないため) */
+        private val artWorker = Executors.newSingleThreadExecutor { r ->
+            Thread(r, "spectrum-art-prep").apply { isDaemon = true; priority = Thread.MIN_PRIORITY }
+        }
+
+        /** 表示用のジャケットの大きさの上限(画素) */
+        private const val ART_MAX_PX = 512
+
+        /** ジャケットを正方形に切り抜いて、表示に十分な大きさまで縮小する(ハードウェア画像も可) */
+        fun prepareArt(src0: Bitmap): Bitmap? = try {
+            val src = if (src0.config == Bitmap.Config.HARDWARE) {
+                src0.copy(Bitmap.Config.ARGB_8888, false) ?: src0
+            } else {
+                src0
+            }
+            val side = min(src.width, src.height)
+            if (side <= 0) {
+                null
+            } else {
+                val target = min(side, ART_MAX_PX)
+                val m = Matrix().apply { setScale(target.toFloat() / side, target.toFloat() / side) }
+                val out = Bitmap.createBitmap(src, (src.width - side) / 2, (src.height - side) / 2, side, side, m, true)
+                if (src !== src0 && src !== out) src.recycle()
+                out
+            }
+        } catch (_: Throwable) {
+            null
+        }
 
         /** アルバムアートの代表色(鮮やかで面積の多い色相)を、淡いアクセント色にして返す */
         fun extractAccent(src: Bitmap): Int = try {
@@ -261,6 +304,46 @@ class PlayerRenderer {
     private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
     private val path = Path()
 
+    /** 背景のグラデーション(区画が変わったときだけ作り直す) */
+    private var bgTop = Float.NaN
+    private var bgLeft = Float.NaN
+    private var bgHeight = -1
+
+    /** スペアナの段(LED)の模様: 段の色と隙間を描いた幅 1 画素の画像 */
+    private val ledPaint = Paint()
+    private val ledMatrix = Matrix()
+    private var ledShader: BitmapShader? = null
+    private var ledRows = -1
+    private var ledUnit = -1f
+    private var ledScale = -1f
+    private var ledHeightPx = 0
+
+    /** バーの動きの計算に使う、前回描いた時刻 */
+    private var lastSpecMs = 0L
+    private var lastFrameMs = 0L
+    /** 前のフレームからの経過(60fps の 1 フレームを 1 とする) */
+    private var frameDt = 1f
+
+    private val iconRect = RectF()
+    private val artSrc = Rect()
+    private val peakColor = Color.rgb(215, 225, 235)
+
+    /** 曲名などの幅(文字と大きさが同じ間は測り直さない) */
+    private val widthCache = arrayOf(WidthEntry(), WidthEntry(), WidthEntry())
+
+    private class WidthEntry {
+        var text = ""
+        var size = 0f
+        var bold = false
+        var width = 0f
+    }
+
+    /** 再生位置の文字(1 秒ごとに作る) */
+    private var posSec = -1L
+    private var remSec = Long.MIN_VALUE
+    private var posText = ""
+    private var remText = ""
+
     /** 曲名・アルバム名・アーティスト名それぞれの流し表示の状態 */
     private class Marquee {
         var text = ""
@@ -277,16 +360,42 @@ class PlayerRenderer {
     private var accent = DEFAULT_ACCENT
     private var accentDark = darkOf(DEFAULT_ACCENT)
 
-    /** ジャケットが変わったら代表色を取り直し、なめらかにその色へ近づける */
-    private fun updateAccent() {
+    /** 表示用に縮小したジャケット(別スレッドで作る)と、その元の画像 */
+    @Volatile private var artShown: Bitmap? = null
+    @Volatile private var artShownFor: Bitmap? = null
+    @Volatile private var artRequested: Bitmap? = null
+    @Volatile private var accentReady = DEFAULT_ACCENT
+
+    /**
+     * ジャケットが変わったら、縮小した画像と代表色を別スレッドで作り、できたら差し替える。
+     * 代表色へはなめらかに近づける。
+     */
+    private fun updateAccent(dtFrames: Float) {
         val bmp = NowPlaying.art
         if (bmp !== artRef) {
             artRef = bmp
-            accentTarget = if (bmp == null || bmp.isRecycled) DEFAULT_ACCENT else extractAccent(bmp)
+            artRequested = bmp
+            if (bmp == null || bmp.isRecycled) {
+                accentReady = DEFAULT_ACCENT
+                artShown = null
+                artShownFor = bmp
+            } else {
+                artWorker.execute {
+                    val small = prepareArt(bmp)
+                    val acc = extractAccent(small ?: bmp)
+                    if (artRequested === bmp) {
+                        artShown = small
+                        artShownFor = bmp
+                        accentReady = acc
+                    }
+                }
+            }
         }
-        accR += (Color.red(accentTarget) - accR) * ACCENT_FADE
-        accG += (Color.green(accentTarget) - accG) * ACCENT_FADE
-        accB += (Color.blue(accentTarget) - accB) * ACCENT_FADE
+        accentTarget = accentReady
+        val k = 1f - (1f - ACCENT_FADE).pow(dtFrames)
+        accR += (Color.red(accentTarget) - accR) * k
+        accG += (Color.green(accentTarget) - accG) * k
+        accB += (Color.blue(accentTarget) - accB) * k
         val c = Color.rgb(accR.roundToIntSafe(), accG.roundToIntSafe(), accB.roundToIntSafe())
         if (c != accent) {
             accent = c
@@ -315,11 +424,21 @@ class PlayerRenderer {
     fun draw(c: Canvas, left: Int, top: Int, w: Int, h: Int) {
         val l = left.toFloat()
         val t = top.toFloat()
-        bg.shader = LinearGradient(
-            l, t, l, t + h, Color.rgb(14, 42, 58), Color.rgb(4, 12, 20), Shader.TileMode.CLAMP
-        )
+        if (t != bgTop || l != bgLeft || h != bgHeight) {
+            bgTop = t
+            bgLeft = l
+            bgHeight = h
+            bg.shader = LinearGradient(
+                l, t, l, t + h, Color.rgb(14, 42, 58), Color.rgb(4, 12, 20), Shader.TileMode.CLAMP
+            )
+        }
         c.drawRect(l, t, l + w, t + h, bg)
-        updateAccent()
+        // 前のフレームからの経過(60fps のときを 1 とする)。描く間隔がぶれても動きの速さを保つ
+        val nowMs = SystemClock.uptimeMillis()
+        val dtFrames = if (lastFrameMs == 0L) 1f else ((nowMs - lastFrameMs) / (1000f / 60f)).coerceIn(0f, 6f)
+        lastFrameMs = nowMs
+        frameDt = dtFrames
+        updateAccent(dtFrames)
 
         val aspect = if (h > 0) w.toFloat() / h else 1f
         lay = if (large && aspect in 0.62f..1.75f) {
@@ -376,14 +495,19 @@ class PlayerRenderer {
 
     private fun drawArt(c: Canvas) {
         val dst = lay.art
-        val bmp = NowPlaying.art
-        if (bmp != null && !bmp.isRecycled) {
+        val original = NowPlaying.art
+        // 縮小済みの画像があればそれを描く。無ければ(作っている間)、そのまま描いても重くない画像だけ描く
+        val prepared = artShown?.takeIf { artShownFor === original && !it.isRecycled }
+        val bmp = prepared ?: original?.takeIf {
+            !it.isRecycled && (it.config == Bitmap.Config.HARDWARE || max(it.width, it.height) <= 1200)
+        }
+        if (bmp != null) {
             val side = min(bmp.width, bmp.height)
-            val src = Rect(
+            artSrc.set(
                 (bmp.width - side) / 2, (bmp.height - side) / 2,
                 (bmp.width + side) / 2, (bmp.height + side) / 2
             )
-            c.drawBitmap(bmp, src, dst, bmpPaint)
+            c.drawBitmap(bmp, artSrc, dst, bmpPaint)
         } else {
             shape.style = Paint.Style.FILL
             shape.color = Color.rgb(20, 40, 55)
@@ -394,6 +518,40 @@ class PlayerRenderer {
             c.drawText("♪", dst.centerX(), dst.centerY() + dst.height() * 0.18f, text)
             text.textAlign = Paint.Align.LEFT
         }
+    }
+
+    /**
+     * 段(LED)の模様を用意する: 幅 1 画素・高さ = 全段分の画像に、段ごとの色(下の濃い青 → 上の薄い青)と
+     * 段の隙間(透明)を描く。画面の画素と 1 対 1 で重なるよう、描く倍率に合わせて作る(区画が変わったときだけ)。
+     */
+    private fun ledShaderFor(rows: Int, unit: Float, segH: Float): BitmapShader? {
+        if (rows <= 0 || scale <= 0f) return null
+        if (rows != ledRows || unit != ledUnit || scale != ledScale || ledShader == null) {
+            val hPx = ceil(rows * unit * scale).toInt().coerceIn(1, 4096)
+            val px = IntArray(hPx)
+            val total = rows * unit
+            for (y in 0 until hPx) {
+                // 画像の上端からの位置 → 下端(バーの根元)からの位置(仮想座標)
+                val fromBottom = total - (y + 0.5f) / scale
+                val rr = floor(fromBottom / unit).toInt()
+                val within = fromBottom - rr * unit
+                px[y] = if (rr in 0 until rows && within < segH) {
+                    lerpColor(BAR_BOTTOM, BAR_TOP, if (rows > 1) rr.toFloat() / (rows - 1) else 0f)
+                } else 0
+            }
+            val bmp = try {
+                Bitmap.createBitmap(1, hPx, Bitmap.Config.ARGB_8888)
+            } catch (_: Throwable) {
+                return null
+            }
+            bmp.setPixels(px, 0, 1, 0, 0, 1, hPx)
+            ledShader = BitmapShader(bmp, Shader.TileMode.REPEAT, Shader.TileMode.CLAMP)
+            ledRows = rows
+            ledUnit = unit
+            ledScale = scale
+            ledHeightPx = hPx
+        }
+        return ledShader
     }
 
     private fun drawSpectrum(c: Canvas, r: RectF) {
@@ -408,26 +566,49 @@ class PlayerRenderer {
         val st = SpectrumEngine.status
         if (st != SpectrumEngine.Status.RUNNING) target.fill(0f)
 
+        // 経過時間に合わせた動き(60fps で 1 フレームあたり 上がる 0.6・下がる 0.18・ピーク 0.01 と同じ速さ)
+        val nowMs = SystemClock.uptimeMillis()
+        val f60 = if (lastSpecMs == 0L) 1f else ((nowMs - lastSpecMs) / (1000f / 60f)).coerceIn(0f, 6f)
+        lastSpecMs = nowMs
+        val riseK = 1f - 0.4f.pow(f60)
+        val fallK = 1f - 0.82f.pow(f60)
+        val peakFall = 0.01f * f60
+
+        // 段の模様の位置: 画像の 1 画素 = 画面の 1 画素、画像の下端 = バーの根元
+        val shader = ledShaderFor(rows, unit, segH)
+        if (shader != null) {
+            ledMatrix.setScale(1f / scale, 1f / scale)
+            ledMatrix.postTranslate(0f, y1 - ledHeightPx / scale)
+            shader.setLocalMatrix(ledMatrix)
+            ledPaint.shader = shader
+        }
+
         val floor = lay.noiseFloor
         for (i in 0 until n) {
-            level[i] += (target[i] - level[i]) * (if (target[i] > level[i]) 0.6f else 0.18f)
+            level[i] += (target[i] - level[i]) * (if (target[i] > level[i]) riseK else fallK)
 
             // 小さな値は切り捨てて(下の段のちらつき防止)、残りを伸ばして高さを使い切る
             val vis = (((level[i] - floor) / (1f - floor)) * lay.gain).coerceIn(0f, 1f)
-            peak[i] = if (vis > peak[i]) vis else max(0f, peak[i] - 0.01f)
+            peak[i] = if (vis > peak[i]) vis else max(0f, peak[i] - peakFall)
 
             val bx = x0 + i * (barW + gap)
             val lit = (vis * rows).toInt()          // 切り捨て: 届いた段だけ点灯
-            for (rr in 0 until lit) {
-                // 段の高さに応じて 濃い青 → 薄い青
-                shape.color = lerpColor(BAR_BOTTOM, BAR_TOP, rr.toFloat() / (rows - 1))
-                val bottom = y1 - rr * unit
-                c.drawRect(bx, bottom - segH, bx + barW, bottom, shape)
+            if (lit > 0) {
+                if (shader != null) {
+                    // 届いた段までを 1 回で描く(色と隙間は模様が受け持つ)
+                    c.drawRect(bx, y1 - lit * unit, bx + barW, y1, ledPaint)
+                } else {
+                    for (rr in 0 until lit) {
+                        shape.color = lerpColor(BAR_BOTTOM, BAR_TOP, rr.toFloat() / (rows - 1))
+                        val bottom = y1 - rr * unit
+                        c.drawRect(bx, bottom - segH, bx + barW, bottom, shape)
+                    }
+                }
             }
             if (peak[i] > 0.04f) {
                 val row = min(max((peak[i] * rows).toInt(), lit), rows - 1)
                 val bottom = y1 - row * unit
-                shape.color = Color.rgb(215, 225, 235)
+                shape.color = peakColor
                 c.drawRect(bx, bottom - segH * 0.6f, bx + barW, bottom, shape)
             }
         }
@@ -476,24 +657,23 @@ class PlayerRenderer {
             shape.style = Paint.Style.FILL
             c.drawCircle(cx, dy, 2f * k, shape)
             c.drawCircle(cx, lay.artistY - 10f * k, 3.2f * k, shape)
-            c.drawArc(
-                RectF(cx - 6.5f * k, lay.artistY - 6f * k, cx + 6.5f * k, lay.artistY + 8f * k),
-                180f, 180f, true, shape
-            )
+            iconRect.set(cx - 6.5f * k, lay.artistY - 6f * k, cx + 6.5f * k, lay.artistY + 8f * k)
+            c.drawArc(iconRect, 180f, 180f, true, shape)
         }
 
         text.typeface = if (lay.boldTitle) BOLD else null
-        marqueeText(c, marquees[0], NowPlaying.title, lay.titleY, lay.titleSize, Color.WHITE)
+        marqueeText(c, 0, NowPlaying.title, lay.titleY, lay.titleSize, Color.WHITE)
         text.typeface = null
-        if (lay.albumY >= 0f) marqueeText(c, marquees[1], NowPlaying.album, lay.albumY, lay.subSize, Color.rgb(215, 230, 240))
-        marqueeText(c, marquees[2], NowPlaying.artist, lay.artistY, lay.subSize, Color.rgb(215, 230, 240))
+        if (lay.albumY >= 0f) marqueeText(c, 1, NowPlaying.album, lay.albumY, lay.subSize, SUB_TEXT)
+        marqueeText(c, 2, NowPlaying.artist, lay.artistY, lay.subSize, SUB_TEXT)
     }
 
     /**
      * 1 行の文字を描く。表示幅に収まらないときは
      * 「先頭で 3 秒止める → 右から左へ流して末尾まで表示 → 末尾で少し止める → 先頭に戻る」を繰り返す。
      */
-    private fun marqueeText(c: Canvas, m: Marquee, s: String, y: Float, size: Float, color: Int) {
+    private fun marqueeText(c: Canvas, index: Int, s: String, y: Float, size: Float, color: Int) {
+        val m = marquees[index]
         val now = SystemClock.uptimeMillis()
         if (m.text != s) {             // 曲が変わったら先頭からやり直す
             m.text = s
@@ -505,7 +685,16 @@ class PlayerRenderer {
 
         val x = lay.textX
         val avail = lay.textRight - x
-        val overflow = text.measureText(s) - avail
+        // 文字の幅は、文字・大きさ・太さが変わったときだけ測る
+        val wc = widthCache[index]
+        val bold = text.typeface === BOLD
+        if (wc.text != s || wc.size != size || wc.bold != bold) {
+            wc.text = s
+            wc.size = size
+            wc.bold = bold
+            wc.width = text.measureText(s)
+        }
+        val overflow = wc.width - avail
         if (overflow <= 0f) {
             c.drawText(s, x, y, text)
             return
@@ -567,12 +756,23 @@ class PlayerRenderer {
         val dur = NowPlaying.durationMs
         val pos = NowPlaying.positionMs()
 
+        // 時刻の文字は秒が変わったときだけ作る
+        val ps = pos / 1000
+        val rs = if (dur > 0) (dur - pos) / 1000 else -1L
+        if (ps != posSec) {
+            posSec = ps
+            posText = fmt(pos)
+        }
+        if (rs != remSec) {
+            remSec = rs
+            remText = if (dur > 0) "-" + fmt(dur - pos) else "-:--:--"
+        }
         text.color = Color.WHITE
         text.textSize = lay.timeSize
         text.textAlign = Paint.Align.LEFT
-        c.drawText(fmt(pos), 8f, lay.timeY, text)
+        c.drawText(posText, 8f, lay.timeY, text)
         text.textAlign = Paint.Align.RIGHT
-        c.drawText(if (dur > 0) "-" + fmt(dur - pos) else "-:--:--", lay.vw - 8f, lay.timeY, text)
+        c.drawText(remText, lay.vw - 8f, lay.timeY, text)
         text.textAlign = Paint.Align.LEFT
 
         val x0 = lay.seekX0
@@ -583,7 +783,7 @@ class PlayerRenderer {
 
         // 再生中は波打ち、停止中は平らな線になる(なめらかに切り替え)
         val targetAmp = if (NowPlaying.isPlaying) WAVE_AMP else 0f
-        waveAmp += (targetAmp - waveAmp) * 0.08f
+        waveAmp += (targetAmp - waveAmp) * (1f - 0.92f.pow(frameDt))
         val phase = (SystemClock.uptimeMillis() % 100000L) / 1000f * WAVE_SPEED * 2f * PI.toFloat()
 
         // 残り部分: 細い線 + 終端の小さな点

@@ -265,7 +265,8 @@ object EngineHost {
         val ctx = context.applicationContext
         val p = Prefs(ctx)
         prefs = p
-        val t = HandlerThread("highway-engine", Process.THREAD_PRIORITY_DISPLAY)
+        // 計算は描画（車の画面・スマホの画面）より後でよいので、通常の優先度にする（描画がカクつかないように）
+        val t = HandlerThread("highway-engine", Process.THREAD_PRIORITY_DEFAULT)
         t.start()
         thread = t
         val h = Handler(t.looper)

@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
@@ -54,24 +55,27 @@ import com.example.spectrum.SpectrumEngine
  *  - 対象エリア内は下部に切替バー（音楽 / 2画面 / ハイウェイ）
  *  - タッチ操作のできない車でも使えるよう、同じ切替を右上のボタン（画面切替）にも置く
  *
- * 描画は専用スレッドで行う。Spectrum が再生中で見えている間は約 30fps（Android Auto の映像と同じ程度）、
- * 一時停止中は約 15fps、ハイウェイだけのときは 10fps（電池の節約）。
- * ハイウェイモードの画面は内容が変わったとき（約 1 秒ごと）だけ描き直し、間は記録した描画を再生する。
+ * 描画は専用スレッド（表示用の優先度）で、決まった間隔で行う（描画にかかった時間を差し引くので間隔がぶれない）。
+ * Spectrum が再生中で見えている間は 30fps（Android Auto の映像と同じ程度）、一時停止中は 15fps、
+ * ハイウェイだけのときは 10fps。ハイウェイモードの画面は内容が変わったとき（約 1 秒ごと）だけ描き直し、間は記録した描画を再生する。
  *
  * 表示する状態は、毎フレーム エンジンの最新の状態（EngineHost.latest）を読む。
  * 画面の状態（他の画面を重ねた・Android Auto の別のアプリを前に出した）によらず、スマホの画面と同じ内容になる。
+ *
+ * 右上のボタン（Android Auto が表示。操作しないと約 10 秒で隠れる）のために画面を下げない。
+ * 画面いっぱいに描き、ボタンが出ている間だけ、いちばん上の段の右側をボタンの分だけ空ける。
  */
 class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     Screen(carContext), SurfaceCallback, DualMode.Listener {
 
     companion object {
         private const val TAG = "DualCarScreen"
-        /** Spectrum が再生中で見えているときの描画間隔（約 30fps） */
-        private const val FRAME_MS = 33L
-        /** Spectrum が見えていて一時停止中の描画間隔（曲名の流し表示用。約 15fps） */
-        private const val PAUSED_FRAME_MS = 66L
+        /** Spectrum が再生中で見えているときの描画間隔（30fps） */
+        private const val FRAME_MS = 1000.0 / 30.0
+        /** Spectrum が見えていて一時停止中の描画間隔（曲名の流し表示用。15fps） */
+        private const val PAUSED_FRAME_MS = 1000.0 / 15.0
         /** ハイウェイモードだけのときの描画間隔 */
-        private const val IDLE_FRAME_MS = 100L
+        private const val IDLE_FRAME_MS = 100.0
         /** 曲情報の取りこぼしを確認する間隔 */
         private const val HEAL_MS = 2000L
         /** ハイウェイモードの画面を描き直す間隔（時計・残り時間） */
@@ -107,6 +111,16 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     @Volatile private var height = 0
     @Volatile private var density = 1f
     private val visible = Rect()
+    private val stable = Rect()
+    /** 描画スレッドで使う写し（毎フレームの確保をしない） */
+    private val vCopy = Rect()
+    private val sCopy = Rect()
+    /** Android Auto が右上のボタンの表示・非表示を表示範囲で知らせてくる（一度でも隠れたのを確認した） */
+    @Volatile private var hostReportsStrip = false
+    /** 次のフレームを描く時刻（SystemClock.uptimeMillis 基準。小数で持って間隔のぶれを防ぐ） */
+    @Volatile private var nextFrameAt = 0.0
+    /** テンプレート（右上のボタン）を最後に作ったときの状態 */
+    private var templateBarVisible: Boolean? = null
     @Volatile private var snap: HighwaySnapshot? = EngineHost.latest
     @Volatile private var lastFrame: DualFrame? = null
     @Volatile private var panelInvalid = true
@@ -133,13 +147,17 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
 
     private val frame = object : Runnable {
         override fun run() {
-            val next = try {
+            val start = SystemClock.uptimeMillis()
+            val period = try {
                 drawFrame()
             } catch (e: Exception) {
                 Log.w(TAG, "draw failed: ${e.message}")
                 IDLE_FRAME_MS
             }
-            drawHandler?.postDelayed(this, next)
+            val h = drawHandler ?: return
+            // 決まった間隔で描く（描画にかかった時間を差し引く）。大きく遅れたら、そこから数え直す
+            nextFrameAt = if (nextFrameAt <= 0.0 || start - nextFrameAt > period) start + period else nextFrameAt + period
+            h.postAtTime(this, nextFrameAt.toLong())
         }
     }
 
@@ -172,7 +190,8 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
 
             override fun onResume(owner: LifecycleOwner) {
                 MediaTracker.heal(carContext)
-                invalidate()
+                // テンプレートは画面が前に戻ったときに Android Auto が取り直すので、ここでは作り直さない
+                // （作り直すたびに右上のボタンが出直して、隠れなくなるため）
             }
 
             override fun onStop(owner: LifecycleOwner) {
@@ -196,6 +215,7 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
 
     override fun onGetTemplate(): Template {
         val strip = ActionStrip.Builder()
+        templateBarVisible = DualMode.barVisible
         if (!DualMode.barVisible) {
             // 高速道路の外（Spectrum 全画面）
             strip.addAction(action("ハイウェイ表示", R.drawable.ic_car_highway) {
@@ -234,7 +254,9 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     /** 画面構成が変わった（自動切替・ボタン操作） */
     override fun onDualChanged() {
         autoSwitch = prefs.autoSwitch
-        invalidate()
+        // 右上のボタンの組み合わせが変わるときだけテンプレートを作り直す
+        // （作り直すと Android Auto がボタンを表示し直すため、必要なとき以外は呼ばない）
+        if (templateBarVisible != DualMode.barVisible) invalidate()
         panelInvalid = true
         updateSpectrumUse()
         requestFrame()
@@ -259,7 +281,8 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         updateSpectrumUse()
         // 描画スレッドは 1 本だけ（素早い切り替えで多重に起動しないように）
         if (drawThread == null) {
-            val t = HandlerThread("car-draw").also { it.start() }
+            // 表示用の優先度（エンジンの計算・音声解析より先に描けるように）
+            val t = HandlerThread("car-draw", Process.THREAD_PRIORITY_DISPLAY).also { it.start() }
             drawThread = t
             drawHandler = Handler(t.looper).also { it.post(frame) }
         } else {
@@ -279,6 +302,8 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     override fun onVisibleAreaChanged(visibleArea: Rect) {
         // 描画面からはみ出す範囲が来たら（切り替え途中の古い値など）無視して全体を使う
         synchronized(visible) {
+            // 上端が下がっていた（ボタン表示中）のが 0 に戻った → ボタンが隠れたことを知らせてくる車
+            if (!visible.isEmpty && visible.top > 0 && visibleArea.top == 0) hostReportsStrip = true
             if (visibleArea.left < 0 || visibleArea.right > width || visibleArea.width() <= 0) visible.setEmpty()
             else visible.set(visibleArea)
         }
@@ -286,7 +311,14 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         requestFrame()
     }
 
-    override fun onStableAreaChanged(stableArea: Rect) {}
+    override fun onStableAreaChanged(stableArea: Rect) {
+        synchronized(visible) {
+            if (stableArea.left < 0 || stableArea.right > width || stableArea.width() <= 0) stable.setEmpty()
+            else stable.set(stableArea)
+        }
+        panelInvalid = true
+        requestFrame()
+    }
 
     override fun onClick(x: Float, y: Float) {
         CarRuntime.ensure(carContext)
@@ -328,6 +360,7 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     private fun requestFrame() {
         val h = drawHandler ?: return
         h.removeCallbacks(frame)
+        nextFrameAt = 0.0
         h.post(frame)
     }
 
@@ -387,15 +420,18 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     // ================================================================== 1 フレーム（描画スレッド）
 
     /** @return 次のフレームまでの時間 [ms] */
-    private fun drawFrame(): Long {
+    private fun drawFrame(): Double {
         val s = surface ?: return IDLE_FRAME_MS
         if (!s.isValid || width <= 0 || height <= 0) return IDLE_FRAME_MS
         val w = width.toFloat()
         val h = height.toFloat()
-        // 表示範囲は開き方（アプリ一覧/ホーム画面）で上下の余白が変わるため、
-        // Spectrum は上下に画面全体を使い、左右だけ Android Auto の表示範囲に合わせる（従来の Spectrum と同じ）。
-        // ハイウェイモードは右上のボタンと重ならないよう、表示範囲の上端から描く。
-        val v = synchronized(visible) { Rect(visible) }
+        // 上下は画面いっぱいに描く。左右は Android Auto の表示範囲（横に並ぶカードなど、いつも出ているもの）に合わせる
+        synchronized(visible) {
+            vCopy.set(visible)
+            sCopy.set(stable)
+        }
+        val v = vCopy
+        val horiz = if (!sCopy.isEmpty) sCopy else v
         val layout = DualMode.layout
         // エンジンの最新の状態（画面の開始・停止の通知に頼らない）
         val latest = EngineHost.latest
@@ -406,16 +442,34 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         music.large = layout == DualLayout.SPLIT
         val f = DualGeometry.car(
             w, h,
-            left = if (v.isEmpty) 0f else v.left.toFloat(),
-            right = if (v.isEmpty) w else v.right.toFloat(),
-            highwayTop = if (v.isEmpty) 0f else v.top.toFloat(),
+            left = if (horiz.isEmpty) 0f else horiz.left.toFloat(),
+            right = if (horiz.isEmpty) w else horiz.right.toFloat(),
+            highwayTop = 0f,
             layout = layout, barVisible = DualMode.barVisible, density = density
         )
-        // 右上のボタン（Android Auto が描く）の分、ハイウェイモードの見出しの右側を空ける。
-        // 表示範囲の上端が下がっている（ボタンの分を除いてある）ときは不要
-        val reserve = if (!v.isEmpty && v.top > 0) 0f else stripWidthEstimate(w)
-        if (reserve != panel.headerRightReserve) {
-            panel.headerRightReserve = reserve
+        // 右上のボタン（Android Auto が描く）が出ている間だけ、その部分を空ける（ハイウェイ側の右上）。
+        //  - 表示範囲の上端が下がっている = ボタン表示中 → 一覧の列をボタンの下へずらす
+        //  - 上端が 0 に戻ったのを見た車 = ボタンが隠れている → 画面いっぱい
+        //  - ボタンの位置を知らせてこない車 → 一番上の段の右側だけ空ける（下へはずらさない）
+        val reserveW: Float
+        val reserveH: Float
+        when {
+            v.top > 0 -> {
+                reserveW = stripWidthEstimate(w)
+                reserveH = v.top.toFloat()
+            }
+            hostReportsStrip -> {
+                reserveW = 0f
+                reserveH = 0f
+            }
+            else -> {
+                reserveW = stripWidthEstimate(w)
+                reserveH = 0f
+            }
+        }
+        if (reserveW != panel.headerRightReserve || reserveH != panel.topRightReserveH) {
+            panel.headerRightReserve = reserveW
+            panel.topRightReserveH = reserveH
             panelInvalid = true
         }
         bar.splitHint = if (DualMode.highwayActive && autoSwitch) "高速道路を出ると自動で音楽に戻ります" else null
@@ -461,11 +515,12 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
 
     /**
      * 右上のボタン列のおおよその幅。Android Auto は幅の広い画面では文字、狭い画面ではアイコンで出す
-     * （ボタン 4 つ: 文字なら 1 つ約 104dp、アイコンなら約 58dp）。
+     * （ボタン 1 つ: 文字なら約 104dp、アイコンなら約 58dp。高速道路の間は 4 つ、外は 2 つ）。
      */
     private fun stripWidthEstimate(surfaceWidth: Float): Float {
         val wideScreen = surfaceWidth / density >= 900f
-        return (if (wideScreen) 4 * 104f else 4 * 58f) * density
+        val count = if (DualMode.barVisible) 4 else 2
+        return (if (wideScreen) count * 104f else count * 58f) * density + 8f * density
     }
 
     /** ハイウェイモードの画面。内容が変わったときだけ描き直し、間は記録を再生する（Android 10 以降） */

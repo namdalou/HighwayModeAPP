@@ -20,7 +20,7 @@ object SessionProber {
     /** 音声の番号の間隔（Android の内部で、番号の種類を下位 3 ビットで表すため） */
     private const val STEP = 8
     /** 一度に調べる番号の数 */
-    private const val BATCH = 16
+    private const val BATCH = 8
     /** さかのぼる番号の数の上限（新しいものから） */
     private const val MAX_CANDIDATES = 2400
     /** Visualizer を付けてから音を測るまで */

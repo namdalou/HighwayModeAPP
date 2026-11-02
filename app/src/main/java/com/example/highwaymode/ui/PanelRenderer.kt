@@ -39,8 +39,14 @@ class PanelRenderer(var density: Float) {
     var attribution: Boolean = false
     /** 見出しの右端に時計を出す（車の画面では出さない） */
     var showClock: Boolean = true
-    /** 時計を出さないとき、見出しの右側に空けておく幅（Android Auto の右上のボタンと重ならないように）[px] */
+    /**
+     * 右上に Android Auto のボタンが出ている間、いちばん上の段の右側に空けておく幅 [px]（0 = 空けない）。
+     * 縦長の表示では見出しの右側に使う。
+     */
     var headerRightReserve: Float = 0f
+
+    /** 右上のボタンの下端（区画の上端から）[px]。横長の表示では、その下から一覧を並べる */
+    var topRightReserveH: Float = 0f
     var overlayMessage: String? = null
 
     class Hit(val rect: RectF, val facility: FacilityView?, val button: Int)
@@ -58,6 +64,9 @@ class PanelRenderer(var density: Float) {
 
         /** 先のページを見ていて操作が無ければ、現在地のページに戻るまで */
         const val PAGE_AUTO_RETURN_MS = 20_000L
+
+        /** これより横に長い区画は、左に走行中の情報・右に施設の一覧の 2 列にする（幅 ÷ 高さ） */
+        const val WIDE_ASPECT = 1.75f
     }
 
     // ================================================================== ページ送り（先の施設）
@@ -168,13 +177,34 @@ class PanelRenderer(var density: Float) {
         }
     }
 
+    /**
+     * 画面の形による表示の種類。
+     *  - WIDE: 横に長い（ハイウェイだけの表示など）。左に走行中の情報、右（運転席側）に施設の一覧
+     *  - MEDIUM: 横長（2 画面の右側）。施設の一覧を大きく、下の段に路線・制限速度・車速
+     *  - PORTRAIT: 縦長（スマホ縦画面）
+     */
+    private enum class Mode { PORTRAIT, MEDIUM, WIDE }
+
+    /** いま描いている区画の上端（右上のボタンの位置を区画の中の位置にするため） */
+    private var panelTop = 0f
+
+    private fun onHighway(s: HighwaySnapshot?): Boolean =
+        s?.status == EngineStatus.ON_HIGHWAY || s?.status == EngineStatus.REST_STOP
+
     private fun drawPanel(c: Canvas, l0: Float, t0: Float, r0: Float, b0: Float, s: HighwaySnapshot?, nowMs: Long) {
         // 自分の区画だけを塗る（2 画面表示では左側に Spectrum がある）
         bgFill.color = cBg
         c.drawRect(l0, t0, r0, b0, bgFill)
-        // 横長（2 画面の右側・ハイウェイだけ）は一覧を大きく出す表示。縦長はスマホ縦画面の表示
-        val landscape = (r0 - l0) > (b0 - t0) * 1.0f
-        val pad = if (landscape) ((b0 - t0) * 0.014f).coerceIn(dp(4f), dp(8f)) else dp(8f)
+        panelTop = t0
+        val w0 = r0 - l0
+        val h0 = b0 - t0
+        val mode = when {
+            w0 >= h0 * WIDE_ASPECT -> Mode.WIDE
+            w0 > h0 -> Mode.MEDIUM
+            else -> Mode.PORTRAIT
+        }
+        val landscape = mode != Mode.PORTRAIT
+        val pad = if (landscape) (h0 * 0.014f).coerceIn(dp(4f), dp(8f)) else dp(8f)
         val left = l0 + pad
         val right = r0 - pad
         val top = t0 + pad
@@ -182,25 +212,32 @@ class PanelRenderer(var density: Float) {
         if (right - left < dp(100f) || bottom - top < dp(90f)) return
 
         // 先のページを見たまま操作が無ければ、現在地のページへ戻す。高速道路を出たら戻す
-        val onHw = s?.status == EngineStatus.ON_HIGHWAY || s?.status == EngineStatus.REST_STOP
-        if (page > 0 && (!onHw || System.currentTimeMillis() - pageTouchedMs > PAGE_AUTO_RETURN_MS)) page = 0
+        if (page > 0 && (!onHighway(s) || System.currentTimeMillis() - pageTouchedMs > PAGE_AUTO_RETURN_MS)) page = 0
 
-        if (landscape) {
-            // 見出し（路線）・施設の一覧・下の段（自車・制限速度・車速）。運転中に読めるよう、一覧を大きく
-            val headerH = ((bottom - top) * 0.10f).coerceIn(dp(30f), dp(52f))
-            drawHeader(c, s, left, top, right, top + headerH, showSubLine = false, nowMs = nowMs)
-            drawMainArea(c, s, left, top + headerH + pad, right, bottom, landscape = true)
-        } else {
-            val headerH = ((bottom - top) * 0.115f).coerceIn(dp(56f), dp(96f))
-            drawHeader(c, s, left, top, right, top + headerH, showSubLine = true, nowMs = nowMs)
-            val buttonsH = if (showButtons) dp(50f) else 0f
-            val btnTop = bottom - buttonsH
-            if (showButtons) drawButtons(c, left, btnTop, right, bottom)
-            val mainBottom = if (showButtons) btnTop - pad else bottom - (if (attribution) dp(10f) else 0f)
-            val statusH = dp(52f)
-            drawStatusRow(c, s, left, mainBottom - statusH, right, mainBottom)
-            drawMainArea(c, s, left, top + headerH + pad, right, mainBottom - statusH - pad, landscape = false)
-            if (!showButtons && attribution) drawAttribution(c, r0, b0)
+        when (mode) {
+            Mode.WIDE -> {
+                // 左: 路線・注意・渋滞・この先の路線・制限速度と車速 ／ 右（運転席側）: 施設の一覧
+                val infoW = ((right - left) * 0.37f).coerceIn(dp(200f), dp(420f))
+                val gap = dp(12f)
+                drawInfoColumn(c, s, left, top, left + infoW, bottom, nowMs)
+                fill.color = 0xFF1F252E.toInt()
+                val dx = left + infoW + gap / 2
+                c.drawRect(dx - dp(0.75f), top + dp(4f), dx + dp(0.75f), bottom - dp(4f), fill)
+                drawMainArea(c, s, left + infoW + gap, top, right, bottom, Mode.WIDE)
+            }
+            Mode.MEDIUM -> drawMainArea(c, s, left, top, right, bottom, Mode.MEDIUM)
+            Mode.PORTRAIT -> {
+                val headerH = ((bottom - top) * 0.115f).coerceIn(dp(56f), dp(96f))
+                drawHeader(c, s, left, top, right, top + headerH, showSubLine = true, nowMs = nowMs)
+                val buttonsH = if (showButtons) dp(50f) else 0f
+                val btnTop = bottom - buttonsH
+                if (showButtons) drawButtons(c, left, btnTop, right, bottom)
+                val mainBottom = if (showButtons) btnTop - pad else bottom - (if (attribution) dp(10f) else 0f)
+                val statusH = dp(52f)
+                drawStatusRow(c, s, left, mainBottom - statusH, right, mainBottom)
+                drawMainArea(c, s, left, top + headerH + pad, right, mainBottom - statusH - pad, Mode.PORTRAIT)
+                if (!showButtons && attribution) drawAttribution(c, r0, b0)
+            }
         }
         overlayMessage?.let { drawOverlay(c, it, left, top, right, bottom) }
     }
@@ -355,18 +392,13 @@ class PanelRenderer(var density: Float) {
         }
     }
 
-    private fun drawMainArea(c: Canvas, s: HighwaySnapshot?, l: Float, t0: Float, r: Float, b: Float, landscape: Boolean) {
-        // 横長: 下の段（自車・［﹀ 手前へ］・地図の出典・制限速度・車速）の高さ
-        val bottomH = if (landscape) ((b - t0) * 0.13f).coerceIn(dp(30f), dp(50f)) else 0f
-        if (s == null || (s.status != EngineStatus.ON_HIGHWAY && s.status != EngineStatus.REST_STOP)) {
-            drawStatusMessage(c, s, l, t0, r, b - bottomH)
-            if (landscape) drawBottomRow(c, s, 0, l, b - bottomH, r, b, l + dp(17f), l + dp(40f))
-            return
-        }
-        // ---- 注意の帯
+    /** 注意の帯（オービス・ETC カード・給油・通行止め・データの状態）を上から並べる。@return 次の段の上端 */
+    private fun drawBanners(
+        c: Canvas, s: HighwaySnapshot, l: Float, t0: Float, r: Float, areaH: Float, landscape: Boolean, withData: Boolean
+    ): Float {
         var t = t0
-        val bannerH = if (landscape) ((b - t0) * 0.085f).coerceIn(dp(26f), dp(40f)) else dp(30f)
-        for (bn in banners(s, withDataMessage = landscape).take(2)) {
+        val bannerH = if (landscape) (areaH * 0.085f).coerceIn(dp(24f), dp(38f)) else dp(30f)
+        for (bn in banners(s, withDataMessage = withData).take(2)) {
             val bh = if (bn.soft) bannerH * 0.8f else bannerH
             rect.set(l, t, r, t + bh)
             if (bn.soft) {
@@ -375,7 +407,7 @@ class PanelRenderer(var density: Float) {
                 c.drawRoundRect(rect, dp(5f), dp(5f), fill)
                 textNormal.color = bn.color
                 val msg = "⚠ " + bn.text
-                textNormal.textSize = fitSize(textNormal, msg, r - l - dp(16f), bh * 0.56f)
+                textNormal.textSize = fitSize(textNormal, msg, r - l - dp(16f), bh * 0.58f)
                 drawTextCentered(c, ellipsize(textNormal, msg, r - l - dp(16f)), l + dp(8f), t + bh / 2, textNormal, Paint.Align.LEFT)
             } else {
                 fill.color = bn.color
@@ -386,17 +418,48 @@ class PanelRenderer(var density: Float) {
                     tx += bh * 0.8f
                 }
                 text.color = cText
-                text.textSize = fitSize(text, bn.text, r - tx - dp(8f), bh * 0.58f)
-                drawTextCentered(c, bn.text, tx, t + bh / 2, text, Paint.Align.LEFT)
+                text.textSize = fitSize(text, bn.text, r - tx - dp(8f), bh * 0.6f)
+                drawTextCentered(c, ellipsize(text, bn.text, r - tx - dp(8f)), tx, t + bh / 2, text, Paint.Align.LEFT)
             }
             t += bh + dp(4f)
         }
+        return t
+    }
 
-        // ---- ページ送りの帯・一覧の範囲
+    private fun drawMainArea(c: Canvas, s: HighwaySnapshot?, l: Float, t0: Float, r: Float, b: Float, mode: Mode) {
+        val landscape = mode != Mode.PORTRAIT
+        // 下の段の高さ（横長: 自車・路線・出典・制限速度・車速。横に長い画面は速度を左の欄に出すので低く）
+        val bottomH = when (mode) {
+            Mode.MEDIUM -> ((b - t0) * 0.13f).coerceIn(dp(30f), dp(50f))
+            Mode.WIDE -> ((b - t0) * 0.10f).coerceIn(dp(24f), dp(40f))
+            Mode.PORTRAIT -> 0f
+        }
+        // 右上のボタン（Android Auto。操作した直後だけ出る）が出ている間は、一覧の列をボタンの下へずらす
+        // （ずらさないと［︿ この先］［現在地へ］がボタンに隠れる。ボタンが隠れたら画面いっぱいに戻る）。
+        // ボタンの高さが分からない（位置を知らせてこない車）ときは、一番上の段の右側だけを空ける
+        val stripShown = landscape && headerRightReserve > 0f
+        val shiftDown = stripShown && topRightReserveH > 0f
+        val pageBarRightReserve = if (stripShown && !shiftDown) headerRightReserve.coerceIn(0f, (r - l) * 0.62f) else 0f
+        val obstructBottom = if (shiftDown) panelTop + topRightReserveH else Float.NEGATIVE_INFINITY
+        val top0 = if (shiftDown) max(t0, obstructBottom + dp(4f)) else t0
+        if (s == null || !onHighway(s)) {
+            drawStatusMessage(c, s, l, top0, r, b - bottomH)
+            if (landscape) drawBottomRow(c, s, 0, l, b - bottomH, r, b, l + dp(17f), l + dp(40f), mode)
+            return
+        }
+        var t = top0
+        // 縦長: 注意の帯は一番上（従来どおり）
+        if (mode == Mode.PORTRAIT) t = drawBanners(c, s, l, t, r, b - t0, landscape = false, withData = false)
+
+        // ---- ページ送りの帯（ここに右上のボタンが重なる）・一覧の範囲
         val list = itemsFor(s)
-        val pageBarH = if (landscape) ((b - t) * 0.11f).coerceIn(dp(30f), dp(46f)) else dp(42f)
+        val pageBarH = if (landscape) ((b - t0) * 0.10f).coerceIn(dp(30f), dp(46f)) else dp(42f)
+        val pbTop = t
+        t += pageBarH + (if (landscape) dp(5f) else dp(6f))
+        // 2 画面の右側: 注意の帯はページ送りの下に（横に長い画面は左の欄に出す）
+        if (mode == Mode.MEDIUM) t = drawBanners(c, s, l, t, r, b - t0, landscape = true, withData = true)
         val markerH = if (landscape) bottomH else dp(40f)
-        val listTop = t + pageBarH + (if (landscape) dp(5f) else dp(6f))
+        val listTop = t
         val rowsBottom = b - markerH
         val areaH = rowsBottom - listTop
         val (n, rowH) = rowsFor(areaH, landscape)
@@ -406,14 +469,15 @@ class PanelRenderer(var density: Float) {
         if (pg != page) page = pg
         val from = min(pg * n, list.size)
         val shown = list.subList(from, min(from + n, list.size))
-        drawPageBar(c, s, list, pg, pages, from + shown.size, l, t, r, t + pageBarH)
+        drawPageBar(c, s, list, pg, pages, from + shown.size, l, pbTop, r - pageBarRightReserve, pbTop + pageBarH)
 
         // ---- 道路の帯（下=現在地。先のページでは下端を点線にする）
         val stripX = l + (if (landscape) dp(17f) else dp(16f))
         val rowLeft = l + (if (landscape) dp(40f) else dp(38f))
         val carY = b - markerH / 2
         val stripW = if (landscape) dp(11f) else dp(10f)
-        val topY = if (shown.isEmpty()) listTop else rowsBottom - (shown.size - 1) * rowH - rowH * (if (landscape) 0.67f else 0.69f)
+        val linkK = if (landscape) 0.70f else 0.69f
+        val topY = if (shown.isEmpty()) listTop else rowsBottom - (shown.size - 1) * rowH - rowH * linkK
         val stripBottom = if (pg == 0) carY else rowsBottom
         fill.color = cStrip
         rect.set(stripX - stripW / 2, topY - dp(10f), stripX + stripW / 2, stripBottom)
@@ -421,7 +485,7 @@ class PanelRenderer(var density: Float) {
         var prevY = stripBottom
         for (i in shown.indices) {
             val f = shown[i]
-            val cy = rowsBottom - i * rowH - rowH * (if (landscape) 0.67f else 0.69f)
+            val cy = rowsBottom - i * rowH - rowH * linkK
             if (f.type != FacilityType.CAMERA) {
                 val flowColor = when {
                     f.closedBefore -> cDarkRed
@@ -460,7 +524,7 @@ class PanelRenderer(var density: Float) {
 
         // ---- 自車マーク（先のページでは「…」と［﹀ 手前へ］）
         if (landscape) {
-            drawBottomRow(c, s, pg, l, rowsBottom, r, b, stripX, rowLeft)
+            drawBottomRow(c, s, pg, l, rowsBottom, r, b, stripX, rowLeft, mode)
             return
         }
         if (pg == 0) {
@@ -477,6 +541,205 @@ class PanelRenderer(var density: Float) {
             drawMoreDots(c, stripX, rowsBottom, markerH)
             // ［﹀ 手前へ］は現在地の側（下）に
             drawPrevButton(c, rowLeft, rowsBottom + markerH * 0.12f, rowLeft + (r - rowLeft) * 0.55f, b - markerH * 0.06f)
+        }
+    }
+
+    // ================================================================== 横に長い画面の左の欄
+
+    /** 左の欄の 1 項目（カード = 2 行の目立つ表示、行 = 1 行の補足） */
+    private class Info(val title: String, val detail: String?, val color: Int, val card: Boolean)
+
+    /**
+     * 横に長い画面の左の欄: 路線と方向、注意（通行止め・オービス・ETC カード・給油）、渋滞の詳細、
+     * 事故・工事、この先の路線、データの状態、下に制限速度と車速。
+     * 運転席から遠い左側には、施設の一覧ほど急いで読まなくてよい情報を置く。
+     */
+    private fun drawInfoColumn(c: Canvas, s: HighwaySnapshot?, l: Float, t: Float, r: Float, b: Float, nowMs: Long) {
+        val hh = b - t
+        val onHw = onHighway(s)
+        // ---- 路線
+        val routeH = (hh * 0.13f).coerceIn(dp(28f), dp(56f))
+        if (onHw && s != null) {
+            drawRouteInline(c, s, l, t + routeH / 2, routeH * 0.78f, r)
+        } else {
+            text.color = cText
+            text.textSize = fitSize(text, "ハイウェイモード", r - l, routeH * 0.6f)
+            drawTextCentered(c, "ハイウェイモード", l, t + routeH / 2, text, Paint.Align.LEFT)
+        }
+        var y = t + routeH
+        // ---- 方向（スマホでは右に時計）
+        val dirH = (hh * 0.085f).coerceIn(dp(18f), dp(34f))
+        var dirR = r
+        if (showClock) {
+            val clock = Formats.clock(nowMs)
+            text.textSize = dirH * 0.78f
+            val cw = text.measureText(clock) + dirH * 0.5f
+            rect.set(r - cw, y + dirH * 0.04f, r, y + dirH * 0.96f)
+            fill.color = 0xFF1A1E25.toInt()
+            c.drawRoundRect(rect, dirH * 0.2f, dirH * 0.2f, fill)
+            text.color = cText
+            drawTextCentered(c, clock, rect.centerX(), rect.centerY(), text, Paint.Align.CENTER)
+            dirR = r - cw - dp(6f)
+        }
+        val dir = if (onHw) {
+            buildString {
+                if (s?.generalRoad == true) append("一般道（信号・歩行者に注意）　")
+                s?.directionText?.let { append(it) }
+            }
+        } else ""
+        if (dir.isNotEmpty() && dirR - l > dp(40f)) {
+            textNormal.color = cSub
+            textNormal.textSize = fitSize(textNormal, dir, dirR - l, dirH * 0.66f, minScale = 0.7f)
+            drawTextCentered(c, ellipsize(textNormal, dir, dirR - l), l, y + dirH / 2, textNormal, Paint.Align.LEFT)
+        }
+        y += dirH + dp(6f)
+        // ---- 制限速度・車速（下）
+        val spH = (hh * 0.25f).coerceIn(dp(44f), dp(100f))
+        drawSpeedBlock(c, s, onHw, l, b - spH, r, b)
+        // ---- 注意・渋滞・この先
+        drawInfoItems(c, infoItems(s, onHw), l, y, r, b - spH - dp(8f), hh)
+    }
+
+    /** 左の欄に並べる項目（大事な順） */
+    private fun infoItems(s: HighwaySnapshot?, onHw: Boolean): List<Info> {
+        val out = ArrayList<Info>()
+        if (s == null) return out
+        if (onHw) {
+            val tr = s.traffic
+            // 通行止め
+            tr?.events?.firstOrNull { it.second == TrafficKind.CLOSURE && it.first < 50_000 }?.let { ev ->
+                out.add(Info("${Formats.distance(ev.first)}先 通行止", ev.third?.take(24), cDarkRed, true))
+            }
+            // オービス
+            s.cameras.firstOrNull()?.takeIf { it.distanceM < 2000 }?.let { cam ->
+                val lim = cam.maxspeedKmh?.let { "制限 ${it}km/h" }
+                val who = if (cam.userDefined) "オービス（登録）" else "オービス"
+                out.add(Info("$who ${Formats.distance(cam.distanceM)}先", lim, cRed, true))
+            }
+            // ETC カード・給油
+            val v = s.vehicle
+            if (v != null && (v.tollCard == TollCardState.NOT_INSERTED || v.tollCard == TollCardState.INVALID)) {
+                out.add(Info("ETCカード", if (v.tollCard == TollCardState.NOT_INSERTED) "挿入されていません" else "無効です。確認してください", cPurple, true))
+            }
+            v?.fuelAdvice?.let { out.add(Info(if (v.fuelAdviceLevel >= 2) "給油・充電" else "給油・充電の目安", it, if (v.fuelAdviceLevel >= 2) cDarkRed else 0xFFB26A00.toInt(), true)) }
+            // 渋滞（位置・長さ・遅れ・伸び縮み）
+            val jd = tr?.nextJamDistanceM
+            val jl = tr?.nextJamLengthM
+            if (tr != null && jd != null && jl != null && jd < 40_000) {
+                val title = if (jd < 50) "渋滞中 残り${Formats.distance(jl)}" else "${Formats.distance(jd)}先 渋滞${Formats.distance(jl)}"
+                val parts = ArrayList<String>()
+                tr.nextJamDelaySec?.let { if (it >= 60) parts.add("+${(it / 60).roundToInt()}分") }
+                when (tr.nextJamTrend) {
+                    1 -> parts.add("伸びています")
+                    -1 -> parts.add("縮んでいます")
+                }
+                tr.routeDelaySec?.let { d ->
+                    val jamOnly = tr.nextJamDelaySec ?: 0.0
+                    if (d >= 120 && d - jamOnly >= 60) parts.add("この先 計+${(d / 60).roundToInt()}分")
+                }
+                val severe = jl >= 1000 || (tr.nextJamDelaySec ?: 0.0) >= 300
+                out.add(Info(title, parts.joinToString("・").ifEmpty { null }, if (severe) cRed else cOrange, true))
+            }
+            // 事故・工事・規制など
+            tr?.events?.filter { it.second.isEvent && it.second != TrafficKind.CLOSURE && it.first < 30_000 }?.take(2)?.forEach { ev ->
+                val what = ev.second.label + (ev.third?.takeIf { it.isNotBlank() && it != ev.second.label }?.let { "（${it.take(14)}）" } ?: "")
+                out.add(Info("${Formats.distance(ev.first)}先 $what", null, cOrange, false))
+            }
+            // 渋滞なし・交通情報の状態
+            if (jd == null && tr != null) {
+                val fetched = tr.fetchedWallMs
+                when {
+                    tr.message != null -> out.add(Info(tr.message!!, null, cGray, false))
+                    fetched != null -> {
+                        val age = ((System.currentTimeMillis() - fetched) / 60_000).toInt()
+                        out.add(Info("この先 渋滞なし（${tr.provider ?: "交通情報"} ${if (age <= 0) "取得済" else "${age}分前"}）", null, 0xFF2E7D32.toInt(), false))
+                    }
+                }
+            }
+            // この先の路線（JCT で別の道路へ）
+            s.nextRoadText?.let { out.add(Info(it, null, cBlue, false)) }
+        }
+        // データの状態（GPS・通信・デモ走行など）
+        s.dataMessage?.let { out.add(Info(it, null, cAmber, false)) }
+        return out
+    }
+
+    /** 左の欄の項目を上から並べる（入りきらない分は出さない） */
+    private fun drawInfoItems(c: Canvas, items: List<Info>, l: Float, t: Float, r: Float, b: Float, hh: Float) {
+        var y = t
+        val cardH = (hh * 0.19f).coerceIn(dp(40f), dp(80f))
+        val lineH = (hh * 0.09f).coerceIn(dp(20f), dp(38f))
+        val w = r - l
+        for (it in items) {
+            val ih = if (it.card) (if (it.detail != null) cardH else cardH * 0.62f) else lineH
+            if (y + ih > b + dp(1f)) break
+            if (it.card) {
+                rect.set(l, y, r, y + ih)
+                fill.color = it.color
+                c.drawRoundRect(rect, dp(6f), dp(6f), fill)
+                val tx = l + dp(10f)
+                val maxW = w - dp(18f)
+                text.color = cText
+                if (it.detail != null) {
+                    text.textSize = fitSize(text, it.title, maxW, ih * 0.38f, minScale = 0.6f)
+                    drawTextCentered(c, ellipsize(text, it.title, maxW), tx, y + ih * 0.32f, text, Paint.Align.LEFT)
+                    textNormal.color = 0xFFF2F4F7.toInt()
+                    textNormal.textSize = fitSize(textNormal, it.detail, maxW, ih * 0.30f, minScale = 0.6f)
+                    drawTextCentered(c, ellipsize(textNormal, it.detail, maxW), tx, y + ih * 0.73f, textNormal, Paint.Align.LEFT)
+                } else {
+                    text.textSize = fitSize(text, it.title, maxW, ih * 0.56f, minScale = 0.6f)
+                    drawTextCentered(c, ellipsize(text, it.title, maxW), tx, y + ih / 2, text, Paint.Align.LEFT)
+                }
+            } else {
+                // 1 行: 左に色の印、文字は白（小さい色付きの文字は映像の圧縮でにじむため）
+                fill.color = it.color
+                rect.set(l, y + ih * 0.18f, l + dp(5f), y + ih * 0.82f)
+                c.drawRoundRect(rect, dp(2f), dp(2f), fill)
+                val tx = l + dp(12f)
+                val maxW = w - dp(14f)
+                text.color = cText
+                text.textSize = fitSize(text, it.title, maxW, ih * 0.62f, minScale = 0.62f)
+                drawTextCentered(c, ellipsize(text, it.title, maxW), tx, y + ih / 2, text, Paint.Align.LEFT)
+            }
+            y += ih + dp(5f)
+        }
+    }
+
+    /** 左の欄の下: 走行中の区間の制限速度（標識）と車速を大きく */
+    private fun drawSpeedBlock(c: Canvas, s: HighwaySnapshot?, onHw: Boolean, l: Float, t: Float, r: Float, b: Float) {
+        val h = b - t
+        val cy = (t + b) / 2
+        var x = l
+        val lim = if (onHw) s?.limitKmh else null
+        if (lim != null) {
+            val rad = min(h * 0.46f, (r - l) * 0.2f)
+            val cx = x + rad
+            fill.color = Color.WHITE
+            c.drawCircle(cx, cy, rad, fill)
+            stroke.color = 0xFFD32F2F.toInt()
+            stroke.strokeWidth = rad * 0.2f
+            c.drawCircle(cx, cy, rad * 0.88f, stroke)
+            text.color = cBlue
+            text.textSize = rad * (if (lim >= 100) 0.74f else 0.94f)
+            drawTextCentered(c, lim.toString(), cx, cy, text, Paint.Align.CENTER)
+            x += rad * 2 + h * 0.18f
+        }
+        val spText = s?.speedKmh?.let { max(0, it.roundToInt()).toString() } ?: "--"
+        val baseY = cy + h * 0.29f
+        text.color = cText
+        text.textSize = h * 0.80f
+        val nw = text.measureText(spText)
+        text.textAlign = Paint.Align.LEFT
+        c.drawText(spText, x, baseY, text)
+        x += nw + h * 0.06f
+        textNormal.textAlign = Paint.Align.LEFT
+        textNormal.color = cSub
+        textNormal.textSize = h * 0.26f
+        c.drawText("km/h", x, baseY, textNormal)
+        if (lim != null && s?.limitTagged == false) {
+            // 標識の登録が無く、道路の種別から推定した制限速度
+            textNormal.textSize = h * 0.22f
+            c.drawText("（制限は推定）", x, baseY - h * 0.34f, textNormal)
         }
     }
 
@@ -519,39 +782,56 @@ class PanelRenderer(var density: Float) {
     }
 
     /**
-     * 横長の画面の下の段: 左に自車（先のページでは［﹀ 手前へ］）、中ほどに地図の出典、
-     * 右に走行中の区間の制限速度と車速。
+     * 横長の画面の下の段（現在地の段）。
+     *  - 2 画面の右側（MEDIUM）: 左に自車と路線（先のページでは［﹀ 手前へ］）、右に走行中の区間の制限速度と車速
+     *  - 横に長い画面（WIDE）: 自車（先のページでは［﹀ 手前へ］）だけ。制限速度と車速は左の欄に大きく出す
+     * 地図の出典は、空いている所に小さく。
      */
     private fun drawBottomRow(
-        c: Canvas, s: HighwaySnapshot?, pg: Int, l: Float, t: Float, r: Float, b: Float, stripX: Float, rowLeft: Float
+        c: Canvas, s: HighwaySnapshot?, pg: Int, l: Float, t: Float, r: Float, b: Float, stripX: Float, rowLeft: Float, mode: Mode
     ) {
         val h = b - t
         val cy = (t + b) / 2
-        val onHw = s?.status == EngineStatus.ON_HIGHWAY || s?.status == EngineStatus.REST_STOP
-        // ---- 右: 制限速度・車速
-        val speedLeft = drawSpeedGroup(c, s, onHw, r, t, b)
-        // ---- 左: 自車 /［﹀ 手前へ］
+        val onHw = onHighway(s)
+        // ---- 右: 制限速度・車速（2 画面の右側だけ）
+        val speedLeft = if (mode == Mode.MEDIUM) drawSpeedGroup(c, s, onHw, r, t, b) else r
+        val rightLimit = speedLeft - dp(10f)
+        // ---- 左: 自車と路線 /［﹀ 手前へ］
         var midL: Float
+        var attrY = b - dp(2.5f)
         if (onHw && pg > 0) {
             drawMoreDots(c, stripX, t, h)
-            val br = max(rowLeft + dp(72f), min(rowLeft + (r - rowLeft) * 0.38f, speedLeft - dp(8f)))
+            val br = max(rowLeft + dp(72f), min(rowLeft + (r - rowLeft) * 0.40f, rightLimit))
             drawPrevButton(c, rowLeft, t + h * 0.1f, br, b - h * 0.04f)
             midL = br + dp(8f)
         } else {
             if (onHw) drawCarMarker(c, stripX, cy, min(h * 0.42f, dp(17f)))
             midL = rowLeft
-            if (onHw && s?.deadReckoning == true) {
-                textNormal.color = cAmber
-                val msg = "推測航法（トンネル内など）"
-                val maxW = speedLeft - dp(10f) - midL
-                if (maxW > dp(40f)) {
-                    textNormal.textSize = fitSize(textNormal, msg, maxW, h * 0.42f)
-                    drawTextCentered(c, ellipsize(textNormal, msg, maxW), midL, t + h * 0.38f, textNormal, Paint.Align.LEFT)
+            if (onHw && s != null) {
+                val maxW = rightLimit - midL
+                if (s.deadReckoning) {
+                    // トンネル内など: 路線名の代わりに推測航法中であることを出す
+                    textNormal.color = cAmber
+                    val msg = "推測航法（トンネル内など）"
+                    if (maxW > dp(40f)) {
+                        textNormal.textSize = fitSize(textNormal, msg, maxW, h * 0.42f)
+                        drawTextCentered(c, ellipsize(textNormal, msg, maxW), midL, t + h * 0.38f, textNormal, Paint.Align.LEFT)
+                    }
+                } else if (mode == Mode.MEDIUM && maxW > dp(60f)) {
+                    // 走行中の路線（見出しの代わり）。SA/PA で停車中はその旨
+                    if (s.status == EngineStatus.REST_STOP) {
+                        text.color = cText
+                        val msg = s.directionText ?: "停車中"
+                        text.textSize = fitSize(text, msg, maxW, h * 0.40f)
+                        drawTextCentered(c, ellipsize(text, msg, maxW), midL, t + h * 0.38f, text, Paint.Align.LEFT)
+                    } else {
+                        drawRouteInline(c, s, midL, t + h * 0.38f, h * 0.52f, rightLimit)
+                    }
                 }
             }
         }
-        // ---- 中: 地図の出典（下端に小さく）
-        val maxW = speedLeft - dp(8f) - midL
+        // ---- 地図の出典（下端に小さく）
+        val maxW = rightLimit + dp(2f) - midL
         if (maxW > dp(30f)) {
             textNormal.color = 0xFF5F6873.toInt()
             var label = "地図 © OpenStreetMap contributors"
@@ -561,8 +841,56 @@ class PanelRenderer(var density: Float) {
                 textNormal.textSize = fitSize(textNormal, label, maxW, dp(9f), minScale = 0.7f)
             }
             textNormal.textAlign = Paint.Align.LEFT
-            c.drawText(label, midL, b - dp(2.5f), textNormal)
+            c.drawText(label, midL, attrY, textNormal)
         }
+    }
+
+    /**
+     * 路線の番号（緑。一般国道は青のおにぎり風）と名前を 1 行で描く。
+     * @param cy 行の中心  @param size 番号の札の高さ  @return 描いた右端
+     */
+    private fun drawRouteInline(c: Canvas, s: HighwaySnapshot, x0: Float, cy: Float, size: Float, maxR: Float): Float {
+        var x = x0
+        val general = s.generalRoad
+        val ref = s.roadRef?.let { if (general && it.startsWith("国道")) it.removePrefix("国道").removeSuffix("号") else it }
+        if (ref != null) {
+            text.textSize = size * 0.66f
+            val bw = text.measureText(ref) + size * 0.42f
+            if (x + bw < maxR - size) {
+                rect.set(x, cy - size / 2, x + bw, cy + size / 2)
+                fill.color = if (general) cBlue else cGreen
+                c.drawRoundRect(rect, size * 0.16f, size * 0.16f, fill)
+                stroke.color = Color.WHITE
+                stroke.strokeWidth = max(dp(1f), size * 0.05f)
+                rect.inset(size * 0.08f, size * 0.08f)
+                c.drawRoundRect(rect, size * 0.12f, size * 0.12f, stroke)
+                text.color = cText
+                drawTextCentered(c, ref, rect.centerX(), cy, text, Paint.Align.CENTER)
+                x += bw + size * 0.25f
+            }
+        }
+        val name = s.roadName ?: if (general) "一般道（バイパス）" else "高速道路"
+        // 一般国道のバイパスは「一般道」の札も（信号・歩行者に注意）。入らなければ省く
+        textNormal.textSize = size * 0.5f
+        val tagW = if (general && s.roadName != null) textNormal.measureText("一般道") + size * 0.5f else 0f
+        val maxW = maxR - x - (if (tagW > 0f) tagW + size * 0.25f else 0f)
+        if (maxW > size) {
+            text.color = cText
+            text.textSize = fitSize(text, name, maxW, size * 0.78f, minScale = 0.6f)
+            drawTextCentered(c, ellipsize(text, name, maxW), x, cy, text, Paint.Align.LEFT)
+            x += min(maxW, text.measureText(name))
+            if (tagW > 0f) {
+                x += size * 0.25f
+                val th = size * 0.36f
+                rect.set(x, cy - th, x + tagW, cy + th)
+                fill.color = cGray
+                c.drawRoundRect(rect, th, th, fill)
+                textNormal.color = Color.WHITE
+                drawTextCentered(c, "一般道", rect.centerX(), cy, textNormal, Paint.Align.CENTER)
+                x += tagW
+            }
+        }
+        return x
     }
 
     /**
@@ -747,11 +1075,11 @@ class PanelRenderer(var density: Float) {
         val etaFontK: Float
         when (style) {
             RowStyle.BIG -> {
-                // 運転中に読む施設名・距離を大きく（到着予定の段は少し低く）
-                nameTopK = 0.03f; nameBottomK = 0.645f; nameFontK = 0.72f; numK = 0.80f; etaBottomK = 0.97f; etaFontK = 0.78f
+                // 運転中に読む施設名・距離・到着予定時刻をどれも大きく（到着予定の段を高くして時刻を大きく）
+                nameTopK = 0.03f; nameBottomK = 0.585f; nameFontK = 0.72f; numK = 0.80f; etaBottomK = 0.975f; etaFontK = 0.82f
             }
             RowStyle.NORMAL -> {
-                nameTopK = 0.06f; nameBottomK = 0.56f; nameFontK = 0.56f; numK = 0.66f; etaBottomK = 0.95f; etaFontK = 0.66f
+                nameTopK = 0.06f; nameBottomK = 0.56f; nameFontK = 0.56f; numK = 0.66f; etaBottomK = 0.95f; etaFontK = 0.74f
             }
             RowStyle.COMPACT -> {
                 nameTopK = 0.04f; nameBottomK = 0.56f; nameFontK = 0.58f; numK = 0.66f; etaBottomK = 0.95f; etaFontK = 0.66f
@@ -854,7 +1182,7 @@ class PanelRenderer(var density: Float) {
             f.closedBefore -> "通行止"
             else -> Formats.clock(f.etaEpochMs)
         }
-        text.textSize = min(etaH * (if (isCam) 0.5f else etaFontK), if (style == RowStyle.BIG) dp(46f) else dp(36f))
+        text.textSize = min(etaH * (if (isCam) 0.5f else etaFontK), if (style == RowStyle.BIG) dp(58f) else dp(40f))
         text.color = when {
             f.closedBefore && !isCam -> cRed
             dim -> cTextDim
@@ -864,7 +1192,7 @@ class PanelRenderer(var density: Float) {
         drawTextCentered(c, etaText, etaX, (etaTop + etaBottom) / 2, text, Paint.Align.LEFT)
         text.color = cText
         var ix = etaX + text.measureText(etaText) + etaH * 0.4f
-        val iconSize = min(etaH * 0.78f, if (style == RowStyle.BIG) dp(42f) else dp(34f))
+        val iconSize = min(etaH * 0.76f, if (style == RowStyle.BIG) dp(46f) else dp(34f))
         val iy = etaTop + (etaH - iconSize) / 2
 
         // 交通情報のタグ（手前の区間の渋滞・事故など）・出口なし・ETC 専用
