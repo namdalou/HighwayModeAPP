@@ -20,37 +20,34 @@ import android.widget.LinearLayout
 import android.widget.Toast
 import com.example.highwaymode.car.AutoDiagnostics
 import com.example.highwaymode.core.dual.DualLayout
-import com.example.highwaymode.core.engine.EngineStatus
 import com.example.highwaymode.core.engine.FacilityView
+import com.example.highwaymode.data.AppSettings
 import com.example.highwaymode.data.Prefs
-import com.example.highwaymode.data.UserCameraStore
 import com.example.highwaymode.dual.DualMode
-import com.example.highwaymode.engine.DemoPreset
 import com.example.highwaymode.engine.EngineHost
 import com.example.highwaymode.engine.RunDiagnostics
+import com.example.highwaymode.ui.DevAccess
 import com.example.highwaymode.ui.DualView
 import com.example.highwaymode.ui.FacilityDetailDialog
 import com.example.highwaymode.ui.HighwayPanelView
 import com.example.highwaymode.ui.ModeBarView
+import com.example.highwaymode.ui.ScreenOptions
+import com.example.highwaymode.ui.SettingsActivity
 import com.example.highwaymode.ui.SettingsDialogs
-import com.example.spectrum.DiagnosticsActivity
 import com.example.spectrum.MediaListenerService
 import com.example.spectrum.MediaTracker
 import com.example.spectrum.NowPlaying
 import com.example.spectrum.PlayerView
-import com.example.spectrum.SessionScanner
-import com.example.spectrum.ShizukuHelper
 import com.example.spectrum.SpectrumEngine
-import kotlin.concurrent.thread
 
 /**
  * スマホの画面。Spectrum（音楽）とハイウェイモードを 1 つにまとめたもの。
  *  - 高速道路の外: Spectrum
  *  - 高速道路の対象エリアに入ると自動で 2 画面（設定で変更可）、出ると Spectrum に戻る
- *  - 下部のバーで いつでも 音楽 / 2画面 / ハイウェイ を切替（右端の ⋮ でメニュー）
+ *  - 下部のバーで いつでも 音楽 / 2画面 / ハイウェイ を切替（右端の ⋮ で設定画面）
+ *  - 音楽の画面の何もない場所を 20 回続けてタップ → パスワード → 開発者向け設定
  */
-class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.CameraFileActions,
-    ModeBarView.Callbacks, DualMode.Listener {
+class MainActivity : Activity(), HighwayPanelView.Callbacks, ModeBarView.Callbacks, DualMode.Listener {
 
     private lateinit var panel: HighwayPanelView
     private lateinit var player: PlayerView
@@ -62,7 +59,6 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
     private lateinit var locBtn: Button
     private lateinit var micBtn: Button
     private lateinit var accessBtn: Button
-    private lateinit var dumpBtn: Button
 
     private val listener = EngineHost.SnapshotListener { s ->
         panel.setSnapshot(s)
@@ -73,14 +69,18 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         super.onCreate(savedInstanceState)
         NowPlaying.init(this)
         prefs = Prefs(this)
-        // 車載画面で表示し続けるため、画面を消さない
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        AppSettings.apply(this)
+        // 画面を消さない（設定。既定はいつも）・画面の向き
+        ScreenOptions.applyKeepScreenOn(this, prefs, DualMode.highwayActive)
+        ScreenOptions.applyOrientation(this, prefs)
         setupEdgeToEdge()
 
         panel = HighwayPanelView(this)
         panel.callbacks = this
         panel.displayMode = prefs.displayMode
         player = PlayerView(this)
+        // 何もない場所を 20 回続けてタップ → パスワードを聞いて開発者向け設定（Spectrum の診断画面もここから）
+        player.onSecretTap = { DevAccess.prompt(this) }
         bar = ModeBarView(this)
         bar.callbacks = this
         dual = DualView(this, player, panel, bar)
@@ -88,10 +88,9 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         locBtn = smallButton("位置情報を許可(ハイウェイ用)") { requestRuntime(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
         micBtn = smallButton("マイク権限を許可(スペアナ用)") { requestRuntime(arrayOf(Manifest.permission.RECORD_AUDIO)) }
         accessBtn = smallButton("通知アクセスを許可(曲情報用)") { openNotificationAccess() }
-        dumpBtn = smallButton("音声読み取りを許可(Shizuku)") { requestDumpWithShizuku() }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            for (b in listOf(locBtn, micBtn, accessBtn, dumpBtn)) addView(b, LinearLayout.LayoutParams(0, -2, 1f))
+            for (b in listOf(locBtn, micBtn, accessBtn)) addView(b, LinearLayout.LayoutParams(0, -2, 1f))
         }
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -104,7 +103,10 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
 
     override fun onStart() {
         super.onStart()
+        // 設定画面から戻ったとき、設定の変更を反映する
+        panel.displayMode = prefs.displayMode
         panel.showCamerasInList = prefs.camerasInList
+        ScreenOptions.applyOrientation(this, prefs)
         EngineHost.addListener(listener)
         EngineHost.latest?.let {
             panel.setSnapshot(it)
@@ -114,6 +116,7 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         DualMode.addListener(this)
         dual.setLayout(DualMode.layout, animate = false)
         updateHints()
+        ScreenOptions.applyKeepScreenOn(this, prefs, DualMode.highwayActive)
         ensurePermissionsAndStart()
         SettingsDialogs.checkUpdateOnStart(this)
         AutoDiagnostics.maybeShowOnce(this, prefs)
@@ -148,6 +151,8 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
     override fun onDualChanged() {
         dual.setLayout(DualMode.layout, animate = true)
         updateHints()
+        // 「高速道路を走行中だけ画面を消さない」の切り替え
+        ScreenOptions.applyKeepScreenOn(this, prefs, DualMode.highwayActive)
     }
 
     private fun updateHints() {
@@ -238,8 +243,7 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         micBtn.visibility = if (has(Manifest.permission.RECORD_AUDIO)) View.GONE else View.VISIBLE
         accessBtn.visibility = if (isListenerEnabled()) View.GONE else View.VISIBLE
         // Amazon Music など音声の番号を知らせないアプリも Shizuku なしで自動で探すので、
-        // Shizuku のボタンは常には出さない（メニュー →「音楽（Spectrum）」から使える）
-        dumpBtn.visibility = View.GONE
+        // Shizuku のボタンは出さない（開発者向け設定から使える）
     }
 
     private fun isListenerEnabled(): Boolean {
@@ -253,35 +257,6 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         } catch (e: Exception) {
             Toast.makeText(this, "設定を開けませんでした", Toast.LENGTH_SHORT).show()
         }
-    }
-
-    /** Spectrum: Shizuku で DUMP 権限（音声の番号の読み取り）を許可する */
-    private fun requestDumpWithShizuku() {
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("音声の読み取りを許可")
-            .setMessage(
-                "Amazon Music・YouTube など音声の番号を知らせないアプリは、Shizuku が無くても\n" +
-                    "再生中の音を自動で探してスペアナを動かします（見つかるまで数秒〜1 分ほど）。\n\n" +
-                    "それでもスペアナが動かないときだけ、この設定を使ってください。\n" +
-                    "Shizuku アプリを起動した状態で「許可する」を押してください。\n" +
-                    "(Shizuku はワイヤレスデバッグで開始できます。一度許可すれば Shizuku は止めても大丈夫です)"
-            )
-            .setPositiveButton("許可する") { _, _ ->
-                dumpBtn.isEnabled = false
-                ShizukuHelper.grantDump(this) { ok, msg ->
-                    dumpBtn.isEnabled = true
-                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                    if (!ok && !ShizukuHelper.isRunning()) ShizukuHelper.openShizuku(this)
-                    updateButtons()
-                }
-            }
-            .setNeutralButton("今後表示しない") { _, _ ->
-                getSharedPreferences(MediaListenerService.PREFS, MODE_PRIVATE).edit()
-                    .putBoolean(KEY_HIDE_DUMP_BUTTON, true).apply()
-                updateButtons()
-            }
-            .setNegativeButton("キャンセル", null)
-            .show()
     }
 
     private fun smallButton(label: String, onClick: () -> Unit) = Button(this).apply {
@@ -301,6 +276,8 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         val next = (panel.displayMode + 1) % 3
         panel.displayMode = next
         prefs.displayMode = next
+        // 表示中の車の画面にも反映する
+        AppSettings.changed(this)
     }
 
     override fun onReroute() {
@@ -308,82 +285,9 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         Toast.makeText(this, "現在地の道路を再探索します", Toast.LENGTH_SHORT).show()
     }
 
+    /** 下部のバーの［⋮］・ハイウェイ側の［設定］: 設定画面を開く */
     override fun onMenu() {
-        val generalOn = EngineHost.latest?.status == EngineStatus.GENERAL_ROAD_MODE
-        val items = ArrayList<Pair<String, () -> Unit>>()
-        // 横画面ではハイウェイモードの下のボタンを出さない（一覧を大きくするため）ので、ここにも置く
-        val modeLabel = when (panel.displayMode) {
-            1 -> "一覧"
-            2 -> "SA/PA のみ"
-            else -> "大きく"
-        }
-        items.add("ハイウェイの表示を切替（いま: $modeLabel）" to { onToggleDisplay() })
-        items.add("現在地の道路を再探索（上下線を取り違えたとき）" to { onReroute() })
-        if (EngineHost.demoRunning) items.add("デモ走行を停止" to { EngineHost.stopDemo() })
-        else items.add("デモ走行…（自動切替も確認できます）" to { showDemoMenu() })
-        items.add("画面の自動切替（高速道路で 2 画面）" to { showDualSettings() })
-        items.add("音楽（Spectrum）: 曲情報・音声の設定と診断" to { showMusicSettings() })
-        items.add((if (generalOn) "一般道モードを解除" else "一般道モード（高速道路の判定を止める）") to {
-            EngineHost.post { it.generalRoadMode = !generalOn }
-        })
-        items.add("運転傾向の学習をリセット" to {
-            EngineHost.post { it.driver.reset() }
-            prefs.driverProfile = null
-            Toast.makeText(this, "リセットしました", Toast.LENGTH_SHORT).show()
-        })
-        items.add("地図データ（更新・作成・オンライン取得）" to { SettingsDialogs.showMapData(this) })
-        items.add("渋滞情報（取得元・間隔）" to { SettingsDialogs.showTraffic(this) })
-        items.add("オービス（音声・登録・CSV）" to {
-            SettingsDialogs.showCameras(this, this)
-        })
-        items.add("Android Auto だけで使うための設定（動作状態）" to { showRunStatus() })
-        items.add("Android Auto の状態（一覧に出ないとき）" to { AutoDiagnostics.show(this) })
-        items.add("このアプリについて" to { showAbout() })
-        items.add("終了" to {
-            TrackingService.stop(this)
-            finishAndRemoveTask()
-        })
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("メニュー")
-            .setItems(items.map { it.first }.toTypedArray()) { _, which -> items[which].second.invoke() }
-            .show()
-    }
-
-    /**
-     * スマホでアプリを開かずに Android Auto だけで使うための設定と、いまの動作状態。
-     * 問題のある項目の設定画面へのボタンを出す。
-     */
-    private fun showRunStatus() {
-        val items = RunDiagnostics.collect(this)
-        val fixes = items.filter { !it.ok }.mapNotNull { it.fix }.distinct()
-        val msg = RunDiagnostics.GUIDE + "\n\n" + RunDiagnostics.asText(items)
-        val b = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Android Auto だけで使うための設定")
-            .setMessage(msg)
-            .setNegativeButton("閉じる", null)
-        val primary = fixes.firstOrNull() ?: RunDiagnostics.Fix.BATTERY.takeIf {
-            // 問題が無くても、電池の設定はいつでも開けるようにする
-            items.none { i -> i.title == "電池" && i.ok }
-        }
-        if (primary != null) b.setPositiveButton(primary.label) { _, _ -> openFix(primary) }
-        val second = fixes.getOrNull(1)
-        if (second != null) b.setNeutralButton(second.label) { _, _ -> openFix(second) }
-        b.show()
-    }
-
-    private fun openFix(fix: RunDiagnostics.Fix) {
-        for (i in RunDiagnostics.intentFor(this, fix)) {
-            try {
-                startActivity(i)
-                if (fix == RunDiagnostics.Fix.BATTERY) {
-                    Toast.makeText(this, "一覧（すべてのアプリ）から「Spectrum ハイウェイ」を「最適化しない」にしてください", Toast.LENGTH_LONG).show()
-                }
-                return
-            } catch (e: Exception) {
-                // 次の画面を試す
-            }
-        }
-        Toast.makeText(this, "設定を開けませんでした", Toast.LENGTH_SHORT).show()
+        startActivity(Intent(this, SettingsActivity::class.java))
     }
 
     /** Android Auto で使ったことがあり、電池の最適化が有効なままなら、一度だけ案内する */
@@ -394,136 +298,9 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
         prefs.backgroundHintShown = true
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("Android Auto だけで使う場合")
-            .setMessage(RunDiagnostics.GUIDE + "\n\n（あとからメニュー →「Android Auto だけで使うための設定」でも確認できます）")
-            .setPositiveButton(RunDiagnostics.Fix.BATTERY.label) { _, _ -> openFix(RunDiagnostics.Fix.BATTERY) }
+            .setMessage(RunDiagnostics.GUIDE + "\n\n（あとから 設定 →「スマホを開かずに Android Auto で使う」でも確認できます）")
+            .setPositiveButton(RunDiagnostics.Fix.BATTERY.label) { _, _ -> SettingsDialogs.openFix(this, RunDiagnostics.Fix.BATTERY) }
             .setNegativeButton("あとで", null)
-            .show()
-    }
-
-    /** 高速道路に入ったときの画面（自動切替） */
-    private fun showDualSettings() {
-        val labels = arrayOf(
-            "自動で「2画面」にする（左に音楽・右にハイウェイ）",
-            "自動で「ハイウェイ」だけにする",
-            "自動で切り替えない（下のバーで手動）"
-        )
-        val current = when {
-            !prefs.autoSwitch -> 2
-            prefs.highwayLayout == DualLayout.HIGHWAY.name -> 1
-            else -> 0
-        }
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("高速道路に入ったときの画面")
-            .setSingleChoiceItems(labels, current) { d, which ->
-                when (which) {
-                    0 -> {
-                        prefs.autoSwitch = true
-                        prefs.highwayLayout = DualLayout.SPLIT.name
-                    }
-                    1 -> {
-                        prefs.autoSwitch = true
-                        prefs.highwayLayout = DualLayout.HIGHWAY.name
-                    }
-                    else -> prefs.autoSwitch = false
-                }
-                DualMode.settingsChanged()
-                d.dismiss()
-                if (which != 2) {
-                    Toast.makeText(this, "高速道路などに入って 5 秒で切り替わり、出て 15 秒で音楽に戻ります", Toast.LENGTH_LONG).show()
-                }
-            }
-            .setNegativeButton("閉じる", null)
-            .show()
-    }
-
-    /** Spectrum の設定（曲情報・音声の読み取り）と診断画面 */
-    private fun showMusicSettings() {
-        val items = ArrayList<Pair<String, () -> Unit>>()
-        items.add((if (isListenerEnabled()) "通知へのアクセス（許可済み）" else "通知へのアクセスを許可（曲名・ジャケット用）") to { openNotificationAccess() })
-        if (!has(Manifest.permission.RECORD_AUDIO)) {
-            items.add("マイク権限を許可（スペアナ用・録音はしません）" to { requestRuntime(arrayOf(Manifest.permission.RECORD_AUDIO)) })
-        }
-        items.add((if (SessionScanner.hasPermission(this)) "音声の読み取り（許可済み）" else "音声の読み取りを許可（Shizuku・自動で見つからないとき用）") to {
-            getSharedPreferences(MediaListenerService.PREFS, MODE_PRIVATE).edit().putBoolean(KEY_HIDE_DUMP_BUTTON, false).apply()
-            requestDumpWithShizuku()
-        })
-        items.add("Spectrum の診断画面（曲情報の取得元を選ぶ）" to {
-            startActivity(Intent(this, DiagnosticsActivity::class.java))
-        })
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("音楽（Spectrum）")
-            .setItems(items.map { it.first }.toTypedArray()) { _, which -> items[which].second.invoke() }
-            .setNegativeButton("閉じる", null)
-            .show()
-    }
-
-    private fun showDemoMenu() {
-        val presets = DemoPreset.values()
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("デモ走行（実際の地図データ上を模擬走行）")
-            .setItems(presets.map { it.label }.toTypedArray()) { _, which -> EngineHost.startDemo(presets[which]) }
-            .setNegativeButton("キャンセル", null)
-            .show()
-    }
-
-    // ------------------------------------------------------------------ オービス CSV
-
-    override fun importCameraCsv() {
-        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
-            .putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("text/csv", "text/comma-separated-values", "text/plain", "application/octet-stream"))
-        startActivityForResult(i, REQ_IMPORT)
-    }
-
-    override fun exportCameraCsv() {
-        val i = Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("text/csv")
-            .putExtra(Intent.EXTRA_TITLE, "highway_cameras.csv")
-        startActivityForResult(i, REQ_EXPORT)
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        val uri = data?.data ?: return
-        if (resultCode != RESULT_OK) return
-        val store = UserCameraStore(this)
-        thread(name = "camera-csv") {
-            val msg = try {
-                when (requestCode) {
-                    REQ_IMPORT -> {
-                        val (added, skipped) = store.import(uri)
-                        EngineHost.reloadUserCameras()
-                        "取り込みました: $added 件" + if (skipped > 0) "（読めなかった行 $skipped）" else ""
-                    }
-                    REQ_EXPORT -> {
-                        store.export(uri)
-                        "書き出しました: ${store.count()} 件"
-                    }
-                    else -> null
-                }
-            } catch (e: Exception) {
-                "失敗しました: ${e.message}"
-            }
-            if (msg != null) runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
-        }
-    }
-
-    private fun showAbout() {
-        val msg = """
-            音楽（Spectrum）とハイウェイモードを 1 つにまとめたアプリです。
-
-            ・高速道路の外: 再生中の曲（ジャケット・曲名・操作）とスペクトラムアナライザーを表示します。
-            ・高速道路・有料道路・都市高速・主要バイパス（名豊道路・名阪国道など）に入ると、自動で 2 画面（左に音楽、右にハイウェイモード）に切り替わり、出ると音楽の画面に戻ります。下のバーでいつでも切り替えられます。
-            ・ハイウェイモード: 前方の IC / JCT / SA / PA / スマート IC / 本線料金所までの距離と到着予定時刻、SA/PA の設備、ETC 専用、渋滞・事故・通行止め、オービスを表示します。
-            ・進行方向: ジャイロと GPS ドップラー方位をカルマンフィルタで融合し、隠れマルコフモデルで上下線・ランプを判定します。トンネル内は推測航法。Android Auto 接続時は車速信号（と車両のジャイロ）も使います。
-            ・到着予測: 制限速度・カーブ・料金所・運転傾向（学習）・現在の速度・直近の流れに加え、設定した場合はリアルタイムの渋滞情報（HERE / TomTom / Google）を反映します。
-
-            地図データ © OpenStreetMap contributors（ODbL）
-            施設・設備・ETC専用の情報は OpenStreetMap の登録内容に依存します。運転中は画面を注視せず、安全を最優先にしてください。
-        """.trimIndent()
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle(getString(R.string.app_name))
-            .setMessage(msg)
-            .setPositiveButton("閉じる", null)
             .show()
     }
 
@@ -564,9 +341,5 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, SettingsDialogs.Cam
     companion object {
         private const val REQ_PERMS = 10
         private const val REQ_BUTTON = 11
-        private const val REQ_IMPORT = 20
-        private const val REQ_EXPORT = 21
-        /** Spectrum と同じキー（「今後表示しない」） */
-        private const val KEY_HIDE_DUMP_BUTTON = "hide_dump_button"
     }
 }

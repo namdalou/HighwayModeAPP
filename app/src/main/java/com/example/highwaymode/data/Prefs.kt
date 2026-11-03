@@ -92,10 +92,63 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_CAMERA_LIST, false)
         set(v) = sp.edit().putBoolean(KEY_CAMERA_LIST, v).apply()
 
-    /** 渋滞・ETC カード未挿入・給油を音声で知らせる */
-    var trafficVoice: Boolean
+    /**
+     * 渋滞・ETC カード未挿入・給油を音声で知らせる（v2.3 まで。v2.4 から種類ごとの設定の初期値にだけ使う）
+     */
+    private val trafficVoiceLegacy: Boolean
         get() = sp.getBoolean(KEY_TRAFFIC_VOICE, true)
-        set(v) = sp.edit().putBoolean(KEY_TRAFFIC_VOICE, v).apply()
+
+    /** 前方の渋滞を音声で知らせる */
+    var voiceJam: Boolean
+        get() = sp.getBoolean(KEY_VOICE_JAM, trafficVoiceLegacy)
+        set(v) = sp.edit().putBoolean(KEY_VOICE_JAM, v).apply()
+
+    /** ETC カードの未挿入・無効を音声で知らせる */
+    var voiceEtc: Boolean
+        get() = sp.getBoolean(KEY_VOICE_ETC, trafficVoiceLegacy)
+        set(v) = sp.edit().putBoolean(KEY_VOICE_ETC, v).apply()
+
+    /** 給油・充電の目安を音声で知らせる */
+    var voiceFuel: Boolean
+        get() = sp.getBoolean(KEY_VOICE_FUEL, trafficVoiceLegacy)
+        set(v) = sp.edit().putBoolean(KEY_VOICE_FUEL, v).apply()
+
+    /** 音声案内の音量（0=標準, 1=やや小さく, 2=小さく）。音楽の音量に対する大きさ */
+    var voiceVolume: Int
+        get() = sp.getInt(KEY_VOICE_VOLUME, 0).coerceIn(0, VOICE_VOLUMES.size - 1)
+        set(v) = sp.edit().putInt(KEY_VOICE_VOLUME, v).apply()
+
+    /** 音声案内の話す速さ（0=ゆっくり, 1=標準, 2=速め） */
+    var voiceRate: Int
+        get() = sp.getInt(KEY_VOICE_RATE, 1).coerceIn(0, VOICE_RATES.size - 1)
+        set(v) = sp.edit().putInt(KEY_VOICE_RATE, v).apply()
+
+    // ------------------------------------------------------------------ 表示・画面（v2.4）
+
+    /** 高速道路を出てから音楽の画面に戻るまで [秒] */
+    var exitDelaySec: Int
+        get() = sp.getInt(KEY_EXIT_DELAY, EXIT_DELAYS[0]).let { v -> if (v in EXIT_DELAYS) v else EXIT_DELAYS[0] }
+        set(v) = sp.edit().putInt(KEY_EXIT_DELAY, v).apply()
+
+    /** 到着予定の表示（0=到着時刻「17:50」, 1=残り時間「あと12分」） */
+    var etaStyle: Int
+        get() = sp.getInt(KEY_ETA_STYLE, 0).coerceIn(0, 1)
+        set(v) = sp.edit().putInt(KEY_ETA_STYLE, v).apply()
+
+    /** スマホの画面の向き（0=自動, 1=縦に固定, 2=横に固定） */
+    var orientation: Int
+        get() = sp.getInt(KEY_ORIENTATION, 0).coerceIn(0, 2)
+        set(v) = sp.edit().putInt(KEY_ORIENTATION, v).apply()
+
+    /** スマホの画面を消さない（0=いつも, 1=高速道路を走行中だけ, 2=端末の設定どおり） */
+    var keepScreenOn: Int
+        get() = sp.getInt(KEY_KEEP_SCREEN, 0).coerceIn(0, 2)
+        set(v) = sp.edit().putInt(KEY_KEEP_SCREEN, v).apply()
+
+    /** 電池の節約（高速道路から離れている・停車中は GPS の間隔をあける）。オフならいつも毎秒測位 */
+    var batterySaver: Boolean
+        get() = sp.getBoolean(KEY_BATTERY_SAVER, true)
+        set(v) = sp.edit().putBoolean(KEY_BATTERY_SAVER, v).apply()
 
     /** 高速道路の対象エリアに入ったら自動で 2 画面にし、出たら Spectrum（音楽）に戻す */
     var autoSwitch: Boolean
@@ -143,7 +196,26 @@ class Prefs(context: Context) {
         private const val KEY_CAMERA_VOICE = "camera_voice"
         private const val KEY_CAMERA_LIST = "camera_list"
         private const val KEY_TRAFFIC_VOICE = "traffic_voice"
+        private const val KEY_VOICE_JAM = "voice_jam"
+        private const val KEY_VOICE_ETC = "voice_etc"
+        private const val KEY_VOICE_FUEL = "voice_fuel"
+        private const val KEY_VOICE_VOLUME = "voice_volume"
+        private const val KEY_VOICE_RATE = "voice_rate"
+        private const val KEY_EXIT_DELAY = "dual_exit_delay_sec"
+        private const val KEY_ETA_STYLE = "eta_style"
+        private const val KEY_ORIENTATION = "screen_orientation"
+        private const val KEY_KEEP_SCREEN = "keep_screen_on"
+        private const val KEY_BATTERY_SAVER = "battery_saver"
 
         val DEFAULT_ENDPOINTS: List<String> = OverpassHttp.DEFAULT_ENDPOINTS
+
+        /** 高速道路を出てから音楽に戻るまでの選択肢 [秒]（先頭が標準） */
+        val EXIT_DELAYS = intArrayOf(15, 30, 60)
+
+        /** 音声案内の音量（[voiceVolume] の順。TextToSpeech の音量 0〜1） */
+        val VOICE_VOLUMES = floatArrayOf(1.0f, 0.7f, 0.45f)
+
+        /** 音声案内の話す速さ（[voiceRate] の順。1 = 標準） */
+        val VOICE_RATES = floatArrayOf(0.85f, 1.0f, 1.2f)
     }
 }

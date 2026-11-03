@@ -22,7 +22,7 @@ import kotlin.math.roundToInt
 /**
  * 下部の切替バー（車の画面・スマホで共用）。
  *
- *  右側（車では運転席に近い側）: ［♪ 音楽］［2画面］［ハイウェイ］（スマホは右端に［⋮］メニュー）
+ *  右側（車では運転席に近い側）: ［♪ 音楽］［2画面］［ハイウェイ］（スマホは右端に［⋮］設定）
  *  左側（幅に余裕があるとき）:
  *   - 音楽だけの表示中 … 次の IC/SA などまでの距離・到着時刻（オービス 2km 以内・通行止め・渋滞を優先）
  *   - ハイウェイだけの表示中 … 再生中の曲と 再生/一時停止
@@ -34,7 +34,7 @@ class ModeBarRenderer(var density: Float) {
 
     class Hit(val rect: RectF, val target: Target)
 
-    /** スマホ: 右端にメニューボタン */
+    /** スマホ: 右端に設定のボタン（［⋮］） */
     var showMenuButton = false
 
     /** 対象エリア外で音楽だけを表示しているときの案内（スマホ横画面など） */
@@ -303,7 +303,7 @@ class ModeBarRenderer(var density: Float) {
                 badge = if (next.type == FacilityType.TB) "料金所" else next.type.badge
                 badgeColor = if (next.type == FacilityType.TB) cBlue else cGreen
                 main = next.name.ifEmpty { next.displayName }
-                sub = Formats.distance(next.distanceM) + "  " + (if (next.closedBefore) "通行止" else Formats.clock(next.etaEpochMs) + "着")
+                sub = Formats.distance(next.distanceM) + "  " + (if (next.closedBefore) "通行止" else Formats.etaLabel(next.etaEpochMs))
             }
             else -> {
                 badge = ""

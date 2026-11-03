@@ -30,7 +30,7 @@ class RunStatusScreen(carContext: CarContext) : Screen(carContext) {
                 row.setOnClickListener {
                     CarToast.makeText(
                         carContext,
-                        if (i.fix != null) "停車中にスマホで「メニュー →Android Auto だけで使うための設定」を開いてください" else i.value,
+                        if (i.fix != null) "停車中にスマホで「設定 → スマホを開かずに Android Auto で使う」を開いてください" else i.value,
                         CarToast.LENGTH_LONG
                     ).show()
                 }

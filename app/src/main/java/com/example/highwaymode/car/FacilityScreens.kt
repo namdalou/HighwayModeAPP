@@ -107,7 +107,7 @@ class FacilityListScreen(carContext: CarContext) : Screen(carContext) {
                 if (f.type == FacilityType.CAMERA) {
                     f.maxspeedKmh?.let { append("　制限").append(it).append("km/h") }
                 } else {
-                    append("　").append(if (f.closedBefore) "通行止" else Formats.clock(f.etaEpochMs) + "着")
+                    append("　").append(if (f.closedBefore) "通行止" else Formats.etaLabel(f.etaEpochMs))
                     if (f.jamBeforeM >= 200) append("　手前に渋滞").append(Formats.distance(f.jamBeforeM))
                     f.trafficNote?.let { append("　").append(it) }
                 }

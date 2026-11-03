@@ -53,6 +53,12 @@ class PlayerView(context: Context) : View(context) {
     private var tapCount = 0
     private var lastTapTime = 0L
 
+    /**
+     * 何もない場所を [DIAG_TAP_COUNT] 回続けてタップしたときの処理。
+     * 未設定なら Spectrum の診断画面を開く（統合したアプリでは、パスワードを聞いて開発者向け設定を開く）
+     */
+    var onSecretTap: (() -> Unit)? = null
+
     override fun onVisibilityAggregated(isVisible: Boolean) {
         super.onVisibilityAggregated(isVisible)
         setSpectrumInUse(isVisible && isAttachedToWindow)
@@ -108,14 +114,15 @@ class PlayerView(context: Context) : View(context) {
         return true
     }
 
-    /** 何もない場所を DIAG_TAP_COUNT 回続けてタップしたら診断画面を開く */
+    /** 何もない場所を DIAG_TAP_COUNT 回続けてタップしたら診断画面（または onSecretTap）を開く */
     private fun countDiagnosticsTap() {
         val now = SystemClock.uptimeMillis()
         tapCount = if (now - lastTapTime <= DIAG_TAP_INTERVAL_MS) tapCount + 1 else 1
         lastTapTime = now
         if (tapCount >= DIAG_TAP_COUNT) {
             tapCount = 0
-            context.startActivity(Intent(context, DiagnosticsActivity::class.java))
+            val hook = onSecretTap
+            if (hook != null) hook() else context.startActivity(Intent(context, DiagnosticsActivity::class.java))
         }
     }
 

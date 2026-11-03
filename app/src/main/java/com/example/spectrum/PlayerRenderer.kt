@@ -42,7 +42,7 @@ class PlayerRenderer {
         private val SUB_TEXT = Color.rgb(215, 230, 240)
         private val BOLD: Typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
 
-        /** スペアナのグラデーション: 一番下の色 / 一番上の色 */
+        /** スペアナのグラデーション（標準の青）: 一番下の色 / 一番上の色。色は設定（SpectrumStyle）で変えられる */
         private val BAR_BOTTOM = Color.rgb(0, 90, 200)     // 深い青
         private val BAR_TOP = Color.rgb(40, 190, 245)      // 明るい水色寄りの青
 
@@ -316,6 +316,13 @@ class PlayerRenderer {
     private var ledRows = -1
     private var ledUnit = -1f
     private var ledScale = -1f
+    private var ledBottom = 0
+    private var ledTop = 0
+
+    /** いまのバーの色（設定の色。「ジャケットの色」はジャケットが変わったときだけ変わる） */
+    private var barBottom = BAR_BOTTOM
+    private var barTop = BAR_TOP
+    private val hsvTmp = FloatArray(3)
     private var ledHeightPx = 0
 
     /** バーの動きの計算に使う、前回描いた時刻 */
@@ -405,6 +412,35 @@ class PlayerRenderer {
 
     private fun Float.roundToIntSafe(): Int = (this + 0.5f).toInt().coerceIn(0, 255)
 
+    /**
+     * 設定のバーの色を反映する（毎フレーム。割り当てはしない）。「ジャケットの色に合わせる」は、
+     * ジャケットの代表色の色相で、下を濃く・上を明るくする（ジャケットが変わったときだけ色が変わり、段の模様を作り直す）。
+     * ジャケットが無い・色を取り出せないときは標準の青。
+     */
+    private fun updateBarColors() {
+        val t = SpectrumStyle.theme
+        if (t == SpectrumStyle.THEME_ART) {
+            val acc = accentReady
+            if (acc == DEFAULT_ACCENT) {
+                barBottom = BAR_BOTTOM
+                barTop = BAR_TOP
+            } else {
+                Color.colorToHSV(acc, hsvTmp)
+                val h = hsvTmp[0]
+                hsvTmp[0] = h; hsvTmp[1] = 0.92f; hsvTmp[2] = 0.62f
+                barBottom = Color.HSVToColor(hsvTmp)
+                hsvTmp[0] = h; hsvTmp[1] = 0.55f; hsvTmp[2] = 1.0f
+                barTop = Color.HSVToColor(hsvTmp)
+            }
+        } else if (t == SpectrumStyle.THEME_BLUE) {
+            barBottom = BAR_BOTTOM
+            barTop = BAR_TOP
+        } else {
+            barBottom = SpectrumStyle.bottomColor(t)
+            barTop = SpectrumStyle.topColor(t)
+        }
+    }
+
     private val wavePath = Path()
     /** 波の高さ(再生中は WAVE_AMP、停止中は 0 へなめらかに変化) */
     private var waveAmp = 0f
@@ -439,6 +475,7 @@ class PlayerRenderer {
         lastFrameMs = nowMs
         frameDt = dtFrames
         updateAccent(dtFrames)
+        updateBarColors()
 
         val aspect = if (h > 0) w.toFloat() / h else 1f
         lay = if (large && aspect in 0.62f..1.75f) {
@@ -526,7 +563,7 @@ class PlayerRenderer {
      */
     private fun ledShaderFor(rows: Int, unit: Float, segH: Float): BitmapShader? {
         if (rows <= 0 || scale <= 0f) return null
-        if (rows != ledRows || unit != ledUnit || scale != ledScale || ledShader == null) {
+        if (rows != ledRows || unit != ledUnit || scale != ledScale || barBottom != ledBottom || barTop != ledTop || ledShader == null) {
             val hPx = ceil(rows * unit * scale).toInt().coerceIn(1, 4096)
             val px = IntArray(hPx)
             val total = rows * unit
@@ -536,7 +573,7 @@ class PlayerRenderer {
                 val rr = floor(fromBottom / unit).toInt()
                 val within = fromBottom - rr * unit
                 px[y] = if (rr in 0 until rows && within < segH) {
-                    lerpColor(BAR_BOTTOM, BAR_TOP, if (rows > 1) rr.toFloat() / (rows - 1) else 0f)
+                    lerpColor(barBottom, barTop, if (rows > 1) rr.toFloat() / (rows - 1) else 0f)
                 } else 0
             }
             val bmp = try {
@@ -549,6 +586,8 @@ class PlayerRenderer {
             ledRows = rows
             ledUnit = unit
             ledScale = scale
+            ledBottom = barBottom
+            ledTop = barTop
             ledHeightPx = hPx
         }
         return ledShader
@@ -584,11 +623,13 @@ class PlayerRenderer {
         }
 
         val floor = lay.noiseFloor
+        // バーの高さ（設定の「スペアナの高さ」で伸びを変える）
+        val gain = lay.gain * SpectrumStyle.gainScale
         for (i in 0 until n) {
             level[i] += (target[i] - level[i]) * (if (target[i] > level[i]) riseK else fallK)
 
             // 小さな値は切り捨てて(下の段のちらつき防止)、残りを伸ばして高さを使い切る
-            val vis = (((level[i] - floor) / (1f - floor)) * lay.gain).coerceIn(0f, 1f)
+            val vis = (((level[i] - floor) / (1f - floor)) * gain).coerceIn(0f, 1f)
             peak[i] = if (vis > peak[i]) vis else max(0f, peak[i] - peakFall)
 
             val bx = x0 + i * (barW + gap)
@@ -599,7 +640,7 @@ class PlayerRenderer {
                     c.drawRect(bx, y1 - lit * unit, bx + barW, y1, ledPaint)
                 } else {
                     for (rr in 0 until lit) {
-                        shape.color = lerpColor(BAR_BOTTOM, BAR_TOP, rr.toFloat() / (rows - 1))
+                        shape.color = lerpColor(barBottom, barTop, rr.toFloat() / (rows - 1))
                         val bottom = y1 - rr * unit
                         c.drawRect(bx, bottom - segH, bx + barW, bottom, shape)
                     }

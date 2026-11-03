@@ -14,10 +14,12 @@ import com.example.highwaymode.core.engine.EngineStatus
  *  - SA/PA で停車中（REST_STOP）は高速道路上と同じ扱い。
  *  - 一般道モード（利用者の指定）は即座に対象外。
  *  - 測位待ち・地図の読み込み中は状態を保ち、[unknownExitSec] 秒続いたら対象外にする。
+ *
+ * [exitSec] は設定（音楽の画面に戻るまで: 15 秒 / 30 秒 / 1 分）で変えられる。途中で変えても、それまでの経過は数えたまま。
  */
 class HighwayPresence(
     val enterSec: Double = 5.0,
-    val exitSec: Double = 15.0,
+    var exitSec: Double = 15.0,
     val reconfirmSec: Double = 3.0,
     val unknownExitSec: Double = 60.0
 ) {
