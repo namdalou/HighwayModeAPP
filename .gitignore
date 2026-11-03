@@ -12,3 +12,6 @@
 /app/src/main/assets/hwdb/*.hwdb
 /build/hwdb-work/
 *.hwdb.part
+# 署名鍵（GitHub の Secrets にだけ置く）
+*.jks
+*.keystore
