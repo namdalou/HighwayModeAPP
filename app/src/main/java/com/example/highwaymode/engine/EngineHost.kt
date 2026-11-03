@@ -18,6 +18,7 @@ import com.example.highwaymode.core.model.GpsFix
 import com.example.highwaymode.core.osm.TileId
 import com.example.highwaymode.core.traffic.TrafficQuery
 import com.example.highwaymode.core.vehicle.TollCardState
+import com.example.highwaymode.data.AppSettings
 import com.example.highwaymode.data.Prefs
 import com.example.highwaymode.data.TileRepository
 import com.example.highwaymode.data.UserCameraStore
@@ -204,7 +205,9 @@ object EngineHost {
         }
         val input = PowerPolicy.Input(
             tSec = tSec, status = e.snapshot.status, demo = demo != null, nearestHighwayM = nearestM,
-            accuracyM = fix?.accuracyM ?: 50.0, stationary = stationary, motionAtSec = motionAtSec
+            accuracyM = fix?.accuracyM ?: 50.0, stationary = stationary, motionAtSec = motionAtSec,
+            // 設定で電池の節約をオフにしたら、いつも毎秒測位
+            saverEnabled = prefs?.batterySaver != false
         )
         if (power.update(input)) applyPower(e, power.level)
     }
@@ -265,6 +268,8 @@ object EngineHost {
         val ctx = context.applicationContext
         val p = Prefs(ctx)
         prefs = p
+        // 通知・車の画面の表示に使う設定（到着予定の表示など）
+        AppSettings.apply(ctx)
         // 計算は描画（車の画面・スマホの画面）より後でよいので、通常の優先度にする（描画がカクつかないように）
         val t = HandlerThread("highway-engine", Process.THREAD_PRIORITY_DEFAULT)
         t.start()

@@ -90,7 +90,8 @@ object RunDiagnostics {
             out += Item("省電力モード", "オン（GPS・通信が止められることがあります）", false)
         }
         if (EngineHost.running) {
-            out += Item("電池の節約", power.label, true)
+            val saver = com.example.highwaymode.data.Prefs(ctx).batterySaver
+            out += Item("電池の節約", if (saver) power.label else "オフ（設定。いつも毎秒測位）", true)
         }
 
         // ---- 通信

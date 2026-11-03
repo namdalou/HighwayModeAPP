@@ -188,7 +188,7 @@ class TileRepository(
                 val stale = if (f.exists()) readCache(f) else null
                 if (stale != null) put(t, stale, false) else synchronized(lock) {
                     missing.add(t)
-                    message = "この付近の地図データがありません（メニュー →「地図データ」で更新）"
+                    message = "この付近の地図データがありません（設定 →「地図データ」で更新）"
                 }
                 continue
             }

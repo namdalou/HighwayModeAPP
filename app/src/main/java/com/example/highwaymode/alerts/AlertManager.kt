@@ -21,6 +21,7 @@ import kotlin.math.roundToInt
 /**
  * 音声案内（オービス接近・渋滞・ETC カード未挿入・給油）。
  * ナビ音声として再生するので、Android Auto 接続中は車のスピーカーから音楽を下げて流れる。
+ * 案内の種類ごとのオン・オフ、音量、話す速さは設定画面で変えられる（毎回の案内で設定を読む）。
  * メインスレッドで使う。
  */
 class AlertManager(context: Context) : TextToSpeech.OnInitListener {
@@ -31,7 +32,12 @@ class AlertManager(context: Context) : TextToSpeech.OnInitListener {
     private var ttsReady = false
     private val planner = CameraAlertPlanner()
     private var tone: ToneGenerator? = null
+    private var toneVolume = -1
     private var etcWarned = false
+    /** 音声の準備ができる前に「テスト再生」を押された */
+    private var previewPending = false
+    /** 音声合成（日本語）が使えないと分かったときに知らせる（設定画面のテスト再生用） */
+    var onUnavailable: ((String) -> Unit)? = null
     private var odometer = 0.0
     private var lastSnapMs = 0L
     private var announcedJamEnd = -1e12
@@ -48,6 +54,8 @@ class AlertManager(context: Context) : TextToSpeech.OnInitListener {
         val t = tts ?: return
         if (status != TextToSpeech.SUCCESS) {
             Log.w(TAG, "TTS init failed: $status")
+            if (previewPending) onUnavailable?.invoke(UNAVAILABLE)
+            previewPending = false
             return
         }
         val r = t.setLanguage(Locale.JAPAN)
@@ -60,6 +68,11 @@ class AlertManager(context: Context) : TextToSpeech.OnInitListener {
             override fun onError(utteranceId: String?) = abandonFocus()
             override fun onError(utteranceId: String?, errorCode: Int) = abandonFocus()
         })
+        // 準備中に「テスト再生」を押されていたら、ここで流す
+        if (previewPending) {
+            previewPending = false
+            if (ttsReady) preview() else onUnavailable?.invoke(UNAVAILABLE)
+        }
     }
 
     fun onSnapshot(s: HighwaySnapshot) {
@@ -79,13 +92,14 @@ class AlertManager(context: Context) : TextToSpeech.OnInitListener {
                 return
             }
         }
-        if (!prefs.trafficVoice) return
         // ---- ETC カード（車につながっていて、未挿入・無効のとき 1 回）
         val v = s.vehicle
         if (v != null && !etcWarned && (v.tollCard == TollCardState.NOT_INSERTED || v.tollCard == TollCardState.INVALID)) {
             etcWarned = true
-            speak(if (v.tollCard == TollCardState.NOT_INSERTED) "ETCカードが挿入されていません" else "ETCカードを確認してください", "etc")
-            return
+            if (prefs.voiceEtc) {
+                speak(if (v.tollCard == TollCardState.NOT_INSERTED) "ETCカードが挿入されていません" else "ETCカードを確認してください", "etc")
+                return
+            }
         }
         if (v != null && v.tollCard == TollCardState.VALID) etcWarned = false
         // ---- 渋滞（前方 10km 以内に新しく現れた渋滞を 1 回）
@@ -96,15 +110,17 @@ class AlertManager(context: Context) : TextToSpeech.OnInitListener {
             // 走行距離（オドメーター）上の位置で、案内済みの渋滞より先にある渋滞だけを案内する
             if (odometer + jd > announcedJamEnd + 500) {
                 announcedJamEnd = odometer + jd + jl
-                val delay = tr.nextJamDelaySec?.let { if (it >= 60) "、およそ${(it / 60).roundToInt()}分の遅れです" else "" } ?: ""
-                val trend = if (tr.nextJamTrend == 1) "。渋滞は伸びています" else ""
-                speak("この先${km(jd)}、渋滞${km(jl)}$delay$trend", "jam")
-                return
+                if (prefs.voiceJam) {
+                    val delay = tr.nextJamDelaySec?.let { if (it >= 60) "、およそ${(it / 60).roundToInt()}分の遅れです" else "" } ?: ""
+                    val trend = if (tr.nextJamTrend == 1) "。渋滞は伸びています" else ""
+                    speak("この先${km(jd)}、渋滞${km(jl)}$delay$trend", "jam")
+                    return
+                }
             }
         }
         // ---- 給油
         val fa = v?.fuelAdvice
-        if (fa != null && v.fuelAdviceLevel >= 1) {
+        if (fa != null && v.fuelAdviceLevel >= 1 && prefs.voiceFuel) {
             val now = SystemClock.elapsedRealtime()
             if (fa != lastFuelText && now - lastFuelMs > 20 * 60_000L) {
                 lastFuelText = fa
@@ -116,18 +132,48 @@ class AlertManager(context: Context) : TextToSpeech.OnInitListener {
 
     private fun km(m: Double): String = if (m < 1000) "${(m / 100).roundToInt() * 100}メートル" else if (m < 10_000) String.format(Locale.JAPAN, "%.1fキロ", m / 1000).replace(".0キロ", "キロ") else "${(m / 1000).roundToInt()}キロ"
 
+    /**
+     * 設定画面の「テスト再生」: いまの音量・話す速さで案内を 1 つ流す（種類ごとのオン・オフによらない）。
+     * 音声の準備中なら、準備ができてから流す。
+     */
+    fun preview() {
+        val t = tts
+        if (t == null) {
+            onUnavailable?.invoke(UNAVAILABLE)
+            return
+        }
+        if (!ttsReady) {
+            previewPending = true
+            return
+        }
+        beep(1)
+        speak("音声案内のテストです。この先1キロ、オービスがあります", "test")
+    }
+
     private fun speak(text: String, id: String) {
         val t = tts ?: return
         if (!ttsReady) return
         requestFocus()
         val params = Bundle()
         params.putInt(TextToSpeech.Engine.KEY_PARAM_STREAM, AudioManager.STREAM_MUSIC)
+        // 音量（音楽の音量に対する大きさ）・話す速さは設定から（毎回読むので、変えたらすぐ反映される）
+        params.putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, Prefs.VOICE_VOLUMES[prefs.voiceVolume])
+        t.setSpeechRate(Prefs.VOICE_RATES[prefs.voiceRate])
         t.speak(text, TextToSpeech.QUEUE_ADD, params, id + SystemClock.elapsedRealtime())
     }
 
     private fun beep(times: Int) {
         try {
-            val tg = tone ?: ToneGenerator(AudioManager.STREAM_MUSIC, 80).also { tone = it }
+            // 合図の音も案内の音量に合わせる（音量を変えたら作り直す）
+            val vol = (80 * Prefs.VOICE_VOLUMES[prefs.voiceVolume]).roundToInt().coerceIn(10, 100)
+            if (tone != null && toneVolume != vol) {
+                tone?.release()
+                tone = null
+            }
+            val tg = tone ?: ToneGenerator(AudioManager.STREAM_MUSIC, vol).also {
+                tone = it
+                toneVolume = vol
+            }
             tg.startTone(if (times >= 2) ToneGenerator.TONE_PROP_BEEP2 else ToneGenerator.TONE_PROP_BEEP, 300)
         } catch (e: RuntimeException) {
             // 音声出力が使えない
@@ -154,5 +200,7 @@ class AlertManager(context: Context) : TextToSpeech.OnInitListener {
 
     companion object {
         private const val TAG = "AlertManager"
+        private const val UNAVAILABLE =
+            "音声合成（日本語）が使えません。端末の設定 →「テキスト読み上げ」（音声出力）で日本語の音声を入れてください"
     }
 }

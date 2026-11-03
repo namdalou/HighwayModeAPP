@@ -70,7 +70,19 @@
             </intent-filter>
         </activity>
 
-        <!-- Spectrum: 曲情報の取得状況を確認する画面(音楽画面の何もない場所を20回連続タップ、またはメニューから) -->
+        <!-- 設定（下部のバーの ⋮ から） -->
+        <activity
+            android:name=".ui.SettingsActivity"
+            android:exported="false"
+            android:label="設定" />
+
+        <!-- 開発者向け設定（音楽画面の何もない場所を20回連続タップ → パスワード） -->
+        <activity
+            android:name=".ui.DevSettingsActivity"
+            android:exported="false"
+            android:label="開発者向け設定" />
+
+        <!-- Spectrum: 曲情報の取得状況を確認する画面(開発者向け設定から) -->
         <activity
             android:name="com.example.spectrum.DiagnosticsActivity"
             android:exported="false"

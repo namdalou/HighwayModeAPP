@@ -33,7 +33,7 @@ class PanelRenderer(var density: Float) {
     var displayMode: Int = 0
     /** 一覧にオービスも並べる */
     var showCamerasInList: Boolean = false
-    /** 下部のボタン（スマホ縦画面のみ。横画面・車載画面はメニューを使う） */
+    /** 下部のボタン（スマホ縦画面のみ。横画面・車載画面は設定・メニューを使う） */
     var showButtons: Boolean = true
     /** ボタンを出さないとき、右下に地図データの出典を小さく出す（車載画面） */
     var attribution: Boolean = false
@@ -45,7 +45,10 @@ class PanelRenderer(var density: Float) {
      */
     var headerRightReserve: Float = 0f
 
-    /** 右上のボタンの下端（区画の上端から）[px]。横長の表示では、その下から一覧を並べる */
+    /**
+     * 右上のボタンの下端（区画の上端から）[px]。横長の表示では、その下から一覧を並べる（0 = ずらさない）。
+     * ボタンが出る・隠れるときは、車の画面がこの値を少しずつ変えて一覧をなめらかに動かす
+     */
     var topRightReserveH: Float = 0f
     var overlayMessage: String? = null
 
@@ -170,6 +173,7 @@ class PanelRenderer(var density: Float) {
      */
     fun draw(c: Canvas, l0: Float, t0: Float, r0: Float, b0: Float, s: HighwaySnapshot?, nowMs: Long) {
         hits.clear()
+        drawNowMs = nowMs
         try {
             drawPanel(c, l0, t0, r0, b0, s, nowMs)
         } finally {
@@ -187,6 +191,9 @@ class PanelRenderer(var density: Float) {
 
     /** いま描いている区画の上端（右上のボタンの位置を区画の中の位置にするため） */
     private var panelTop = 0f
+
+    /** いま描いている画面の時刻（到着予定を残り時間で出すとき用） */
+    private var drawNowMs = 0L
 
     private fun onHighway(s: HighwaySnapshot?): Boolean =
         s?.status == EngineStatus.ON_HIGHWAY || s?.status == EngineStatus.REST_STOP
@@ -435,13 +442,13 @@ class PanelRenderer(var density: Float) {
             Mode.PORTRAIT -> 0f
         }
         // 右上のボタン（Android Auto。操作した直後だけ出る）が出ている間は、一覧の列をボタンの下へずらす
-        // （ずらさないと［︿ この先］［現在地へ］がボタンに隠れる。ボタンが隠れたら画面いっぱいに戻る）。
+        // （ずらさないと［︿ この先］［現在地へ］がボタンに隠れる。ボタンが隠れたら画面いっぱいに戻る。
+        // ずらす量は車の画面がなめらかに変えるので、ここでは渡された量だけずらす）。
         // ボタンの高さが分からない（位置を知らせてこない車）ときは、一番上の段の右側だけを空ける
-        val stripShown = landscape && headerRightReserve > 0f
-        val shiftDown = stripShown && topRightReserveH > 0f
-        val pageBarRightReserve = if (stripShown && !shiftDown) headerRightReserve.coerceIn(0f, (r - l) * 0.62f) else 0f
-        val obstructBottom = if (shiftDown) panelTop + topRightReserveH else Float.NEGATIVE_INFINITY
-        val top0 = if (shiftDown) max(t0, obstructBottom + dp(4f)) else t0
+        val shiftH = if (landscape) topRightReserveH.coerceAtLeast(0f) else 0f
+        val shiftDown = shiftH > 0f
+        val pageBarRightReserve = if (landscape && !shiftDown && headerRightReserve > 0f) headerRightReserve.coerceIn(0f, (r - l) * 0.62f) else 0f
+        val top0 = if (shiftDown) max(t0, panelTop + shiftH + dp(4f)) else t0
         if (s == null || !onHighway(s)) {
             drawStatusMessage(c, s, l, top0, r, b - bottomH)
             if (landscape) drawBottomRow(c, s, 0, l, b - bottomH, r, b, l + dp(17f), l + dp(40f), mode)
@@ -1180,7 +1187,8 @@ class PanelRenderer(var density: Float) {
         val etaText = when {
             isCam -> f.maxspeedKmh?.let { "制限 ${it}km/h" } ?: "速度取締機"
             f.closedBefore -> "通行止"
-            else -> Formats.clock(f.etaEpochMs)
+            // 到着時刻「17:50」か残り時間「あと12分」（設定）
+            else -> Formats.eta(f.etaEpochMs, drawNowMs)
         }
         text.textSize = min(etaH * (if (isCam) 0.5f else etaFontK), if (style == RowStyle.BIG) dp(58f) else dp(40f))
         text.color = when {
@@ -1329,7 +1337,7 @@ class PanelRenderer(var density: Float) {
             null, EngineStatus.WAITING_GPS -> "GPS 測位中…" to "空が開けた場所で少しお待ちください"
             EngineStatus.LOADING_MAP -> "高速道路データを読み込み中…" to (s.dataMessage ?: "周辺の高速道路を読み込んでいます")
             EngineStatus.OFF_HIGHWAY -> "高速道路外" to "高速道路・有料道路・都市高速・主要バイパスに入ると自動で表示します"
-            EngineStatus.GENERAL_ROAD_MODE -> "一般道モード" to "高速道路の判定を停止中です（メニューから解除）"
+            EngineStatus.GENERAL_ROAD_MODE -> "一般道モード" to "高速道路の判定を停止中です（スマホの設定・車のメニューで解除）"
             EngineStatus.ON_HIGHWAY, EngineStatus.REST_STOP -> "" to ""
         }
         val cx = (l + r) / 2
@@ -1356,7 +1364,7 @@ class PanelRenderer(var density: Float) {
                 2 -> "表示: SA/PA"
                 else -> "表示変更"
             },
-            "再探索", "メニュー"
+            "再探索", "設定"
         )
         val attribW = dp(118f)
         val gap = dp(6f)

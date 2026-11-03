@@ -83,6 +83,19 @@ class PowerPolicyTest {
     }
 
     @Test
+    fun saverOffStaysActive() {
+        // 設定で電池の節約をオフにすると、離れた一般道・長い停車でも毎秒測位のまま
+        val p = PowerPolicy()
+        for (t in 0..900) {
+            p.update(PowerPolicy.Input(t.toDouble(), EngineStatus.OFF_HIGHWAY, false, 20_000.0, 10.0, true, saverEnabled = false))
+            assertEquals(PowerLevel.ACTIVE, p.level)
+        }
+        // オンに戻すと、停車が続いていれば節約の段階へ
+        p.update(PowerPolicy.Input(901.0, EngineStatus.OFF_HIGHWAY, false, 20_000.0, 10.0, true, saverEnabled = true))
+        assertEquals(PowerLevel.FAR_PARKED, p.level)
+    }
+
+    @Test
     fun restStopSlowsAfterAMinute() {
         val p = PowerPolicy()
         for (t in 0..59) p.update(input(t.toDouble(), EngineStatus.REST_STOP, 0.0, still = true))

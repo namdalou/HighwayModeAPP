@@ -53,6 +53,27 @@ class DualModeTest {
     }
 
     @Test
+    fun presence_exitDelayFromSettings() {
+        // 設定「音楽に戻るまで: 1 分」
+        val p = HighwayPresence(exitSec = 60.0)
+        val ch = run(p, listOf(EngineStatus.ON_HIGHWAY to 30, EngineStatus.OFF_HIGHWAY to 90))
+        assertEquals(2, ch.size)
+        assertEquals(90.0, ch[1].first, 0.01)      // 30 秒目から高速外 → 60 秒後
+        // 高速道路の外にいる途中で 15 秒 → 30 秒に変えても、それまでの経過は数えたまま
+        val q = HighwayPresence()
+        run(q, listOf(EngineStatus.ON_HIGHWAY to 20, EngineStatus.OFF_HIGHWAY to 10))
+        q.exitSec = 30.0
+        var t = 30.0
+        var leftAt = Double.NaN
+        while (t < 80.0 && leftAt.isNaN()) {
+            if (q.update(EngineStatus.OFF_HIGHWAY, t)) leftAt = t
+            t += 1.0
+        }
+        assertEquals(50.0, leftAt, 0.01)           // 20 秒目に外れてから 30 秒
+        assertFalse(q.active)
+    }
+
+    @Test
     fun presence_ignoresShortMatchesAndShortExits() {
         val p = HighwayPresence()
         // 高架下の一般道で 3 秒だけ高速道路に当てはまった → 入らない

@@ -219,7 +219,7 @@ class TrackingService : Service() {
                 val next = s.facilities.firstOrNull { !it.noExit } ?: s.facilities.firstOrNull()
                 val cam = s.cameras.firstOrNull()?.takeIf { it.distanceM < 2000 }
                 (if (cam != null) "オービス ${Formats.distance(cam.distanceM)}先" else s.roadName ?: "高速道路") to (next?.let {
-                    "次: ${it.displayName}  ${Formats.distance(it.distanceM)}  ${Formats.clock(it.etaEpochMs)}"
+                    "次: ${it.displayName}  ${Formats.distance(it.distanceM)}  ${Formats.etaLabel(it.etaEpochMs)}"
                 } ?: "前方の施設を検索中")
             }
             EngineStatus.REST_STOP -> (s.roadName ?: "高速道路") to (s.directionText ?: "SA/PA 停車中")

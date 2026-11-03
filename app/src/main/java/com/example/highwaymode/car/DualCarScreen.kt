@@ -37,6 +37,7 @@ import com.example.highwaymode.core.dual.DualFrame
 import com.example.highwaymode.core.dual.DualGeometry
 import com.example.highwaymode.core.dual.DualLayout
 import com.example.highwaymode.core.engine.HighwaySnapshot
+import com.example.highwaymode.data.AppSettings
 import com.example.highwaymode.data.Prefs
 import com.example.highwaymode.dual.DualMode
 import com.example.highwaymode.dual.ModeBarRenderer
@@ -46,6 +47,8 @@ import com.example.spectrum.MediaTracker
 import com.example.spectrum.NowPlaying
 import com.example.spectrum.PlayerRenderer
 import com.example.spectrum.SpectrumEngine
+import kotlin.math.abs
+import kotlin.math.exp
 
 /**
  * 車の画面（Android Auto）。ナビ用テンプレートの地図面に、Spectrum とハイウェイモードを描く。
@@ -63,7 +66,9 @@ import com.example.spectrum.SpectrumEngine
  * 画面の状態（他の画面を重ねた・Android Auto の別のアプリを前に出した）によらず、スマホの画面と同じ内容になる。
  *
  * 右上のボタン（Android Auto が表示。操作しないと約 10 秒で隠れる）のために画面を下げない。
- * 画面いっぱいに描き、ボタンが出ている間だけ、いちばん上の段の右側をボタンの分だけ空ける。
+ * 画面いっぱいに描き、ボタンが出ている間だけ、施設の一覧の列をボタンの下へずらす。
+ * ボタンが隠れたことを表示範囲の通知で知らせてこない車もあるので、最後の操作（タップ・ボタン・画面の表示）から
+ * 約 10 秒たったら、通知が無くても隠れたとみなして画面いっぱいに戻す（ずらす・戻すときは短くなめらかに動かす）。
  */
 class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     Screen(carContext), SurfaceCallback, DualMode.Listener {
@@ -84,6 +89,13 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         private const val FADE_MS = 260L
         /** ハイウェイだけにしてから Spectrum の音声解析を止めるまで（すぐ戻す場合に備える） */
         private const val SPECTRUM_RELEASE_DELAY_MS = 4000L
+        /**
+         * 右上のボタンが、最後の操作から隠れるまで。Android Auto は約 10 秒操作が無いとボタンを隠す
+         * （この時間はアプリからは変えられない）。隠れたことを知らせてこない車でも、この時間で一覧を元に戻す
+         */
+        private const val STRIP_HIDE_MS = 10_000L
+        /** 一覧をボタンの下へずらす・戻す動きの時定数（約 0.2 秒で動き終わる） */
+        private const val SHIFT_TAU_MS = 70.0
     }
 
     private val prefs = Prefs(carContext)
@@ -117,6 +129,15 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     private val sCopy = Rect()
     /** Android Auto が右上のボタンの表示・非表示を表示範囲で知らせてくる（一度でも隠れたのを確認した） */
     @Volatile private var hostReportsStrip = false
+    /**
+     * 右上のボタンが出た（出たまま）とみなした時刻（SystemClock.uptimeMillis）。
+     * 画面の表示・タップ・ボタンの操作・表示範囲の上端が下がった通知のたびに更新し、
+     * ここから [STRIP_HIDE_MS] たったらボタンは隠れたとみなす
+     */
+    @Volatile private var stripShownAt = SystemClock.uptimeMillis()
+    /** いま一覧をずらしている量 [px]（描画スレッド専用。目標へなめらかに近づける） */
+    private var shiftShownH = 0f
+    private var shiftAnimAt = 0L
     /** 次のフレームを描く時刻（SystemClock.uptimeMillis 基準。小数で持って間隔のぶれを防ぐ） */
     @Volatile private var nextFrameAt = 0.0
     /** テンプレート（右上のボタン）を最後に作ったときの状態 */
@@ -161,12 +182,25 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         }
     }
 
-    /** 曲情報が空になっていたら取り直す（Spectrum と同じ） */
+    /** 曲情報が空になっていたら取り直す（Spectrum と同じ）。スマホで設定を変えたら読み直す */
     private val heal = object : Runnable {
         override fun run() {
             MediaTracker.heal(carContext)
+            if (settingsVersion != AppSettings.version) reloadSettings()
             main.postDelayed(this, HEAL_MS)
         }
+    }
+
+    /** 最後に読んだ設定の版（スマホの設定画面で変えたら読み直す） */
+    private var settingsVersion = AppSettings.version
+
+    /** 表示の設定を読み直す（メインスレッド） */
+    private fun reloadSettings() {
+        settingsVersion = AppSettings.version
+        panel.displayMode = prefs.displayMode
+        panel.showCamerasInList = prefs.camerasInList
+        autoSwitch = prefs.autoSwitch
+        panelInvalid = true
     }
 
     init {
@@ -180,10 +214,9 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
 
             override fun onStart(owner: LifecycleOwner) {
                 // メニュー・施設一覧から戻ったとき、設定の変更を反映する
-                panel.displayMode = prefs.displayMode
-                panel.showCamerasInList = prefs.camerasInList
-                autoSwitch = prefs.autoSwitch
-                panelInvalid = true
+                reloadSettings()
+                // 画面が前に出ると Android Auto は右上のボタンを出す
+                stripTouched()
                 EngineHost.addListener(snapshotListener)
                 EngineHost.latest?.let { snap = it }
             }
@@ -214,6 +247,8 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     // ================================================================== テンプレート（右上のボタン）
 
     override fun onGetTemplate(): Template {
+        // テンプレートを渡すと Android Auto は右上のボタンを出し直す（隠れるまでの時間を数え直す）
+        stripTouched()
         val strip = ActionStrip.Builder()
         templateBarVisible = DualMode.barVisible
         if (!DualMode.barVisible) {
@@ -245,11 +280,22 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
             .setTitle(title)
             .setIcon(CarIcon.Builder(IconCompat.createWithResource(carContext, icon)).build())
             .setOnClickListener {
+                // ボタンを押した後も、操作が無くなってから約 10 秒はボタンが出ている
+                stripTouched()
                 // 車の画面の操作のたびに、スマホ側の常駐（GPS・通信）が動いているか確かめる
                 CarRuntime.ensure(carContext)
                 onClick()
             }
             .build()
+
+    /**
+     * 右上のボタンが出た（または出たまま）とみなす。ここから [STRIP_HIDE_MS] 操作が無ければ、
+     * Android Auto から知らせが無くても隠れたとみなし、一覧を画面いっぱいに戻す
+     */
+    private fun stripTouched() {
+        stripShownAt = SystemClock.uptimeMillis()
+        panelInvalid = true
+    }
 
     /** 画面構成が変わった（自動切替・ボタン操作） */
     override fun onDualChanged() {
@@ -300,13 +346,18 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     }
 
     override fun onVisibleAreaChanged(visibleArea: Rect) {
+        var stripAppeared = false
         // 描画面からはみ出す範囲が来たら（切り替え途中の古い値など）無視して全体を使う
         synchronized(visible) {
             // 上端が下がっていた（ボタン表示中）のが 0 に戻った → ボタンが隠れたことを知らせてくる車
             if (!visible.isEmpty && visible.top > 0 && visibleArea.top == 0) hostReportsStrip = true
+            // 上端が下がった・下がり方が変わった → ボタンが出た（隠れるまでの時間を数え直す）。
+            // 同じ値が続くだけなら数え直さない（隠れても値を戻さない車では、古い値のままになるため）
+            if (visibleArea.top > 0 && (visible.isEmpty || visible.top != visibleArea.top)) stripAppeared = true
             if (visibleArea.left < 0 || visibleArea.right > width || visibleArea.width() <= 0) visible.setEmpty()
             else visible.set(visibleArea)
         }
+        if (stripAppeared) stripTouched()
         panelInvalid = true
         requestFrame()
     }
@@ -320,7 +371,25 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         requestFrame()
     }
 
+    // 画面を触ると Android Auto は右上のボタンを出す（隠れるまでの時間を数え直す）
+    override fun onScroll(distanceX: Float, distanceY: Float) {
+        stripTouched()
+        requestFrame()
+    }
+
+    override fun onFling(velocityX: Float, velocityY: Float) {
+        stripTouched()
+        requestFrame()
+    }
+
+    override fun onScale(focusX: Float, focusY: Float, scaleFactor: Float) {
+        stripTouched()
+        requestFrame()
+    }
+
     override fun onClick(x: Float, y: Float) {
+        stripTouched()
+        requestFrame()
         CarRuntime.ensure(carContext)
         val f = lastFrame ?: return
         val b = f.bar
@@ -448,28 +517,38 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
             layout = layout, barVisible = DualMode.barVisible, density = density
         )
         // 右上のボタン（Android Auto が描く）が出ている間だけ、その部分を空ける（ハイウェイ側の右上）。
+        // ボタンは操作すると出て、約 10 秒操作が無いと隠れる。隠れても表示範囲を元に戻さない車があるので、
+        // 最後の操作から STRIP_HIDE_MS たったら、知らせが無くても隠れたとみなす。
+        //  - ボタンが隠れた（操作が無い・上端が 0 に戻った） → 画面いっぱい
         //  - 表示範囲の上端が下がっている = ボタン表示中 → 一覧の列をボタンの下へずらす
-        //  - 上端が 0 に戻ったのを見た車 = ボタンが隠れている → 画面いっぱい
-        //  - ボタンの位置を知らせてこない車 → 一番上の段の右側だけ空ける（下へはずらさない）
+        //  - ボタンの位置を知らせてこない車 → ボタンが出ている間だけ、一番上の段の右側を空ける（下へはずらさない）
+        val now = SystemClock.uptimeMillis()
+        val stripUp = now - stripShownAt < STRIP_HIDE_MS
         val reserveW: Float
-        val reserveH: Float
+        val targetH: Float
         when {
+            !stripUp -> {
+                reserveW = 0f
+                targetH = 0f
+            }
             v.top > 0 -> {
                 reserveW = stripWidthEstimate(w)
-                reserveH = v.top.toFloat()
+                targetH = v.top.toFloat()
             }
             hostReportsStrip -> {
                 reserveW = 0f
-                reserveH = 0f
+                targetH = 0f
             }
             else -> {
                 reserveW = stripWidthEstimate(w)
-                reserveH = 0f
+                targetH = 0f
             }
         }
-        if (reserveW != panel.headerRightReserve || reserveH != panel.topRightReserveH) {
+        val shiftH = animateShift(targetH, now)
+        val shifting = shiftH != targetH
+        if (reserveW != panel.headerRightReserve || shiftH != panel.topRightReserveH) {
             panel.headerRightReserve = reserveW
-            panel.topRightReserveH = reserveH
+            panel.topRightReserveH = shiftH
             panelInvalid = true
         }
         bar.splitHint = if (DualMode.highwayActive && autoSwitch) "高速道路を出ると自動で音楽に戻ります" else null
@@ -482,7 +561,6 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
                 return IDLE_FRAME_MS
             }
         }
-        val now = SystemClock.uptimeMillis()
         try {
             canvas.drawColor(Color.BLACK)
             f.music?.let { m -> music.draw(canvas, m.l.toInt(), m.t.toInt(), m.w.toInt(), m.h.toInt()) }
@@ -506,11 +584,23 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         lastFrame = f
         val fading = now - DualMode.changedAtMs < FADE_MS
         return when {
-            fading -> FRAME_MS
+            fading || shifting -> FRAME_MS
             f.music == null -> IDLE_FRAME_MS
             NowPlaying.isPlaying || music.animating -> FRAME_MS
             else -> PAUSED_FRAME_MS
         }
+    }
+
+    /**
+     * 一覧をずらす量を目標へなめらかに近づける（ボタンが出る・隠れるときに、一覧が飛ばずに動く）。
+     * @return いまずらす量 [px]
+     */
+    private fun animateShift(target: Float, now: Long): Float {
+        val dt = (now - shiftAnimAt).coerceIn(16L, 100L)
+        shiftAnimAt = now
+        val diff = target - shiftShownH
+        shiftShownH = if (abs(diff) < 1f) target else shiftShownH + diff * (1f - exp(-dt / SHIFT_TAU_MS).toFloat())
+        return shiftShownH
     }
 
     /**

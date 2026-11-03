@@ -48,7 +48,9 @@ class PowerPolicy(
         /** 停車中（車速信号・センサー・GPS の速度から） */
         val stationary: Boolean,
         /** 最後に大きな動きを検知した時刻 [秒]（無ければ NaN） */
-        val motionAtSec: Double = Double.NaN
+        val motionAtSec: Double = Double.NaN,
+        /** 電池の節約を使う（設定でオフにすると、いつも毎秒測位） */
+        val saverEnabled: Boolean = true
     )
 
     var level = PowerLevel.ACTIVE
@@ -79,7 +81,7 @@ class PowerPolicy(
         // 動き出しを検知した直後は、測位を増やして本当に走り出したか確かめる
         // （走り出していれば GPS の速度で停車の時間が数え直しになる。歩いていただけなら元に戻る）
         val checking = !i.motionAtSec.isNaN() && i.tSec - i.motionAtSec in 0.0..motionHoldSec
-        if (i.demo) return PowerLevel.ACTIVE
+        if (i.demo || !i.saverEnabled) return PowerLevel.ACTIVE
         when (i.status) {
             EngineStatus.WAITING_GPS, EngineStatus.LOADING_MAP, EngineStatus.ON_HIGHWAY -> return PowerLevel.ACTIVE
             EngineStatus.REST_STOP -> return nearLevel(stillFor, checking)

@@ -1,0 +1,143 @@
+# 全国の地図データ（HWDB）を OpenStreetMap から作成し、GitHub Releases に公開する。
+# さらに、そのデータを同梱した APK も作る。
+#
+#  - 毎週月曜 3:17（日本時間）に自動実行。Actions 画面の「Run workflow」で手動実行も可。
+#  - 公開先:
+#      releases/download/hwdb-YYYYMMDD/japan-highways.hwdb   … データ本体（版ごと）
+#      releases/download/hwdb-latest/hwdb-manifest.json      … アプリが「地図データを更新」で読む目録（固定 URL）
+#      releases/download/hwdb-YYYYMMDD/app-release.apk       … データ同梱 APK
+#  - アプリの配布 URL は自動で
+#      https://github.com/<このリポジトリ>/releases/download/hwdb-latest/hwdb-manifest.json
+#    になる（ビルド時に埋め込み。アプリの設定画面で変更も可）。
+#  - リポジトリは公開（public）にしてください（非公開だとアプリから目録を取得できません）。
+#
+#  Android Auto で使うには Google Play（内部テスト）からのインストールが必要です（README 参照）。
+#  リポジトリの Settings → Secrets and variables → Actions に次を登録すると、
+#  Play に上げられる署名済みの .aab も作ります（未登録なら従来どおり APK だけ）:
+#      UPLOAD_KEYSTORE_BASE64   … アップロード鍵（.jks）を base64 にした文字列
+#      UPLOAD_KEYSTORE_PASSWORD … キーストアのパスワード
+#      UPLOAD_KEY_ALIAS         … 鍵の別名（例: upload）
+#      UPLOAD_KEY_PASSWORD      … 鍵のパスワード（キーストアと同じなら省略可）
+#  さらに PLAY_SERVICE_ACCOUNT_JSON（Play Console API 用サービスアカウントの JSON）を登録すると、
+#  毎回の .aab を内部テストへ自動で公開します（最初の 1 回は Play Console で手動アップロードが必要）。
+#  アプリ ID は既定で io.github.<所有者名>.highwaymode。変えるときはリポジトリ変数（Variables）APP_ID を設定。
+name: build-hwdb
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 18 * * 0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-hwdb
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      HAS_PLAY_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Make scripts executable
+        run: chmod +x gradlew scripts/build-hwdb.sh
+
+      - name: Install osmium-tool
+        run: sudo apt-get update -q && sudo apt-get install -y -q osmium-tool
+
+      - name: Download Japan extract (Geofabrik)
+        run: |
+          curl -fL --retry 5 --retry-delay 30 -o japan.osm.pbf https://download.geofabrik.de/asia/japan-latest.osm.pbf
+          ls -lh japan.osm.pbf
+
+      - name: Filter highways, rest areas, cameras, POIs
+        run: |
+          osmium tags-filter japan.osm.pbf \
+            w/highway=motorway,motorway_link,trunk,trunk_link \
+            w/toll=yes w/motorroad=yes \
+            nwr/highway=services,rest_area \
+            n/highway=motorway_junction,speed_camera n/barrier=toll_booth \
+            nwr/amenity=fuel,charging_station,restaurant,fast_food,food_court,cafe,toilets,shower,atm,bank,information \
+            nwr/shop nwr/tourism=information,hotel,motel,guest_house nwr/leisure=dog_park \
+            -o filtered.osm.pbf --overwrite
+          osmium add-locations-to-ways filtered.osm.pbf -o located.osm.gz -f osm.gz,locations_on_ways=true --overwrite
+          rm -f japan.osm.pbf
+          ls -lh filtered.osm.pbf located.osm.gz
+
+      - name: Build HWDB
+        run: |
+          TAG=$(date -u +%Y%m%d)
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          mkdir -p out
+          ./gradlew --no-daemon -q :datatool:run --args="osm --in $PWD/located.osm.gz --out $PWD/out/japan-highways.hwdb"
+          ./gradlew --no-daemon -q :datatool:run --args="manifest --base-url https://github.com/${{ github.repository }}/releases/download/hwdb-$TAG/ --out $PWD/out/hwdb-manifest.json $PWD/out/japan-highways.hwdb"
+          ls -lh out
+
+      - name: Prepare app id, version and signing key
+        env:
+          UPLOAD_KEYSTORE_BASE64: ${{ secrets.UPLOAD_KEYSTORE_BASE64 }}
+          APP_ID_VAR: ${{ vars.APP_ID }}
+          OWNER: ${{ github.repository_owner }}
+        run: bash scripts/ci-app-env.sh
+
+      - name: Build APK (and AAB) with bundled data
+        env:
+          UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
+          UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
+          UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+        run: |
+          mkdir -p app/src/main/assets/hwdb
+          cp out/japan-highways.hwdb app/src/main/assets/hwdb/
+          TASKS=":core:test :app:assembleRelease"
+          if [ "$SIGNED" = true ]; then TASKS="$TASKS :app:bundleRelease"; fi
+          ./gradlew --no-daemon $TASKS \
+            -Phwdb.manifestUrl=https://github.com/${{ github.repository }}/releases/download/hwdb-latest/hwdb-manifest.json \
+            -Papp.id=$APP_ID -Papp.versionCode=$VERSION_CODE
+          cp app/build/outputs/apk/release/app-release.apk out/HighwayMode-$TAG.apk
+          if [ "$SIGNED" = true ]; then
+            cp app/build/outputs/bundle/release/app-release.aab out/HighwayMode-$TAG.aab
+          fi
+          rm -f "$RUNNER_TEMP/upload.jks"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete "hwdb-$TAG" --yes --cleanup-tag 2>/dev/null || true
+          FILES="out/japan-highways.hwdb out/hwdb-manifest.json out/HighwayMode-$TAG.apk"
+          NOTE="HighwayMode-$TAG.apk はこのデータを同梱したアプリです（Android Auto では表示されません。スマホ単体用）。"
+          if [ -f "out/HighwayMode-$TAG.aab" ]; then
+            FILES="$FILES out/HighwayMode-$TAG.aab"
+            NOTE="$NOTE HighwayMode-$TAG.aab は Google Play Console の内部テストへ上げるためのファイルです（アプリ ID: $APP_ID）。"
+          fi
+          gh release create "hwdb-$TAG" $FILES \
+            --title "地図データ $TAG" \
+            --notes "全国の高速道路・有料道路・都市高速・主要バイパス・SA/PA・オービス（OpenStreetMap, © OpenStreetMap contributors, ODbL 1.0）。$NOTE"
+          if ! gh release view hwdb-latest >/dev/null 2>&1; then
+            gh release create hwdb-latest --title "地図データ（最新の目録）" --notes "アプリの「地図データを更新」が参照する目録です。" --latest=false
+          fi
+          gh release upload hwdb-latest out/hwdb-manifest.json --clobber
+
+      # 内部テストへの自動公開（PLAY_SERVICE_ACCOUNT_JSON を登録したときだけ。失敗しても地図データの公開には影響しない）
+      - name: Upload to Google Play (internal testing)
+        if: env.SIGNED == 'true' && env.HAS_PLAY_JSON == 'true'
+        continue-on-error: true
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ env.APP_ID }}
+          releaseFiles: out/HighwayMode-${{ env.TAG }}.aab
+          tracks: internal
+          status: completed

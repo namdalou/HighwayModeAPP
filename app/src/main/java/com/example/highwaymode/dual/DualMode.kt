@@ -56,6 +56,7 @@ object DualMode {
     fun attach(ctx: Context) {
         if (!onMain { attach(ctx) }) return
         if (prefs == null) prefs = Prefs(ctx.applicationContext)
+        prefs?.let { presence.exitSec = it.exitDelaySec.toDouble() }
         users++
         if (users == 1) {
             // しばらく使っていなかった（前回の走行の状態が残っている）なら、音楽の画面から始める
@@ -109,10 +110,11 @@ object DualMode {
         )
     }
 
-    /** 自動切替の設定を変えたとき（オンにしたら、いまの状況に合わせる） */
+    /** 自動切替の設定を変えたとき（オンにしたら、いまの状況に合わせる）。音楽に戻るまでの時間もここで反映 */
     fun settingsChanged() {
         if (!onMain { settingsChanged() }) return
         val p = prefs ?: return
+        presence.exitSec = p.exitDelaySec.toDouble()
         if (p.autoSwitch) {
             val target = if (highwayActive) highwayDefault() else DualLayout.MUSIC
             setLayout(target)
