@@ -12,7 +12,9 @@
 ## 利用者について
 
 - 利用者は日本語で依頼します。返答・README・画面の文言は日本語で書いてください。
-- 利用者は PC で直接ビルドしていません。GitHub リポジトリ **HighwayModeAPP** の中身を置き換えて（GitHub Desktop、Windows）、GitHub Actions の **build-app** を手動実行し、できた AAB を Play Console の内部テストに上げて実機（スマホ＋車）で確認しています。
+- 利用者は PC で直接ビルドしていません。GitHub リポジトリ **HighwayModeAPP** の main で GitHub Actions の **build-app** を手動実行し、できた AAB を Play Console の内部テストに上げて実機（スマホ＋車）で確認しています。
+- **作業が終わったら、利用者から別の指示が無い限り、コミット → プッシュ → Pull Request を作って main へマージまで行ってください**（利用者の指示。v2.4 から）。マージした後は、利用者が build-app を実行するだけです。
+- 利用者は手元のフォルダ（GitHub Desktop、Windows）も使います。古いフォルダの中身で置き換えると `.github`（build-app）などが消えるので（v2.4 の直前に一度消えた）、手元で触る前に「Fetch origin → Pull origin」で main を最新にするよう案内してください。
 - 変更をまとめて渡すときは、README の先頭に「今回の更新（vX.Y）」の表（ご要望 → 対応）を追加し、それまでの「今回の更新」は「vX.Y の更新」に改名してください。版を上げるときは `versionName` も更新してください。
 
 ## 構成
@@ -60,7 +62,7 @@
 - **API キー（渋滞情報の HERE / TomTom / Google など）をリポジトリに入れない**。キーは端末の開発者向け設定（v2.4 から）で入力し、端末内にだけ保存します。
 - **署名鍵 `upload.jks` とそのパスワードをリポジトリに入れない**。GitHub の Secrets（`UPLOAD_KEYSTORE_BASE64`, `UPLOAD_KEYSTORE_PASSWORD`, `UPLOAD_KEY_ALIAS`, `UPLOAD_KEY_PASSWORD`）にだけ置きます。`.gitignore` の `*.jks` / `*.keystore` の除外を外さないでください。
 - **Android Auto のアプリ検証を回避する方法は使わない・案内しない**。車の画面に出す方法は、Google Play Console の内部テストと、PC の Desktop Head Unit（DHU）だけにします。
-- **コミット・プッシュは利用者に頼まれたときだけ**行います。
+- **コミット・プッシュ・main へのマージは利用者の指示に従います**（いまの指示: 作業が終わったら、別の指示が無い限り main へのマージまで行う）。
 - 改行コードは `.gitattributes` で LF に統一しています（`*.bat` / `*.cmd` だけ CRLF）。
 - 新しい権限を追加したり、取得するデータを変えたりしたら、`docs/PRIVACY.md` も更新してください。
 
