@@ -100,7 +100,7 @@ class FacilityListScreen(carContext: CarContext) : Screen(carContext) {
         val b = ItemList.Builder()
         for (f in list) {
             val row = Row.Builder()
-                .setTitle(f.displayName + (if (f.noExit) "（出口なし）" else "") + if (f.etcOnly) "（ETC専用）" else "")
+                .setTitle(f.displayName + (if (f.navExit) "（ここで降りる）" else "") + (if (f.noExit) "（出口なし）" else "") + if (f.etcOnly) "（ETC専用）" else "")
                 .setImage(CarBadges.icon(f.type))
             val line1 = buildString {
                 append(Formats.distance(f.distanceM))
@@ -110,6 +110,7 @@ class FacilityListScreen(carContext: CarContext) : Screen(carContext) {
                     append("　").append(if (f.closedBefore) "通行止" else Formats.etaLabel(f.etaEpochMs))
                     if (f.jamBeforeM >= 200) append("　手前に渋滞").append(Formats.distance(f.jamBeforeM))
                     f.trafficNote?.let { append("　").append(it) }
+                    if (!f.navExit) f.navNote?.let { append("　ナビ ").append(it.removePrefix("→ ")) }
                 }
             }
             row.addText(line1)

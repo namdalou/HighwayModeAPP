@@ -150,6 +150,8 @@ class PanelRenderer(var density: Float) {
     private val cAmber = 0xFFFFB300.toInt()
     private val cGray = 0xFF616A75.toInt()
     private val cBtn = 0xFF1A212B.toInt()
+    /** カーナビ（Google マップ）の案内の色 */
+    private val cNav = 0xFF1E6FD9.toInt()
     private val cBtnEdge = 0xFF35404E.toInt()
     private val cBtnText = 0xFFDDE5EE.toInt()
 
@@ -622,6 +624,17 @@ class PanelRenderer(var density: Float) {
                 val lim = cam.maxspeedKmh?.let { "制限 ${it}km/h" }
                 val who = if (cam.userDefined) "オービス（登録）" else "オービス"
                 out.add(Info("$who ${Formats.distance(cam.distanceM)}先", lim, cRed, true))
+            }
+            // カーナビ（Google マップ）: 降りる IC・乗り換え先
+            s.nav?.let { nv ->
+                val exit = nv.exitName
+                val title = when {
+                    exit != null -> "$exit で降ります" + (nv.exitDistanceM?.let { "（${Formats.distance(it)}）" } ?: "")
+                    nv.transferText != null -> "ナビ: ${nv.transferText}"
+                    else -> "${nv.source}でナビ中"
+                }
+                val detail = if (exit != null || nv.transferText != null) nv.source else nv.text.take(28)
+                out.add(Info(title, detail, cNav, true))
             }
             // ETC カード・給油
             val v = s.vehicle
@@ -1106,8 +1119,9 @@ class PanelRenderer(var density: Float) {
             else -> cBar
         }
         c.drawRoundRect(rect, dp(4f), dp(4f), fill)
-        stroke.color = if (isCam) 0xFF6D2E31.toInt() else cBarEdge
-        stroke.strokeWidth = dp(1f)
+        // カーナビで降りる IC は、名前の枠を案内の色で目立たせる
+        stroke.color = if (f.navExit) cNav else if (isCam) 0xFF6D2E31.toInt() else cBarEdge
+        stroke.strokeWidth = if (f.navExit) dp(2.5f) else dp(1f)
         c.drawRoundRect(rect, dp(4f), dp(4f), stroke)
 
         // 種別バッジ
@@ -1206,6 +1220,9 @@ class PanelRenderer(var density: Float) {
         // 交通情報のタグ（手前の区間の渋滞・事故など）・出口なし・ETC 専用
         val tags = ArrayList<Pair<String, Int>>()
         if (!isCam) {
+            // カーナビの案内（いちばん前に）: ここで降りる IC・乗り換える JCT
+            if (f.navExit) tags.add("ここで降りる" to cNav)
+            else f.navNote?.let { note -> tags.add("ナビ " + note.removePrefix("→ ").take(10) to cNav) }
             if (f.noExit) tags.add("出口なし" to cGray)
             if (f.jamBeforeM >= 200) tags.add("渋滞${Formats.distance(f.jamBeforeM)}" to cRed)
             f.trafficNote?.let { if (!f.closedBefore || it != "通行止") tags.add(it to cOrange) }

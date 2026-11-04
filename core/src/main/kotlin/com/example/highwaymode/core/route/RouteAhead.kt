@@ -88,6 +88,7 @@ class RouteAhead(
  * マッチ位置から前方へ道路グラフを辿り、通過予定の施設を道のり付きで列挙する。
  * 分岐では RoadContinuity（路線番号・名称の一致、本線優先、曲がり角）で継続先を選ぶ。
  * 例: 長野道を南下して岡谷JCTに達すると、同じ E19 の中央道（名古屋方面）へ継続し、辰野PA が並ぶ。
+ * カーナビの案内に合わせるときは [ForkChooser]（[NavForkChooser]）が分岐の先を選び直す。
  */
 class RouteAheadBuilder(
     val maxLength: Double = 150_000.0,
@@ -96,7 +97,7 @@ class RouteAheadBuilder(
     /** 分岐点（本線上）: 道のり・分岐の手前のエッジ・選ばなかった後続 */
     private class Fork(val dist: Double, val edge: Int, val others: List<Int>)
 
-    fun build(graph: RoadGraph, edge: Int, offset: Double): RouteAhead {
+    fun build(graph: RoadGraph, edge: Int, offset: Double, chooser: ForkChooser? = null): RouteAhead {
         val segs = ArrayList<RouteSegment>()
         val raw = ArrayList<UpcomingFacility>()
         val forkInfo = ArrayList<Fork>()
@@ -144,11 +145,13 @@ class RouteAheadBuilder(
             // 同じ路線（路線番号が共通・同名）の本線が続くなら、それを優先する。
             // 本線の名前が変わる地点（国道23号 → 知立バイパス）で、旧名と同じ名前のランプへ
             // 進んでしまい、その先で経路が終わる（施設が 1 つしか出ない）のを防ぐ
-            val pick = if (cur.attr.isLink) succ[0].first
+            val usual = if (cur.attr.isLink) succ[0].first
             else succ.firstOrNull { (id, _) ->
                 val n = graph.edges[id]
                 !n.attr.isLink && FacilityExtractor.sameRoute(cur.attr, n.attr)
             }?.first ?: succ[0].first
+            // カーナビの案内に合わせる（案内の路線・方面へ進む分岐を選ぶ）
+            val pick = if (chooser != null && succ.size >= 2) chooser.choose(graph, dist, cur, succ, usual) else usual
             if (!cur.attr.isLink && succ.size >= 2) forkInfo.add(Fork(dist, cur.id, succ.map { it.first }.filter { it != pick }))
             val next = graph.edges[pick]
             if ((cur.attr.isLink && !next.attr.isLink) ||

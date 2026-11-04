@@ -10,8 +10,6 @@ import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
-import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -77,6 +75,52 @@ object SettingsDialogs {
             }
             a.runOnUiThread { if (!a.isFinishing) done(text) }
         }
+    }
+
+    /**
+     * 地図データの版（作った日時）。例「2026年11月4日 0:05（全国・アプリ同梱）」。
+     * 別スレッドで調べて、メインスレッドで [done]（版の文, 配布元の最新版についての一言 or null）
+     */
+    fun mapVersion(a: Activity, done: (String, String?) -> Unit) {
+        val prefs = Prefs(a)
+        thread(name = "hwdb-version") {
+            val list = try {
+                HwdbManager.list(a)
+            } catch (e: Exception) {
+                emptyList()
+            }
+            val best = list.filter { it.coverage == "all" }.maxByOrNull { it.version } ?: list.maxByOrNull { it.version }
+            val text = if (best == null) "端末内に地図データがありません" else {
+                val whenText = formatCreated(best.createdAt) ?: formatVersion(best.version) ?: best.version
+                val cov = if (best.coverage == "all") "全国" else "一部の地方"
+                "$whenText（$cov・${best.kind.label}）"
+            }
+            val avail = prefs.availableVersion
+            val note = if (best != null && avail != null) {
+                if (avail > best.version) "配布元に新しい版があります（${formatVersion(avail) ?: avail}）" else "配布元の最新版と同じです"
+            } else null
+            a.runOnUiThread { if (!a.isFinishing) done(text, note) }
+        }
+    }
+
+    /** "2026-11-03T15:05:00Z" → 端末の時刻で「2026年11月4日 0:05」 */
+    fun formatCreated(iso: String?): String? {
+        if (iso.isNullOrBlank()) return null
+        return try {
+            val f = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+            val d = f.parse(iso) ?: return null
+            java.text.SimpleDateFormat("yyyy年M月d日 H:mm", Locale.JAPAN).format(d) + " 作成"
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** 版の名前 "20261104-0005" → 「2026年11月4日 0:05」 */
+    fun formatVersion(v: String): String? {
+        val m = Regex("^(\\d{4})(\\d{2})(\\d{2})(?:-(\\d{2})(\\d{2}))?").find(v) ?: return null
+        val (y, mo, d) = Triple(m.groupValues[1], m.groupValues[2].toInt(), m.groupValues[3].toInt())
+        val time = if (m.groupValues[4].isNotEmpty()) " ${m.groupValues[4].toInt()}:${m.groupValues[5]}" else ""
+        return "${y}年${mo}月${d}日$time"
     }
 
     /** 端末内の地図データ・読み込み中のタイル・キャッシュの詳しい説明（開発者向け設定） */
@@ -235,116 +279,191 @@ object SettingsDialogs {
         }
     }
 
-    // ================================================================== 渋滞情報（開発者向け設定）
+    // ================================================================== 渋滞情報
 
-    private val PROVIDERS = listOf("none" to "取得しない", "here" to "HERE Traffic", "tomtom" to "TomTom Traffic", "google" to "Google Routes")
+    /** 取得元（保存する名前と、設定画面に出す名前）。おすすめは TomTom */
+    val PROVIDERS = listOf(
+        "none" to "使わない（自車の走行から推定）",
+        "tomtom" to "TomTom Traffic（おすすめ）",
+        "here" to "HERE Traffic",
+        "google" to "Google Routes（従量課金）"
+    )
 
-    /** いまの渋滞情報の設定の短い説明（「HERE Traffic・5 分ごと」など） */
-    fun trafficSummary(prefs: Prefs): String {
-        val p = prefs.trafficProvider
-        val name = PROVIDERS.firstOrNull { it.first == p }?.second ?: p
-        if (p == "none") return "使わない（自車の走行から渋滞を推定）"
-        val interval = when (prefs.trafficIntervalMin) {
-            3 -> "3 分ごと"
-            5 -> "5 分ごと"
-            -1 -> "自動（3〜5 分）"
-            else -> "取得しない"
-        }
-        val key = if (prefs.trafficKey(p).isBlank()) "・API キー未設定" else ""
-        return "$name・$interval$key"
+    fun providerName(p: String): String = when (p) {
+        "tomtom" -> "TomTom"
+        "here" -> "HERE"
+        "google" -> "Google"
+        else -> "—"
     }
 
-    fun showTraffic(a: Activity, done: () -> Unit = {}) {
-        val prefs = Prefs(a)
-        val col = a.column()
-        col.addView(a.label("取得元", 15f, bold = true))
-        val pg = RadioGroup(a)
-        val ids = HashMap<Int, String>()
-        for ((k, label) in PROVIDERS) {
-            val rb = RadioButton(a).apply {
-                text = label
-                setTextColor(Color.WHITE)
-                id = View.generateViewId()
-            }
-            ids[rb.id] = k
-            pg.addView(rb)
-            if (prefs.trafficProvider == k) rb.isChecked = true
-        }
-        col.addView(pg)
-        val keyEdit = EditText(a).apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
-            hint = "API キー"
-            setTextColor(Color.WHITE)
-            setHintTextColor(0xFF7D8590.toInt())
-            setText(prefs.trafficKey(prefs.trafficProvider))
-        }
-        col.addView(keyEdit)
-        val help = a.label("", 12f, color = 0xFF8D96A3.toInt())
-        col.addView(help)
-        fun updateHelp(p: String) {
-            help.text = when (p) {
-                "here" -> "HERE（developer.here.com）の API キー。前方 100km の道路の流れ（速度）と事故・規制を取得。"
-                "tomtom" -> "TomTom（developer.tomtom.com）の API キー。渋滞（遅れ時間）・事故・通行止め・工事を取得。"
-                "google" -> "Google Cloud の API キー（Routes API を有効化）。前方経路の混雑区間と渋滞を考慮した所要時間を取得。従量課金なので無料枠と料金を確認してください。"
-                else -> "渋滞情報を使わず、自車の走行（渋滞の持続推定）だけで到着予定を計算します。"
-            }
-        }
-        updateHelp(prefs.trafficProvider)
-        var current = prefs.trafficProvider
-        pg.setOnCheckedChangeListener { _, id ->
-            prefs.setTrafficKey(current, keyEdit.text.toString())
-            current = ids[id] ?: "none"
-            keyEdit.setText(prefs.trafficKey(current))
-            keyEdit.isEnabled = current != "none"
-            updateHelp(current)
-        }
-        keyEdit.isEnabled = current != "none"
+    /** API キーの見せ方（全部は出さない） */
+    fun maskedKey(key: String): String = if (key.isBlank()) "未設定" else "設定済み（末尾 ${key.takeLast(4)}）"
 
-        col.addView(a.label("取得間隔", 15f, bold = true))
-        val intervals = listOf(3 to "3 分ごと", 5 to "5 分ごと", -1 to "自動（前方に渋滞があれば 3 分、無ければ 5 分）", 0 to "取得しない")
-        val ig = RadioGroup(a)
-        val iids = HashMap<Int, Int>()
-        for ((v, label) in intervals) {
-            val rb = RadioButton(a).apply {
-                text = label
-                setTextColor(Color.WHITE)
-                id = View.generateViewId()
-            }
-            iids[rb.id] = v
-            ig.addView(rb)
-            if (prefs.trafficIntervalMin == v) rb.isChecked = true
-        }
-        col.addView(ig)
-        val shortRange = android.widget.CheckBox(a).apply {
-            text = "通信量を抑える（前方 60km まで）"
-            setTextColor(Color.WHITE)
-            isChecked = prefs.trafficShortRange
-        }
-        col.addView(shortRange)
-        col.addView(a.label("渋滞情報は高速道路を走行中だけ取得し、到着予定時刻と左の帯の色（赤＝渋滞）に反映します。施設の行には手前の渋滞の長さ・事故・通行止めを表示します。渋滞の音声案内は、設定画面の「音声案内」でオン・オフできます。API キーは端末内にだけ保存します。", 12f, color = 0xFF8D96A3.toInt()))
+    /** 取得間隔の選択肢 */
+    val INTERVALS = listOf(3 to "3 分ごと", 5 to "5 分ごと", -1 to "自動（前方に渋滞があれば 3 分、無ければ 5 分）", 0 to "取得しない")
 
-        fun save() {
-            prefs.trafficProvider = current
-            prefs.setTrafficKey(current, keyEdit.text.toString())
-            prefs.trafficIntervalMin = iids[ig.checkedRadioButtonId] ?: 5
-            prefs.trafficShortRange = shortRange.isChecked
+    /** API キーの取り方（取得元ごと） */
+    fun showKeyGuide(a: Activity, provider: String) {
+        val p = if (provider == "none") "tomtom" else provider
+        val (title, url, msg) = when (p) {
+            "here" -> Triple(
+                "HERE の API キーの取り方", "https://platform.here.com/",
+                "1. 下の「サイトを開く」から HERE の開発者サイトを開き、無料のアカウントを作る（Base Plan。本人確認・支払い方法の登録を求められることがあります）\n" +
+                    "2. 「Access Manager」→「Apps」でアプリを作り、「API Keys」→「Create API key」でキーを作る\n" +
+                    "3. キーの文字列をコピーし、この画面の「API キー」に貼り付けて保存する\n" +
+                    "4. 「キーを確かめる」で「使えます」と出れば完了\n\n" +
+                    "1 回の更新で 2 回問い合わせます（道路の流れ・事故や規制）。無料の回数と料金は HERE のサイトで確認してください。"
+            )
+            "google" -> Triple(
+                "Google の API キーの取り方", "https://console.cloud.google.com/",
+                "1. 下の「サイトを開く」から Google Cloud コンソールを開き、プロジェクトを作って、お支払い（請求先アカウント）を設定する\n" +
+                    "2. 「API とサービス」→「ライブラリ」で「Routes API」を有効にする\n" +
+                    "3. 「認証情報」→「認証情報を作成」→「API キー」。キーの制限で「Routes API」だけに絞るのがおすすめ\n" +
+                    "4. キーをコピーし、この画面の「API キー」に貼り付けて保存。「キーを確かめる」で確認\n\n" +
+                    "注意: 従量課金です。無料の範囲を超えると料金がかかります。料金と無料の範囲を Google の料金ページで必ず確認してください。"
+            )
+            else -> Triple(
+                "TomTom の API キーの取り方（おすすめ）", "https://developer.tomtom.com/",
+                "TomTom は無料で始められ、渋滞（長さ・遅れ）・事故・通行止め・工事・車線規制を取得できます（日本国内での対応範囲・精度は TomTom によります）。\n\n" +
+                    "1. 下の「サイトを開く」から TomTom の開発者サイト（developer.tomtom.com）を開き、「Register」（無料登録）でアカウントを作る（メールアドレスの確認があります）\n" +
+                    "2. ログインして「Dashboard」（My Dashboard）→「Keys」を開く。最初からある「My first API key」か、「Create key」で作ったキーを使う（使える API に Traffic が含まれていることを確認）\n" +
+                    "3. キーの文字列をコピーし、この画面の「API キー」に貼り付けて保存する\n" +
+                    "4. 「キーを確かめる」で「使えます」と出れば完了\n\n" +
+                    "使う回数の目安: 高速道路を走行中だけ、3〜5 分ごとに 1〜4 回問い合わせます（1 時間で 12〜80 回ほど。一般道・停車中は問い合わせません）。" +
+                    "無料の回数・条件は変わることがあるので、TomTom の料金ページ（Pricing）で確認してください。"
+            )
         }
         AlertDialog.Builder(a, THEME)
-            .setTitle("渋滞情報（リアルタイム）")
-            .setView(a.scroll(col))
+            .setTitle(title)
+            .setMessage(msg + "\n\nAPI キーは端末の中にだけ保存し、問い合わせ以外には使いません。")
+            .setPositiveButton("サイトを開く") { _, _ ->
+                try {
+                    a.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                } catch (e: Exception) {
+                    Toast.makeText(a, "ブラウザを開けませんでした: $url", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("閉じる", null)
+            .show()
+    }
+
+    /** API キーを入れる（貼り付け）。保存したら [onSaved] */
+    fun editKey(a: Activity, provider: String, onSaved: () -> Unit) {
+        val prefs = Prefs(a)
+        val col = a.column()
+        val edit = EditText(a).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+            hint = "API キーを貼り付け"
+            setTextColor(Color.WHITE)
+            setHintTextColor(0xFF7D8590.toInt())
+            setText(prefs.trafficKey(provider))
+            isSingleLine = true
+        }
+        col.addView(edit)
+        col.addView(a.label("${providerName(provider)} の開発者サイトで作ったキーを貼り付けてください。キーは端末の中にだけ保存します。", 12f, color = 0xFF8D96A3.toInt()))
+        AlertDialog.Builder(a, THEME)
+            .setTitle("API キー（${providerName(provider)}）")
+            .setView(col)
             .setPositiveButton("保存") { _, _ ->
-                save()
+                prefs.setTrafficKey(provider, edit.text.toString())
                 EngineHost.refreshTraffic()
-                done()
+                onSaved()
             }
-            .setNeutralButton("保存して今すぐ取得") { _, _ ->
-                save()
-                EngineHost.refreshTraffic()
-                Toast.makeText(a, "高速道路を走行中なら取得します", Toast.LENGTH_SHORT).show()
-                done()
-            }
+            .setNeutralButton("キーの取り方") { _, _ -> showKeyGuide(a, provider) }
             .setNegativeButton("キャンセル", null)
             .show()
+    }
+
+    /**
+     * キーが使えるか、1 回だけ問い合わせて確かめる（東京駅付近の短い区間）。
+     * 結果はメインスレッドで [done]（使える, 説明）
+     */
+    fun testKey(a: Activity, provider: String, key: String, done: (Boolean, String) -> Unit) {
+        if (provider == "none") {
+            done(false, "取得元を選んでください")
+            return
+        }
+        if (key.isBlank()) {
+            done(false, "API キーが未設定です")
+            return
+        }
+        thread(name = "traffic-key-test") {
+            val prov: com.example.highwaymode.core.traffic.TrafficProvider = when (provider) {
+                "here" -> com.example.highwaymode.core.traffic.HereTrafficProvider(key)
+                "google" -> com.example.highwaymode.core.traffic.GoogleRoutesTrafficProvider(key)
+                else -> com.example.highwaymode.core.traffic.TomTomTrafficProvider(key)
+            }
+            // 首都高 都心環状線の近くを南から北へ約 1km（取得できるかだけを見る）
+            val q = com.example.highwaymode.core.traffic.TrafficQuery(
+                lat = doubleArrayOf(35.6764, 35.6855),
+                lon = doubleArrayOf(139.7660, 139.7695),
+                bearing = doubleArrayOf(17.0, 17.0),
+                dist = doubleArrayOf(0.0, 1050.0),
+                lengthM = 1050.0
+            )
+            val (ok, msg) = try {
+                val d = prov.fetch(q)
+                true to "使えます（${prov.name}。この区間の情報 ${d.items.size} 件）"
+            } catch (e: com.example.highwaymode.core.net.HttpStatusException) {
+                false to when (e.code) {
+                    400 -> "キーまたは問い合わせが受け付けられませんでした（HTTP 400）。キーを確認してください"
+                    401, 403 -> "キーが正しくないか、このキーでは使えない API です（HTTP ${e.code}）。開発者サイトでキーと使える API を確認してください"
+                    429 -> "問い合わせが多すぎます（HTTP 429）。しばらく待ってから確かめてください"
+                    else -> "取得できませんでした（HTTP ${e.code}）"
+                }
+            } catch (e: java.io.IOException) {
+                false to "通信できませんでした（${e.message?.take(60) ?: "接続エラー"}）"
+            } catch (e: Exception) {
+                false to "取得できませんでした（${e.javaClass.simpleName}）"
+            }
+            a.runOnUiThread { if (!a.isFinishing) done(ok, msg) }
+        }
+    }
+
+    // ================================================================== 音声の読み取り（Shizuku）
+
+    /** Shizuku で「音声の読み取り」を許可する手順と、許可のボタン */
+    fun showShizukuGuide(a: Activity, onChanged: () -> Unit) {
+        val granted = com.example.spectrum.SessionScanner.hasPermission(a)
+        val msg = if (granted) {
+            "音声の読み取りは許可済みです。音声の番号を知らせない音楽アプリでも、再生中の音を読み取ってスペアナを動かします。"
+        } else {
+            "Amazon Music など一部の音楽アプリは、どの音声を解析すればよいかをアプリに知らせません。このアプリは自動で再生中の音を探しますが（数秒〜1 分ほど）、" +
+                "それでもスペアナが動かないときだけ、次の手順で「音声の読み取り」を許可してください。一度許可すれば、その後は Shizuku を止めても大丈夫です。\n\n" +
+                "1. Google Play で「Shizuku」をインストールする（下の「Shizuku を入手」）\n" +
+                "2. スマホの「開発者向けオプション」を有効にする（設定 → デバイス情報 →「ビルド番号」を 7 回続けてタップ）\n" +
+                "3. Wi-Fi につないで、開発者向けオプションの「ワイヤレス デバッグ」をオンにする\n" +
+                "4. Shizuku を開き、「ワイヤレス デバッグ」の「ペアリング」を選ぶ。ワイヤレス デバッグの画面の「ペア設定コードによるデバイスのペア設定」に出る 6 桁のコードを、Shizuku の通知に入力する\n" +
+                "5. Shizuku の「開始」を押す（「Shizuku は実行中です」と出れば準備完了）\n" +
+                "6. この画面に戻って「許可する」を押し、Shizuku の確認で「許可」を選ぶ\n\n" +
+                "Android 10 以前はワイヤレス デバッグが無いため、パソコン（adb）での開始が必要です。音声を録音・保存することはありません。"
+        }
+        val b = AlertDialog.Builder(a, THEME)
+            .setTitle("音声の読み取り（Shizuku）")
+            .setMessage(msg)
+            .setNegativeButton("閉じる", null)
+        if (!granted) {
+            b.setPositiveButton("許可する") { _, _ ->
+                com.example.spectrum.ShizukuHelper.grantDump(a) { ok, m ->
+                    Toast.makeText(a, m, Toast.LENGTH_LONG).show()
+                    if (!ok && !com.example.spectrum.ShizukuHelper.isRunning()) com.example.spectrum.ShizukuHelper.openShizuku(a)
+                    onChanged()
+                }
+            }
+            b.setNeutralButton("Shizuku を入手") { _, _ ->
+                val pkg = com.example.spectrum.ShizukuHelper.SHIZUKU_PACKAGE
+                try {
+                    a.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("market://details?id=$pkg")))
+                } catch (e: Exception) {
+                    try {
+                        a.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://play.google.com/store/apps/details?id=$pkg")))
+                    } catch (e2: Exception) {
+                        Toast.makeText(a, "Google Play を開けませんでした", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+        }
+        b.show()
     }
 
     // ================================================================== オービス（登録した地点）

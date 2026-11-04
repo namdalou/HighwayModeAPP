@@ -18,9 +18,8 @@ import com.example.highwaymode.data.DataSyncState
 import com.example.highwaymode.data.Prefs
 import com.example.highwaymode.engine.DemoPreset
 import com.example.highwaymode.engine.EngineHost
+import com.example.highwaymode.nav.NavNotifications
 import com.example.spectrum.DiagnosticsActivity
-import com.example.spectrum.SessionScanner
-import com.example.spectrum.ShizukuHelper
 import java.security.MessageDigest
 
 /**
@@ -159,16 +158,9 @@ class DevSettingsActivity : Activity() {
         val c = ui.page("開発者向け設定", "公開版の設定画面には出さない項目です") { finish() }
 
         // ---- Spectrum（音楽）
-        val sp = ui.section(c, "Spectrum（音楽）")
+        val sp = ui.section(c, "Spectrum（音楽）", "音声の読み取り（Shizuku）は v2.5 から通常の設定（音楽）に移しました。")
         ui.actionRow(sp, "Spectrum の診断画面", "曲情報の取得元の選択・音声の解析の状態") {
             startActivity(Intent(this, DiagnosticsActivity::class.java))
-        }
-        val dump = ui.actionRow(sp, "音声の読み取りを許可（Shizuku）", "音声の番号を知らせず、自動でも見つからない音楽アプリのスペアナ用（DUMP 権限）") {
-            requestDumpWithShizuku()
-        }
-        refreshers += {
-            val ok = SessionScanner.hasPermission(this)
-            dump.value(if (ok) "許可済み" else "未許可", if (ok) SettingsUi.C_OK else SettingsUi.C_SUB)
         }
 
         // ---- 走行のテスト
@@ -186,12 +178,15 @@ class DevSettingsActivity : Activity() {
             demo.value(if (EngineHost.demoRunning) "走行中（押すと停止）" else if (EngineHost.running) "停止中" else "使えません（位置情報の許可が必要）")
         }
 
-        // ---- 渋滞情報
-        val tr = ui.section(c, "渋滞情報（リアルタイム）", "高速道路を走行中だけ取得し、到着予定と帯の色に反映します。API キーは端末内にだけ保存します。")
-        val traffic = ui.actionRow(tr, "取得元・API キー・取得間隔", "HERE / TomTom / Google、3 分・5 分・自動、通信量") {
-            SettingsDialogs.showTraffic(this) { refreshAll() }
+        // ---- Google マップのナビ連携（確認用）
+        val gm = ui.section(c, "Google マップのナビ連携（確認用）", "うまく合わないときは、ここの内容をコピーして送ってください（通知の言い回しに合わせて直せます）。")
+        val navRow = ui.actionRow(gm, "最後に受け取ったナビの通知", "通知の文字（部品の名前つき）・読み取った距離と案内・照合の結果") {
+            showNavDebug()
         }
-        refreshers += { traffic.value(SettingsDialogs.trafficSummary(prefs)) }
+        refreshers += {
+            val at = NavNotifications.lastReadWallMs
+            navRow.value(if (at == 0L) "まだありません" else Formats.clock(at) + if (NavNotifications.active) "（ナビ中）" else "", SettingsUi.C_SUB)
+        }
 
         // ---- 地図データ（詳細）
         val md = ui.section(c, "地図データ（詳細）")
@@ -244,6 +239,36 @@ class DevSettingsActivity : Activity() {
         ui.note(c, "戻ると閉じます。次に開くときは、音楽の画面の何もない場所を 20 回続けてタップして、パスワードを入力してください。")
     }
 
+    /** ナビの通知の受信内容（確認用） */
+    private fun showNavDebug() {
+        val nav = EngineHost.latest?.nav
+        val msg = buildString {
+            append("受信: ").append(if (NavNotifications.lastReadWallMs == 0L) "まだありません" else Formats.clock(NavNotifications.lastReadWallMs)).append('\n')
+            append("ナビ中: ").append(if (NavNotifications.active) "はい" else "いいえ").append('\n')
+            append("距離: ").append(NavNotifications.lastDistanceM?.let { Formats.distance(it) } ?: "読み取れず").append('\n')
+            append("案内: ").append(NavNotifications.lastText ?: "—").append("\n\n")
+            append("照合: ").append(
+                when {
+                    nav == null -> "なし（高速道路の外、または案内なし）"
+                    nav.exitName != null -> "降りる IC = ${nav.exitName}"
+                    nav.transferText != null -> "乗り換え = ${nav.transferText}"
+                    else -> "前方の施設・分岐と合いませんでした"
+                }
+            ).append("\n\n通知の文字:\n")
+            if (NavNotifications.lastPieces.isEmpty()) append("（なし）") else NavNotifications.lastPieces.forEach { append("・").append(it).append('\n') }
+        }
+        AlertDialog.Builder(this, SettingsUi.DIALOG_THEME)
+            .setTitle("ナビの通知（確認用）")
+            .setMessage(msg)
+            .setPositiveButton("閉じる", null)
+            .setNeutralButton("コピー") { _, _ ->
+                val cm = getSystemService(android.content.ClipboardManager::class.java)
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("ナビの通知", msg))
+                toast("コピーしました")
+            }
+            .show()
+    }
+
     private fun showDemoMenu() {
         if (!EngineHost.running) {
             toast("位置情報を許可すると使えます")
@@ -256,28 +281,6 @@ class DevSettingsActivity : Activity() {
                 EngineHost.startDemo(presets[which])
                 toast("デモ走行を始めました")
                 window.decorView.postDelayed({ refreshAll() }, 300)
-            }
-            .setNegativeButton("キャンセル", null)
-            .show()
-    }
-
-    /** Spectrum: Shizuku で DUMP 権限（音声の番号の読み取り）を許可する */
-    private fun requestDumpWithShizuku() {
-        AlertDialog.Builder(this, SettingsUi.DIALOG_THEME)
-            .setTitle("音声の読み取りを許可")
-            .setMessage(
-                "Amazon Music・YouTube など音声の番号を知らせないアプリは、Shizuku が無くても\n" +
-                    "再生中の音を自動で探してスペアナを動かします（見つかるまで数秒〜1 分ほど）。\n\n" +
-                    "それでもスペアナが動かないときだけ、この設定を使ってください。\n" +
-                    "Shizuku アプリを起動した状態で「許可する」を押してください。\n" +
-                    "(Shizuku はワイヤレスデバッグで開始できます。一度許可すれば Shizuku は止めても大丈夫です)"
-            )
-            .setPositiveButton("許可する") { _, _ ->
-                ShizukuHelper.grantDump(this) { ok, msg ->
-                    Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                    if (!ok && !ShizukuHelper.isRunning()) ShizukuHelper.openShizuku(this)
-                    refreshAll()
-                }
             }
             .setNegativeButton("キャンセル", null)
             .show()

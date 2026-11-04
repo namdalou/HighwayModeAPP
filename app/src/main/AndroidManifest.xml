@@ -47,6 +47,9 @@
         </intent>
         <!-- Spectrum: Shizuku が入っているか確認するため -->
         <package android:name="moe.shizuku.privileged.api" />
+        <!-- Google マップのナビの通知（独自の表示）を読むため（前方の経路・降りる IC をナビに合わせる） -->
+        <package android:name="com.google.android.apps.maps" />
+        <package android:name="com.google.android.apps.mapslite" />
     </queries>
 
     <application

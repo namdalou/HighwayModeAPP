@@ -58,7 +58,28 @@ class FacilityView(
     /** この進行方向には出口が無い IC（ハーフ IC）。「出口なし」と表示する */
     val noExit: Boolean = false,
     /** 手前の渋滞の先頭（解消地点）までの道のり [m]（渋滞の中にいるときなど、無ければ null） */
-    val jamEndM: Double? = null
+    val jamEndM: Double? = null,
+    /** カーナビの案内で、ここで降りる IC */
+    val navExit: Boolean = false,
+    /** カーナビの案内（「ここで降ります」「→ 東名高速道路 東京方面」など。無ければ null） */
+    val navNote: String? = null
+)
+
+/** カーナビ（Google マップ）の案内との連携の状態 */
+class NavView(
+    /** ナビアプリの名前 */
+    val source: String,
+    /** 次の案内の文（通知の文字） */
+    val text: String,
+    /** 案内地点までの距離 [m]（分からなければ null） */
+    val distanceM: Double?,
+    /** 降りる IC の名前と道のり [m] */
+    val exitName: String?,
+    val exitDistanceM: Double?,
+    /** 乗り換え先（例「東名高速道路 東京方面」） */
+    val transferText: String?,
+    /** 案内と前方経路が合った */
+    val matched: Boolean
 )
 
 /** 交通情報の状態 */
@@ -138,7 +159,9 @@ class HighwaySnapshot(
     /** 車速の取得元（「車速信号」「GPS」「推定」） */
     val speedSource: String = "GPS",
     /** 一般道のバイパスを走行中（信号・歩行者がありうる） */
-    val generalRoad: Boolean = false
+    val generalRoad: Boolean = false,
+    /** カーナビの案内との連携（ナビ中でなければ null） */
+    val nav: NavView? = null
 ) {
     companion object {
         fun initial(wallMs: Long) = HighwaySnapshot(

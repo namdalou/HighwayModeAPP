@@ -18,6 +18,9 @@ import com.example.highwaymode.core.match.MatchStatus
 import com.example.highwaymode.core.model.GpsFix
 import com.example.highwaymode.core.model.HeadingObs
 import com.example.highwaymode.core.osm.TileId
+import com.example.highwaymode.core.route.NavGuide
+import com.example.highwaymode.core.route.NavHint
+import com.example.highwaymode.core.route.NavMatch
 import com.example.highwaymode.core.route.RouteAhead
 import com.example.highwaymode.core.route.RouteAheadBuilder
 import com.example.highwaymode.core.route.RouteEnd
@@ -168,6 +171,60 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
     var loadingTiles = 0
     /** データ取得に関するメッセージ（ホストが設定） */
     var dataMessage: String? = null
+
+    // ---- カーナビ（Google マップ）の案内との連携
+    /** 次の案内（ナビ中でなければ null） */
+    var navHint: NavHint? = null
+        private set
+    private var navHintT = Long.MIN_VALUE
+    /** 前方経路をナビに合わせた結果（経路を作るたびに決める） */
+    private var navMatch: NavMatch? = null
+    /** 積算の走行距離 [m]（案内地点までの距離を、受け取ってから進んだ分だけ減らすため） */
+    var odometerM = 0.0
+        private set
+    private var odoT = Long.MIN_VALUE
+
+    /**
+     * カーナビの次の案内を受け取る（Google マップの通知から）。text が空ならナビ終了。
+     * 案内の内容が変わったら前方経路を作り直す（距離だけの更新では作り直さない）。
+     */
+    fun setNavInstruction(text: String?, distanceM: Double?, t: Long, source: String = "Google マップ") {
+        if (text.isNullOrBlank()) {
+            if (navHint != null) {
+                navHint = null
+                navMatch = null
+                route = null
+            }
+            return
+        }
+        val prev = navHint
+        val h = NavHint(text, distanceM, odometerM, source)
+        navHint = h
+        navHintT = t
+        if (prev == null || prev.norm != h.norm) route = null
+    }
+
+    /** 新しい案内（10 分以上更新されない案内は使わない） */
+    private fun freshNavHint(t: Long): NavHint? {
+        val h = navHint ?: return null
+        return if (navHintT != Long.MIN_VALUE && t - navHintT < NAV_STALE_NANOS) h else null
+    }
+
+    /** 前方経路を作る。カーナビの案内があれば、JCT の乗り換え先・降りる IC を案内に合わせる */
+    private fun buildRoute(edge: Int, offset: Double, t: Long): RouteAhead {
+        val base = routeBuilder.build(graph, edge, offset)
+        val h = freshNavHint(t)
+        if (h == null) {
+            navMatch = null
+            return base
+        }
+        val dNow = h.distanceNow(odometerM)
+        val plan = NavGuide.plan(base, h, dNow)
+        val rt = if (plan.chooser != null) routeBuilder.build(graph, edge, offset, plan.chooser) else base
+        navMatch = NavGuide.match(rt, h, plan, dNow)
+        return rt
+    }
+
     var generalRoadMode: Boolean = false
         set(value) {
             field = value
@@ -526,6 +583,11 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         if (lastAccelT == Long.MIN_VALUE || t - lastAccelT > 500_000_000L) {
             speedFilter.predict(if (stationary) 0.0 else null, t)
         }
+        // 積算の走行距離（車速 × 時間）
+        if (odoT != Long.MIN_VALUE && speedFilter.initialized) {
+            odometerM += speedFilter.v * ((t - odoT) * 1e-9).coerceIn(0.0, 2.0)
+        }
+        odoT = t
         updateStationary(t)
         deadReckonIfNeeded(t)
         trackTraffic(t)
@@ -791,7 +853,7 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         if (rt == null || prog == null || rt.graphGeneration != graph.generation ||
             t - routeBuiltT > (config.routeRefreshSec * 1e9).toLong()
         ) {
-            rt = routeBuilder.build(graph, r.edge, r.offset)
+            rt = buildRoute(r.edge, r.offset, t)
             route = rt
             profile = eta.buildProfile(rt, graph)
             routeBuiltT = t
@@ -829,8 +891,12 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         val cams = ArrayList<FacilityView>()
         val ids = HashSet<String>()
         var prevDist = progress
+        val nm = navMatch
+        // カーナビで降りる IC が分かれば、その先の施設は出さない
+        val navExitDist = nm?.exitDistance
         for (uf in rt.facilities) {
             if (uf.distance <= progress + 2.0) continue
+            if (navExitDist != null && uf.distance > navExitDist + 5.0) break
             if (!RouteAheadBuilder.isDisplayable(uf.facility)) continue
             val f = uf.facility
             val isCam = f.type == FacilityType.CAMERA
@@ -862,7 +928,14 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
                 typeInferred = f.typeInferred, flowBefore = res.flowRatio(prevDist, uf.distance),
                 jamBeforeM = jam, trafficNote = note, closedBefore = closed,
                 maxspeedKmh = f.maxspeedKmh, cameraType = f.cameraType, userDefined = f.userDefined,
-                noExit = f.noExit
+                noExit = f.noExit,
+                navExit = nm?.exitId == f.id,
+                navNote = when {
+                    nm == null -> null
+                    nm.exitId == f.id -> "ここで降ります"
+                    nm.transferId == f.id -> nm.transferText?.let { "→ $it" } ?: "ナビの経路"
+                    else -> null
+                }
             )
             if (isCam) cams.add(v) else {
                 views.add(v)
@@ -911,7 +984,8 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
             routeLengthM = rt.length - progress, routeTruncated = rt.end == RouteEnd.DATA_BOUNDARY,
             cameras = cams, traffic = trafficView(rtf, events, wallMs, progress, res, ext),
             vehicle = vehicleView(t, rt, progress), speedSource = speedSource,
-            generalRoad = e.attr.generalRoad
+            generalRoad = e.attr.generalRoad,
+            nav = navView(t, progress)
         )
         lastOnSnapshot = snapshot
         lastOnT = t
@@ -931,7 +1005,8 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
                 ((wallMs + f.travelSec * 1000.0) / 60_000.0).let { Math.round(it) * 60_000L },
                 f.travelSec, f.amenities, f.etcOnly, f.etcReason, f.pois, f.lat, f.lon,
                 f.exitRef, f.destination, f.directionNote, f.typeInferred, f.flowBefore,
-                f.jamBeforeM, f.trafficNote, f.closedBefore, f.maxspeedKmh, f.cameraType, f.userDefined, f.noExit, f.jamEndM
+                f.jamBeforeM, f.trafficNote, f.closedBefore, f.maxspeedKmh, f.cameraType, f.userDefined, f.noExit, f.jamEndM,
+                f.navExit, f.navNote
             )
         }
         val hdg = if (heading.initialized) heading.headingDeg else null
@@ -950,7 +1025,22 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
             dataMessage = dataMessage ?: "到着予定は「今から出発した場合」", routeLengthM = lo.routeLengthM,
             routeTruncated = lo.routeTruncated, cameras = emptyList(), traffic = lo.traffic,
             vehicle = vehicleView(t, route, if (currentProgress.isNaN()) 0.0 else currentProgress),
-            speedSource = lo.speedSource, generalRoad = lo.generalRoad
+            speedSource = lo.speedSource, generalRoad = lo.generalRoad, nav = lo.nav
+        )
+    }
+
+    /** カーナビの案内との連携の状態（表示用） */
+    private fun navView(t: Long, progress: Double): NavView? {
+        val h = freshNavHint(t) ?: return null
+        val m = navMatch
+        return NavView(
+            source = h.source,
+            text = h.text,
+            distanceM = h.distanceNow(odometerM)?.coerceAtLeast(0.0),
+            exitName = m?.exitName,
+            exitDistanceM = m?.exitDistance?.let { (it - progress).coerceAtLeast(0.0) },
+            transferText = m?.transferText,
+            matched = m?.matched == true
         )
     }
 
@@ -1064,6 +1154,8 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         private const val PREFETCH_AHEAD = 40_000.0
         /** SA/PA 停車中に直前の表示を保持する最長時間（2 時間） */
         private const val REST_HOLD_NANOS = 2L * 3600L * 1_000_000_000L
+        /** カーナビの案内が更新されないまま、この時間が過ぎたら使わない（10 分） */
+        private const val NAV_STALE_NANOS = 10L * 60L * 1_000_000_000L
 
         fun fmtKm(km: Double): String =
             if (km < 10) String.format(Locale.US, "%.1fkm", km) else String.format(Locale.US, "%.0fkm", km)

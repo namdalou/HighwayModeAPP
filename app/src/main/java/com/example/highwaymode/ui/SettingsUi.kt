@@ -281,12 +281,32 @@ class SettingsUi(private val a: Activity) {
         return row
     }
 
-    /** 押すと何かをする行（画面・確認を開く） */
-    fun actionRow(card: LinearLayout, title: String, summary: String?, danger: Boolean = false, onClick: () -> Unit): Row {
-        val row = makeRow(card, title, summary, null, chevron = !danger)
+    /** 押すと何かをする行（画面・確認を開く）。right を渡すと「›」の左に小さな見本などを置く */
+    fun actionRow(card: LinearLayout, title: String, summary: String?, danger: Boolean = false, right: View? = null, onClick: () -> Unit): Row {
+        val row = makeRow(card, title, summary, right, chevron = !danger)
         if (danger) titleColor(row, C_DANGER)
         row.body.setOnClickListener { onClick() }
         return row
+    }
+
+    /** 任意の表示（見本など）を 1 行として置く。onClick があれば押せる */
+    fun viewRow(card: LinearLayout, view: View, heightDp: Float, onClick: (() -> Unit)? = null): View {
+        val wrapper = LinearLayout(a).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        if (card.childCount > 0) {
+            wrapper.addView(View(a).apply { setBackgroundColor(C_DIVIDER) }, LinearLayout.LayoutParams(MATCH, max(1, dp(1))))
+        }
+        wrapper.addView(view, LinearLayout.LayoutParams(MATCH, dp(heightDp)))
+        if (onClick != null) {
+            wrapper.isClickable = true
+            wrapper.isFocusable = true
+            wrapper.background = selectable(borderless = false)
+            wrapper.setOnClickListener { onClick() }
+        }
+        card.addView(wrapper, LinearLayout.LayoutParams(MATCH, WRAP))
+        return wrapper
     }
 
     /** 表示だけの行（押せない） */

@@ -1,7 +1,6 @@
 package com.example.spectrum
 
 import android.graphics.Bitmap
-import android.graphics.BitmapShader
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
@@ -17,8 +16,6 @@ import android.text.TextPaint
 import android.text.TextUtils
 import java.util.concurrent.Executors
 import kotlin.math.PI
-import kotlin.math.ceil
-import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -142,12 +139,6 @@ class PlayerRenderer {
             Color.colorToHSV(c, hsv)
             return Color.HSVToColor(floatArrayOf(hsv[0], 0.55f, 0.25f))
         }
-
-        private fun lerpColor(a: Int, b: Int, t: Float): Int = Color.rgb(
-            (Color.red(a) + (Color.red(b) - Color.red(a)) * t).toInt(),
-            (Color.green(a) + (Color.green(b) - Color.green(a)) * t).toInt(),
-            (Color.blue(a) + (Color.blue(b) - Color.blue(a)) * t).toInt()
-        )
     }
 
     /** 仮想座標でのレイアウト定義 */
@@ -309,21 +300,20 @@ class PlayerRenderer {
     private var bgLeft = Float.NaN
     private var bgHeight = -1
 
-    /** スペアナの段(LED)の模様: 段の色と隙間を描いた幅 1 画素の画像 */
-    private val ledPaint = Paint()
-    private val ledMatrix = Matrix()
-    private var ledShader: BitmapShader? = null
-    private var ledRows = -1
-    private var ledUnit = -1f
-    private var ledScale = -1f
-    private var ledBottom = 0
-    private var ledTop = 0
+    /** スペアナの表示（LED・バー・ライン・ドット・レトロ・メーターなど）を描く部品 */
+    private val painter = SpectrumPainter(n)
+    /** 帯ごとの見える高さ（0〜1）と、ピークを止めておく時刻 */
+    private val visArr = FloatArray(n)
+    private val peakHoldUntil = LongArray(n)
+    /** スペアナを描く区画（メーターはジャケットの下に） */
+    private val specRect = RectF()
 
-    /** いまのバーの色（設定の色。「ジャケットの色」はジャケットが変わったときだけ変わる） */
-    private var barBottom = BAR_BOTTOM
-    private var barTop = BAR_TOP
-    private val hsvTmp = FloatArray(3)
-    private var ledHeightPx = 0
+    /** いまのバーの色（帯ごと）。色の設定・ジャケットが変わったときだけ作り直す */
+    private val barBottoms = IntArray(n) { BAR_BOTTOM }
+    private val barTops = IntArray(n) { BAR_TOP }
+    private var colorsForTheme = -1
+    private var colorsForVersion = -1
+    private var colorsForArt = Int.MIN_VALUE
 
     /** バーの動きの計算に使う、前回描いた時刻 */
     private var lastSpecMs = 0L
@@ -333,7 +323,6 @@ class PlayerRenderer {
 
     private val iconRect = RectF()
     private val artSrc = Rect()
-    private val peakColor = Color.rgb(215, 225, 235)
 
     /** 曲名などの幅(文字と大きさが同じ間は測り直さない) */
     private val widthCache = arrayOf(WidthEntry(), WidthEntry(), WidthEntry())
@@ -372,6 +361,8 @@ class PlayerRenderer {
     @Volatile private var artShownFor: Bitmap? = null
     @Volatile private var artRequested: Bitmap? = null
     @Volatile private var accentReady = DEFAULT_ACCENT
+    /** ジャケットから選んだバーの色（[ArtPalette]。0 = ジャケットなし） */
+    @Volatile private var artBarReady = 0
 
     /**
      * ジャケットが変わったら、縮小した画像と代表色を別スレッドで作り、できたら差し替える。
@@ -384,16 +375,19 @@ class PlayerRenderer {
             artRequested = bmp
             if (bmp == null || bmp.isRecycled) {
                 accentReady = DEFAULT_ACCENT
+                artBarReady = 0
                 artShown = null
                 artShownFor = bmp
             } else {
                 artWorker.execute {
                     val small = prepareArt(bmp)
                     val acc = extractAccent(small ?: bmp)
+                    val barBase = ArtPalette.dominant(small ?: bmp) ?: 0
                     if (artRequested === bmp) {
                         artShown = small
                         artShownFor = bmp
                         accentReady = acc
+                        artBarReady = barBase
                     }
                 }
             }
@@ -413,32 +407,22 @@ class PlayerRenderer {
     private fun Float.roundToIntSafe(): Int = (this + 0.5f).toInt().coerceIn(0, 255)
 
     /**
-     * 設定のバーの色を反映する（毎フレーム。割り当てはしない）。「ジャケットの色に合わせる」は、
-     * ジャケットの代表色の色相で、下を濃く・上を明るくする（ジャケットが変わったときだけ色が変わり、段の模様を作り直す）。
-     * ジャケットが無い・色を取り出せないときは標準の青。
+     * 設定のバーの色を反映する（毎フレーム呼ぶが、色の設定・ジャケットが変わったときだけ作り直す）。
+     *  - 決まった色: 下を濃く・上を明るくしたグラデーション
+     *  - ジャケットの色: ジャケットから選んだ色（[ArtPalette]）を同じようなグラデーションに。ジャケットが無いときは標準の青
+     *  - カラーコード: 指定の色を中ほどにしたグラデーション
+     *  - 虹色: 低音の赤から高音の紫まで、帯ごとに色を変える
      */
     private fun updateBarColors() {
         val t = SpectrumStyle.theme
-        if (t == SpectrumStyle.THEME_ART) {
-            val acc = accentReady
-            if (acc == DEFAULT_ACCENT) {
-                barBottom = BAR_BOTTOM
-                barTop = BAR_TOP
-            } else {
-                Color.colorToHSV(acc, hsvTmp)
-                val h = hsvTmp[0]
-                hsvTmp[0] = h; hsvTmp[1] = 0.92f; hsvTmp[2] = 0.62f
-                barBottom = Color.HSVToColor(hsvTmp)
-                hsvTmp[0] = h; hsvTmp[1] = 0.55f; hsvTmp[2] = 1.0f
-                barTop = Color.HSVToColor(hsvTmp)
-            }
-        } else if (t == SpectrumStyle.THEME_BLUE) {
-            barBottom = BAR_BOTTOM
-            barTop = BAR_TOP
-        } else {
-            barBottom = SpectrumStyle.bottomColor(t)
-            barTop = SpectrumStyle.topColor(t)
-        }
+        val ver = SpectrumStyle.version
+        val art = if (t == SpectrumStyle.THEME_ART) artBarReady else 0
+        if (t == colorsForTheme && ver == colorsForVersion && art == colorsForArt) return
+        colorsForTheme = t
+        colorsForVersion = ver
+        colorsForArt = art
+        SpectrumStyle.colorsFor(t, art, barBottoms, barTops)
+        painter.setColors(barBottoms, barTops)
     }
 
     private val wavePath = Path()
@@ -452,7 +436,7 @@ class PlayerRenderer {
     /** バー・ピーク・再生バーの波がまだ動いている（描き直す間隔を決めるのに使う） */
     val animating: Boolean
         get() {
-            if (waveAmp > 0.05f) return true
+            if (waveAmp > 0.05f || painter.animating) return true
             for (i in 0 until n) if (target[i] > 0.01f || level[i] > 0.01f || peak[i] > 0.01f) return true
             return false
         }
@@ -499,13 +483,13 @@ class PlayerRenderer {
         c.scale(scale, scale)
         if (NowPlaying.hasInfo) {
             drawArt(c)                         // スペアナより先に描く(縦画面では重なる)
-            drawSpectrum(c, lay.spec)
+            drawSpectrum(c, lay.spec, withArt = true)
             drawTexts(c)
             drawControls(c)
             if (NowPlaying.durationMs > 0 || NowPlaying.state != null) drawSeek(c)
         } else {
             // 曲情報が取れないとき: スペアナを大きく表示
-            drawSpectrum(c, lay.specOnly)
+            drawSpectrum(c, lay.specOnly, withArt = false)
             drawControls(c)
             drawHint(c)
         }
@@ -558,50 +542,10 @@ class PlayerRenderer {
     }
 
     /**
-     * 段(LED)の模様を用意する: 幅 1 画素・高さ = 全段分の画像に、段ごとの色(下の濃い青 → 上の薄い青)と
-     * 段の隙間(透明)を描く。画面の画素と 1 対 1 で重なるよう、描く倍率に合わせて作る(区画が変わったときだけ)。
+     * スペアナ: 帯ごとの高さ・ピークの動き（経過時間で計算）を求めて、設定の表示の種類で描く（[SpectrumPainter]）。
+     * @param withArt ジャケットと同じ画面に描く（縦長の画面では、ジャケットの下半分に重なる）
      */
-    private fun ledShaderFor(rows: Int, unit: Float, segH: Float): BitmapShader? {
-        if (rows <= 0 || scale <= 0f) return null
-        if (rows != ledRows || unit != ledUnit || scale != ledScale || barBottom != ledBottom || barTop != ledTop || ledShader == null) {
-            val hPx = ceil(rows * unit * scale).toInt().coerceIn(1, 4096)
-            val px = IntArray(hPx)
-            val total = rows * unit
-            for (y in 0 until hPx) {
-                // 画像の上端からの位置 → 下端(バーの根元)からの位置(仮想座標)
-                val fromBottom = total - (y + 0.5f) / scale
-                val rr = floor(fromBottom / unit).toInt()
-                val within = fromBottom - rr * unit
-                px[y] = if (rr in 0 until rows && within < segH) {
-                    lerpColor(barBottom, barTop, if (rows > 1) rr.toFloat() / (rows - 1) else 0f)
-                } else 0
-            }
-            val bmp = try {
-                Bitmap.createBitmap(1, hPx, Bitmap.Config.ARGB_8888)
-            } catch (_: Throwable) {
-                return null
-            }
-            bmp.setPixels(px, 0, 1, 0, 0, 1, hPx)
-            ledShader = BitmapShader(bmp, Shader.TileMode.REPEAT, Shader.TileMode.CLAMP)
-            ledRows = rows
-            ledUnit = unit
-            ledScale = scale
-            ledBottom = barBottom
-            ledTop = barTop
-            ledHeightPx = hPx
-        }
-        return ledShader
-    }
-
-    private fun drawSpectrum(c: Canvas, r: RectF) {
-        val x0 = r.left; val y1 = r.bottom
-        val gap = 2f
-        val barW = (r.width() - gap * (n - 1)) / n
-        val unit = lay.segUnit
-        val segH = unit * 0.72f               // 段の高さ
-        val rows = ((r.height() + unit - segH) / unit).toInt()
-
-        shape.style = Paint.Style.FILL
+    private fun drawSpectrum(c: Canvas, r: RectF, withArt: Boolean) {
         val st = SpectrumEngine.status
         if (st != SpectrumEngine.Status.RUNNING) target.fill(0f)
 
@@ -612,47 +556,42 @@ class PlayerRenderer {
         val riseK = 1f - 0.4f.pow(f60)
         val fallK = 1f - 0.82f.pow(f60)
         val peakFall = 0.01f * f60
-
-        // 段の模様の位置: 画像の 1 画素 = 画面の 1 画素、画像の下端 = バーの根元
-        val shader = ledShaderFor(rows, unit, segH)
-        if (shader != null) {
-            ledMatrix.setScale(1f / scale, 1f / scale)
-            ledMatrix.postTranslate(0f, y1 - ledHeightPx / scale)
-            shader.setLocalMatrix(ledMatrix)
-            ledPaint.shader = shader
-        }
+        val style = SpectrumStyle.visual
+        // ピークを止めておく時間（レトロは長め。昔の表示管のように少し止まってから落ちる）
+        val holdMs = if (style == SpectrumStyle.VISUAL_RETRO) 650L else 220L
 
         val floor = lay.noiseFloor
         // バーの高さ（設定の「スペアナの高さ」で伸びを変える）
         val gain = lay.gain * SpectrumStyle.gainScale
         for (i in 0 until n) {
             level[i] += (target[i] - level[i]) * (if (target[i] > level[i]) riseK else fallK)
-
             // 小さな値は切り捨てて(下の段のちらつき防止)、残りを伸ばして高さを使い切る
             val vis = (((level[i] - floor) / (1f - floor)) * gain).coerceIn(0f, 1f)
-            peak[i] = if (vis > peak[i]) vis else max(0f, peak[i] - peakFall)
-
-            val bx = x0 + i * (barW + gap)
-            val lit = (vis * rows).toInt()          // 切り捨て: 届いた段だけ点灯
-            if (lit > 0) {
-                if (shader != null) {
-                    // 届いた段までを 1 回で描く(色と隙間は模様が受け持つ)
-                    c.drawRect(bx, y1 - lit * unit, bx + barW, y1, ledPaint)
-                } else {
-                    for (rr in 0 until lit) {
-                        shape.color = lerpColor(barBottom, barTop, rr.toFloat() / (rows - 1))
-                        val bottom = y1 - rr * unit
-                        c.drawRect(bx, bottom - segH, bx + barW, bottom, shape)
-                    }
-                }
-            }
-            if (peak[i] > 0.04f) {
-                val row = min(max((peak[i] * rows).toInt(), lit), rows - 1)
-                val bottom = y1 - row * unit
-                shape.color = peakColor
-                c.drawRect(bx, bottom - segH * 0.6f, bx + barW, bottom, shape)
+            visArr[i] = vis
+            if (vis > peak[i]) {
+                peak[i] = vis
+                peakHoldUntil[i] = nowMs + holdMs
+            } else if (nowMs >= peakHoldUntil[i]) {
+                peak[i] = max(0f, peak[i] - peakFall)
             }
         }
+
+        // 描く区画: メーターは、ジャケットに重なるならジャケットの下に置く（目盛り板でジャケットを隠さない）
+        specRect.set(r)
+        var panel = true
+        if (withArt) {
+            val art = lay.art
+            val overlaps = r.top < art.bottom && r.bottom > art.top && r.left < art.right && r.right > art.left
+            if (overlaps) {
+                if (style == SpectrumStyle.VISUAL_METER || style == SpectrumStyle.VISUAL_METER_DARK) {
+                    val below = r.bottom - (art.bottom + 4f)
+                    if (below >= 34f) specRect.top = art.bottom + 4f
+                } else {
+                    panel = false
+                }
+            }
+        }
+        painter.draw(c, specRect, style, visArr, peak, scale, lay.segUnit, panel, f60 / 60f)
 
         val msg = when (st) {
             SpectrumEngine.Status.NO_PERMISSION -> "マイク権限を許可してください"
@@ -666,6 +605,17 @@ class PlayerRenderer {
             c.drawText(msg, r.centerX(), r.centerY(), text)
             text.textAlign = Paint.Align.LEFT
         }
+    }
+
+    /** 画面の座標 (x, y) がスペアナの区画の中か（長押しで表示の種類を変えるため） */
+    fun isSpectrumAt(x: Float, y: Float): Boolean {
+        if (scale <= 0f) return false
+        val vx = (x - ox) / scale
+        val vy = (y - oy) / scale
+        val r = if (NowPlaying.hasInfo) lay.spec else lay.specOnly
+        if (!r.contains(vx, vy)) return false
+        // ジャケットのタップ（音楽アプリを開く）と重なる場所は除く
+        return !(NowPlaying.hasInfo && lay.art.contains(vx, vy))
     }
 
     private fun drawHint(c: Canvas) {
