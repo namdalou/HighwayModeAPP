@@ -26,6 +26,7 @@ import com.example.highwaymode.data.Prefs
 import com.example.highwaymode.dual.DualMode
 import com.example.highwaymode.engine.EngineHost
 import com.example.highwaymode.engine.RunDiagnostics
+import com.example.highwaymode.nav.NavNotifications
 import com.example.highwaymode.ui.DevAccess
 import com.example.highwaymode.ui.DualView
 import com.example.highwaymode.ui.FacilityDetailDialog
@@ -82,6 +83,9 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, ModeBarView.Callbac
         player = PlayerView(this)
         // 何もない場所を 20 回続けてタップ → パスワードを聞いて開発者向け設定（Spectrum の診断画面もここから）
         player.onSecretTap = { DevAccess.prompt(this) }
+        // カーナビの案内の帯をタップ → Google マップを開く。通知の受け取り口もここで用意する（エンジンが動いていなくても帯を出す）
+        player.onGuideTap = { NavNotifications.openNavApp(this) }
+        NavNotifications.install(this)
         // スペアナを長押し → 表示の種類を順に切り替える（LED → バー → … → メーター）
         player.onSpectrumLongPress = {
             val next = (SpectrumStyle.visual + 1) % SpectrumStyle.VISUAL_LABELS.size

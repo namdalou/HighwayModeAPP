@@ -150,6 +150,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_NAV_SYNC, true)
         set(v) = sp.edit().putBoolean(KEY_NAV_SYNC, v).apply()
 
+    /** 音楽の画面に Google マップの次の案内（矢印・距離・案内の文）を出す（一般道でも。v2.6） */
+    var navBanner: Boolean
+        get() = sp.getBoolean(KEY_NAV_BANNER, true)
+        set(v) = sp.edit().putBoolean(KEY_NAV_BANNER, v).apply()
+
     /** 電池の節約（高速道路から離れている・停車中は GPS の間隔をあける）。オフならいつも毎秒測位 */
     var batterySaver: Boolean
         get() = sp.getBoolean(KEY_BATTERY_SAVER, true)
@@ -212,6 +217,7 @@ class Prefs(context: Context) {
         private const val KEY_KEEP_SCREEN = "keep_screen_on"
         private const val KEY_BATTERY_SAVER = "battery_saver"
         private const val KEY_NAV_SYNC = "nav_sync_google_maps"
+        private const val KEY_NAV_BANNER = "nav_banner_music"
 
         val DEFAULT_ENDPOINTS: List<String> = OverpassHttp.DEFAULT_ENDPOINTS
 

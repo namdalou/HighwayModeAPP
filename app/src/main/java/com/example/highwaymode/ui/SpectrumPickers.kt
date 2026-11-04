@@ -44,6 +44,8 @@ class SpectrumPreviewView(context: Context) : View(context) {
     private var last = 0L
     private var shownVersion = -1
     private var shownArt = 0
+    private var shownVisual = -1
+    private val bgColors = IntArray(2)
     private val bg = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.rgb(14, 42, 58), Color.rgb(4, 12, 20))).apply {
         cornerRadius = 10 * density
     }
@@ -88,6 +90,12 @@ class SpectrumPreviewView(context: Context) : View(context) {
             painter.setColors(bottoms, tops)
             shownVersion = SpectrumStyle.version
             shownArt = artColor
+        }
+        // 背景も音楽の画面と同じ色に（カーオーディオ系は紫がかった暗い灰色）
+        if (shownVisual != SpectrumStyle.visual) {
+            shownVisual = SpectrumStyle.visual
+            SpectrumPainter.screenBackground(shownVisual, bgColors)
+            bg.colors = intArrayOf(bgColors[0], bgColors[1])
         }
         val now = SystemClock.uptimeMillis()
         val dt = if (last == 0L) 1f / 30f else ((now - last) / 1000f).coerceIn(0f, 0.1f)
@@ -188,7 +196,9 @@ object SpectrumPickers {
         val d = ctx.resources.displayMetrics.density
         val bmp = Bitmap.createBitmap((wDp * d).toInt().coerceAtLeast(1), (hDp * d).toInt().coerceAtLeast(1), Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
-        val bg = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(Color.rgb(14, 42, 58), Color.rgb(4, 12, 20))).apply {
+        val cols = IntArray(2)
+        SpectrumPainter.screenBackground(visual, cols)
+        val bg = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(cols[0], cols[1])).apply {
             cornerRadius = 8 * d
             setBounds(0, 0, bmp.width, bmp.height)
         }
