@@ -22,6 +22,7 @@ import com.example.highwaymode.data.AppSettings
 import com.example.highwaymode.data.Prefs
 import com.example.highwaymode.data.TileRepository
 import com.example.highwaymode.data.UserCameraStore
+import com.example.highwaymode.nav.NavNotifications
 import com.example.highwaymode.traffic.TrafficUpdater
 import java.util.concurrent.CopyOnWriteArraySet
 import kotlin.math.cos
@@ -270,6 +271,8 @@ object EngineHost {
         prefs = p
         // 通知・車の画面の表示に使う設定（到着予定の表示など）
         AppSettings.apply(ctx)
+        // Google マップのナビの通知を読む（前方の経路・降りる IC をナビに合わせる）
+        NavNotifications.install(ctx)
         // 計算は描画（車の画面・スマホの画面）より後でよいので、通常の優先度にする（描画がカクつかないように）
         val t = HandlerThread("highway-engine", Process.THREAD_PRIORITY_DEFAULT)
         t.start()
@@ -403,6 +406,14 @@ object EngineHost {
 
     fun refreshTraffic() {
         traffic?.refreshNow()
+    }
+
+    // ------------------------------------------------------------------ カーナビ（Google マップ）
+
+    /** カーナビの次の案内（text が null ならナビ終了）。エンジン用スレッドで反映する */
+    fun setNavInstruction(text: String?, distanceM: Double?) {
+        val t = SystemClock.elapsedRealtimeNanos()
+        post { it.setNavInstruction(text, distanceM, t) }
     }
 
     // ------------------------------------------------------------------ 地図データ・オービス

@@ -25,6 +25,9 @@ import com.example.highwaymode.data.UserCameraStore
 import com.example.highwaymode.dual.DualMode
 import com.example.highwaymode.engine.EngineHost
 import com.example.highwaymode.engine.RunDiagnostics
+import com.example.highwaymode.nav.NavNotifications
+import android.view.View
+import com.example.spectrum.SessionScanner
 import com.example.spectrum.SpectrumEngine
 import com.example.spectrum.SpectrumStyle
 import kotlin.concurrent.thread
@@ -46,7 +49,12 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
     /** 画面に戻るたびに、いまの状態（権限・登録数・地図データなど）を表示し直す行 */
     private val refreshers = ArrayList<() -> Unit>()
     private var mapRow: SettingsUi.Row? = null
+    /** 地図データの版（作成日時）。更新が終わったら読み直す */
+    private var versionRow: SettingsUi.Row? = null
     private var generalTile: SettingsUi.TileView? = null
+    private var spectrumPreview: SpectrumPreviewView? = null
+    /** スペアナの表示の種類・色の行と見本を表示し直す */
+    private var spectrumRefresh: (() -> Unit)? = null
     /** 音声案内のテスト再生用（開いている間だけ） */
     private var voiceTest: AlertManager? = null
     /** 地図データの更新の進み具合（終わったら、端末内のデータの版も読み直す） */
@@ -155,6 +163,31 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
             AppSettings.changed(this)
         }
 
+        // ---- Google マップのナビ連携
+        val nv = ui.section(
+            c, "Google マップのナビ連携",
+            "Google マップでルートを決めてナビを始めると、ナビの通知から次の JCT の乗り換え先と降りる IC を読み取り、" +
+                "ハイウェイの一覧をナビの経路に合わせます（JCT で乗り換え先の路線へ、降りる IC より先は出しません）。" +
+                "通知へのアクセス（曲名と同じ許可）を使います。読み取った内容は端末の中だけで使い、保存・送信しません。"
+        )
+        ui.switchRow(nv, "Google マップのナビに合わせる", "ナビ中だけ働きます。ナビをしていないときは、いつもどおり同じ路線を先まで表示します", prefs.navSync) {
+            prefs.navSync = it
+            if (!it) NavNotifications.clear()
+        }
+        val navStatus = ui.infoRow(nv, "いまの状態", null)
+        refreshers += {
+            val st = EngineHost.latest?.nav
+            val text = when {
+                !prefs.navSync -> "オフ"
+                !isListenerEnabled() -> "通知へのアクセスを許可すると使えます（下の「権限」）"
+                st != null && st.exitName != null -> "${st.exitName} で降ります（${st.source}）"
+                st != null && st.transferText != null -> "乗り換え: ${st.transferText}（${st.source}）"
+                NavNotifications.active -> "ナビの案内を受け取っています: ${NavNotifications.lastText?.take(40) ?: ""}"
+                else -> "Google マップでナビを始めると使えます"
+            }
+            navStatus.value(text, SettingsUi.C_SUB)
+        }
+
         // ---- スマホの画面
         val ph = ui.section(c, "スマホの画面", "車の画面（Android Auto）には関係しません。")
         ui.choiceRow(
@@ -169,15 +202,44 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
         }
 
         // ---- 音楽（スペアナ）
-        val mu = ui.section(c, "音楽（スペアナ）", "ジャケットをタップすると、再生中の音楽アプリを開きます。")
-        ui.choiceRow(mu, "スペアナの色", SpectrumStyle.THEME_LABELS, SpectrumStyle.theme) {
-            SpectrumStyle.setTheme(this, it)
-            AppSettings.changed(this)
+        val mu = ui.section(
+            c, "音楽（スペアナ）",
+            "ジャケットをタップすると、再生中の音楽アプリを開きます。音楽の画面でスペアナを長押しすると、表示の種類を順に切り替えられます。"
+        )
+        val preview = SpectrumPreviewView(this)
+        spectrumPreview = preview
+        ui.viewRow(mu, preview, 108f) { SpectrumPickers.chooseVisual(this) { spectrumChanged() } }
+        val visualRow = ui.actionRow(mu, "表示の種類", "LED・バー・ライン・レトロ・針のメーターなど（見本を見て選べます）") {
+            SpectrumPickers.chooseVisual(this) { spectrumChanged() }
         }
-        ui.choiceRow(mu, "スペアナの高さ", SpectrumStyle.GAIN_LABELS, SpectrumStyle.gainIndex, "音が小さくバーが低いときは「高め」に") {
+        val swatch = View(this).apply {
+            minimumWidth = ui.dp(30)
+            minimumHeight = ui.dp(30)
+        }
+        val colorRow = ui.actionRow(mu, "色", "ジャケットの色・12 色と虹色・カラーコード", right = swatch) {
+            SpectrumPickers.chooseColor(this) { spectrumChanged() }
+        }
+        spectrumRefresh = {
+            visualRow.value(SpectrumStyle.VISUAL_LABELS[SpectrumStyle.visual])
+            colorRow.value(SpectrumStyle.themeLabel())
+            swatch.background = SpectrumPickers.swatchDrawable(this, SpectrumStyle.theme, false)
+            preview.refresh()
+        }
+        spectrumRefresh?.invoke()
+        ui.choiceRow(mu, "高さ", SpectrumStyle.GAIN_LABELS, SpectrumStyle.gainIndex, "音が小さくバーが低いときは「高め」に") {
             SpectrumStyle.setGain(this, it)
             AppSettings.changed(this)
         }
+        val shizuku = ui.actionRow(mu, "音声の読み取り（Shizuku）", "スペアナが動かない音楽アプリがあるとき（手順を表示します）") {
+            SettingsDialogs.showShizukuGuide(this) { refreshAll() }
+        }
+        refreshers += {
+            val ok = SessionScanner.hasPermission(this)
+            shizuku.value(if (ok) "許可済み" else "未許可（通常は不要）", if (ok) SettingsUi.C_OK else SettingsUi.C_SUB)
+        }
+
+        // ---- 渋滞情報（リアルタイム）
+        buildTraffic(c)
 
         // ---- 音声案内
         val vo = ui.section(c, "音声案内", "案内はナビの音声として流れ、その間は音楽の音が小さくなります。")
@@ -202,7 +264,8 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
         refreshers += { camRow.value("${UserCameraStore(this).count()} 件") }
 
         // ---- 地図データ
-        val map = ui.section(c, "地図データ", "地図 © OpenStreetMap contributors（ODbL）。施設・設備・ETC 専用の情報は OpenStreetMap の登録内容によります。")
+        val map = ui.section(c, "地図データ", "地図 © OpenStreetMap contributors（ODbL）。施設・設備・ETC 専用の情報は OpenStreetMap の登録内容によります。地図データは毎週新しい版が作られます。")
+        versionRow = ui.infoRow(map, "地図データの版（作成日時）", "読み込み中…")
         mapRow = ui.actionRow(map, "最新の地図データに更新", null) { SettingsDialogs.startDownload(this) }
         refreshers += { refreshMap() }
         ui.switchRow(map, "起動時に新しい地図データを確認する", "1 日 1 回。新しい版があればお知らせします（自動では更新しません）", prefs.autoCheckUpdate) {
@@ -258,6 +321,81 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
         ui.actionRow(ot, "このアプリについて", null) { showAbout() }.value("版 ${BuildConfig.VERSION_NAME}", SettingsUi.C_SUB)
     }
 
+    /** スペアナの表示の種類・色を変えた（スマホと車の画面にはすぐ反映される） */
+    private fun spectrumChanged() {
+        AppSettings.changed(this)
+        spectrumRefresh?.invoke()
+    }
+
+    /**
+     * 渋滞情報（リアルタイム）: 取得元（おすすめは TomTom）・API キー（取り方の手順つき）・キーの確認・取得間隔・通信量・いまの状態。
+     * API キーは利用者が自分で作って入れる（v2.5 から開発者向け設定から移した）。
+     */
+    private fun buildTraffic(c: android.widget.LinearLayout) {
+        val tr = ui.section(
+            c, "渋滞情報（リアルタイム）",
+            "高速道路を走行中だけ取得し、到着予定時刻・左の帯の色（赤＝渋滞）・施設の行の「渋滞」「事故」「通行止」に反映します。" +
+                "使うには取得元の API キー（無料で作れます。おすすめは TomTom）が必要です。キーは端末の中にだけ保存します。"
+        )
+        val keys = SettingsDialogs.PROVIDERS.map { it.first }
+        val labels = SettingsDialogs.PROVIDERS.map { it.second }.toTypedArray()
+        lateinit var keyRow: SettingsUi.Row
+        lateinit var guideRow: SettingsUi.Row
+        lateinit var testRow: SettingsUi.Row
+        lateinit var intervalRow: SettingsUi.Row
+        lateinit var shortRow: SettingsUi.Row
+        val update = {
+            val p = prefs.trafficProvider
+            val on = p != "none"
+            keyRow.value(SettingsDialogs.maskedKey(prefs.trafficKey(p)), if (prefs.trafficKey(p).isBlank()) SettingsUi.C_WARN else SettingsUi.C_OK)
+            guideRow.summary(if (on) "${SettingsDialogs.providerName(p)} の開発者サイトでキーを作る手順" else "おすすめの TomTom の手順を表示します")
+            for (r in listOf(keyRow, testRow, intervalRow, shortRow)) r.enabled(on)
+        }
+        ui.choiceRow(tr, "取得元", labels, keys.indexOf(prefs.trafficProvider).coerceAtLeast(0)) { which ->
+            prefs.trafficProvider = keys[which]
+            EngineHost.refreshTraffic()
+            update()
+            if (keys[which] != "none" && prefs.trafficKey(keys[which]).isBlank()) {
+                // キーがまだ無いなら、続けて入れてもらう
+                SettingsDialogs.editKey(this, keys[which]) { update() }
+            }
+        }
+        keyRow = ui.actionRow(tr, "API キー", "取得元の開発者サイトで作ったキーを貼り付けます") {
+            SettingsDialogs.editKey(this, prefs.trafficProvider) { update() }
+        }
+        guideRow = ui.actionRow(tr, "API キーの取り方", null) { SettingsDialogs.showKeyGuide(this, prefs.trafficProvider) }
+        testRow = ui.actionRow(tr, "キーを確かめる", "1 回だけ問い合わせて、キーが使えるか確かめます") {
+            testRow.value("確かめています…", SettingsUi.C_SUB)
+            SettingsDialogs.testKey(this, prefs.trafficProvider, prefs.trafficKey(prefs.trafficProvider)) { ok, msg ->
+                testRow.value(msg, if (ok) SettingsUi.C_OK else SettingsUi.C_DANGER)
+            }
+        }
+        val ivals = SettingsDialogs.INTERVALS
+        intervalRow = ui.choiceRow(tr, "取得間隔", ivals.map { it.second }.toTypedArray(), ivals.indexOfFirst { it.first == prefs.trafficIntervalMin }.coerceAtLeast(0)) {
+            prefs.trafficIntervalMin = ivals[it].first
+            EngineHost.refreshTraffic()
+        }
+        shortRow = ui.switchRow(tr, "通信量を抑える", "問い合わせる範囲を前方 60km までにします（通常は 100km）", prefs.trafficShortRange) {
+            prefs.trafficShortRange = it
+        }
+        val status = ui.infoRow(tr, "いまの状態", null)
+        refreshers += {
+            update()
+            val t = EngineHost.latest?.traffic
+            val p = prefs.trafficProvider
+            val message = t?.message
+            val fetched = t?.fetchedWallMs
+            val text = when {
+                p == "none" -> "使っていません（自車の走行から渋滞を推定）"
+                prefs.trafficKey(p).isBlank() -> "API キーを入れると使えます"
+                message != null -> message
+                fetched != null -> "${Formats.clock(fetched)} に取得（${t.provider ?: SettingsDialogs.providerName(p)}）"
+                else -> "高速道路を走行中に取得します"
+            }
+            status.value(text, SettingsUi.C_SUB)
+        }
+    }
+
     private fun layoutIndex(): Int = when {
         !prefs.autoSwitch -> 2
         prefs.highwayLayout == DualLayout.HIGHWAY.name -> 1
@@ -274,6 +412,12 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
             row.summary(SettingsDialogs.syncProgress())
         }
         SettingsDialogs.mapSummary(this) { row.value(it) }
+        versionRow?.let { v ->
+            SettingsDialogs.mapVersion(this) { text, note ->
+                v.value(text, SettingsUi.C_TITLE)
+                v.summary(note)
+            }
+        }
     }
 
     private fun mark(row: SettingsUi.Row, ok: Boolean, partial: String? = null) {

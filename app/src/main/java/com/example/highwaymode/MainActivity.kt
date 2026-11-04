@@ -39,6 +39,7 @@ import com.example.spectrum.MediaTracker
 import com.example.spectrum.NowPlaying
 import com.example.spectrum.PlayerView
 import com.example.spectrum.SpectrumEngine
+import com.example.spectrum.SpectrumStyle
 
 /**
  * スマホの画面。Spectrum（音楽）とハイウェイモードを 1 つにまとめたもの。
@@ -81,6 +82,12 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, ModeBarView.Callbac
         player = PlayerView(this)
         // 何もない場所を 20 回続けてタップ → パスワードを聞いて開発者向け設定（Spectrum の診断画面もここから）
         player.onSecretTap = { DevAccess.prompt(this) }
+        // スペアナを長押し → 表示の種類を順に切り替える（LED → バー → … → メーター）
+        player.onSpectrumLongPress = {
+            val next = (SpectrumStyle.visual + 1) % SpectrumStyle.VISUAL_LABELS.size
+            SpectrumStyle.setVisual(this, next)
+            Toast.makeText(this, "スペアナ: ${SpectrumStyle.VISUAL_LABELS[next]}（長押しで切り替え）", Toast.LENGTH_SHORT).show()
+        }
         bar = ModeBarView(this)
         bar.callbacks = this
         dual = DualView(this, player, panel, bar)

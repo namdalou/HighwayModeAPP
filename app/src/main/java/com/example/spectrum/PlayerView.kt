@@ -4,9 +4,12 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Canvas
 import android.os.SystemClock
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.widget.Toast
+import kotlin.math.abs
 
 /**
  * スマホの音楽画面。
@@ -59,6 +62,19 @@ class PlayerView(context: Context) : View(context) {
      */
     var onSecretTap: (() -> Unit)? = null
 
+    /** スペアナの場所を長押ししたとき（統合したアプリでは表示の種類を順に切り替える。未設定なら何もしない） */
+    var onSpectrumLongPress: (() -> Unit)? = null
+    private var downX = 0f
+    private var downY = 0f
+    private var longPressed = false
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private val longPress = Runnable {
+        longPressed = true
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        onSpectrumLongPress?.invoke()
+        invalidate()
+    }
+
     override fun onVisibilityAggregated(isVisible: Boolean) {
         super.onVisibilityAggregated(isVisible)
         setSpectrumInUse(isVisible && isAttachedToWindow)
@@ -72,6 +88,7 @@ class PlayerView(context: Context) : View(context) {
 
     override fun onDetachedFromWindow() {
         removeCallbacks(redraw)
+        removeCallbacks(longPress)
         setSpectrumInUse(false)
         super.onDetachedFromWindow()
     }
@@ -104,7 +121,28 @@ class PlayerView(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                downX = e.x
+                downY = e.y
+                longPressed = false
+                if (onSpectrumLongPress != null && renderer.isSpectrumAt(e.x, e.y)) {
+                    postDelayed(longPress, ViewConfiguration.getLongPressTimeout().toLong())
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (abs(e.x - downX) > touchSlop || abs(e.y - downY) > touchSlop) removeCallbacks(longPress)
+            }
+            MotionEvent.ACTION_CANCEL -> removeCallbacks(longPress)
+        }
         if (e.actionMasked == MotionEvent.ACTION_UP) {
+            removeCallbacks(longPress)
+            if (longPressed) {
+                // 長押しで表示を切り替えた: タップとしては数えない
+                longPressed = false
+                tapCount = 0
+                return true
+            }
             val handled = renderer.onTap(e.x, e.y)
             // ボタンやジャケット以外の場所の連続タップだけを数える(誤って再生操作しないように)
             if (!handled) countDiagnosticsTap() else tapCount = 0

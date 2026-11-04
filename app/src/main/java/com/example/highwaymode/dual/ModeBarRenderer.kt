@@ -63,6 +63,7 @@ class ModeBarRenderer(var density: Float) {
     private val cRed = 0xFFE53935.toInt()
     private val cOrange = 0xFFF08C00.toInt()
     private val cDarkRed = 0xFFB71C1C.toInt()
+    private val cNav = 0xFF1E6FD9.toInt()
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
@@ -276,6 +277,8 @@ class ModeBarRenderer(var density: Float) {
         // この方向に出口の無い IC（出口なし）より、降りられる施設を先に案内する
         val next = s.facilities.firstOrNull { it.type != FacilityType.CAMERA && !it.noExit }
             ?: s.facilities.firstOrNull { it.type != FacilityType.CAMERA }
+        // カーナビで降りる IC（20km 以内なら、次の施設より先に出す。ナビ中でなければ null）
+        val navExit = s.facilities.firstOrNull { it.navExit }?.takeIf { it.distanceM < 20_000 }
         val badge: String
         val badgeColor: Int
         val main: String
@@ -292,6 +295,12 @@ class ModeBarRenderer(var density: Float) {
                 badgeColor = cDarkRed
                 main = "${Formats.distance(closure.first)}先"
                 sub = closure.third?.take(16)
+            }
+            navExit != null -> {
+                badge = "降りる"
+                badgeColor = cNav
+                main = navExit.name.ifEmpty { navExit.displayName }
+                sub = Formats.distance(navExit.distanceM) + "  " + Formats.etaLabel(navExit.etaEpochMs)
             }
             jamD != null && jamL != null && jamD < 10_000 -> {
                 badge = "渋滞"

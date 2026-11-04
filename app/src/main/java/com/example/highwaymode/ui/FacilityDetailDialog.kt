@@ -25,6 +25,8 @@ object FacilityText {
             return out
         }
         if (f.noExit) out.add("出口" to "この方向には出口がありません（反対方向だけに出口のある IC）")
+        if (f.navExit) out.add("ナビ" to "Google マップの案内で、ここで降ります")
+        else f.navNote?.let { out.add("ナビ" to "Google マップの案内: ${it.removePrefix("→ ")}") }
         out.add((if (f.noExit) "通過予定" else "到着予定") to if (f.closedBefore) "手前に通行止めの情報あり（参考 ${Formats.clock(f.etaEpochMs)}）" else "${Formats.clock(f.etaEpochMs)}（${Formats.remaining(f.etaEpochMs)}）")
         if (f.jamBeforeM >= 200) out.add("手前の渋滞" to Formats.distance(f.jamBeforeM))
         f.trafficNote?.let { out.add("交通情報" to it) }

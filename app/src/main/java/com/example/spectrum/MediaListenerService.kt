@@ -111,6 +111,11 @@ class MediaListenerService : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
         sbn ?: return
         if (sbn.packageName == packageName) return
+        // ほかの機能（ナビの通知の読み取りなど）へも渡す
+        try {
+            NotificationHooks.onPosted?.invoke(this, sbn)
+        } catch (_: Exception) {
+        }
         val n = sbn.notification ?: return
         val ex = n.extras
         val title = ex?.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
@@ -145,6 +150,10 @@ class MediaListenerService : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification?) {
         sbn ?: return
+        try {
+            NotificationHooks.onRemoved?.invoke(sbn)
+        } catch (_: Exception) {
+        }
         MediaTracker.removeNotificationController(sbn.packageName)
         if (NowPlaying.source == "notification" && NowPlaying.sourcePackage == sbn.packageName) {
             if (!MediaTracker.hasCurrent) NowPlaying.clearAll()

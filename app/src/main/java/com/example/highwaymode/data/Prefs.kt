@@ -145,6 +145,11 @@ class Prefs(context: Context) {
         get() = sp.getInt(KEY_KEEP_SCREEN, 0).coerceIn(0, 2)
         set(v) = sp.edit().putInt(KEY_KEEP_SCREEN, v).apply()
 
+    /** Google マップのナビに合わせる（ナビの通知から、JCT の乗り換え先・降りる IC を読み取る） */
+    var navSync: Boolean
+        get() = sp.getBoolean(KEY_NAV_SYNC, true)
+        set(v) = sp.edit().putBoolean(KEY_NAV_SYNC, v).apply()
+
     /** 電池の節約（高速道路から離れている・停車中は GPS の間隔をあける）。オフならいつも毎秒測位 */
     var batterySaver: Boolean
         get() = sp.getBoolean(KEY_BATTERY_SAVER, true)
@@ -206,6 +211,7 @@ class Prefs(context: Context) {
         private const val KEY_ORIENTATION = "screen_orientation"
         private const val KEY_KEEP_SCREEN = "keep_screen_on"
         private const val KEY_BATTERY_SAVER = "battery_saver"
+        private const val KEY_NAV_SYNC = "nav_sync_google_maps"
 
         val DEFAULT_ENDPOINTS: List<String> = OverpassHttp.DEFAULT_ENDPOINTS
 
