@@ -7,7 +7,7 @@
 - Android アプリ「Spectrum ハイウェイ」。スマホと Android Auto（車の画面）に対応。
 - 音楽プレーヤー表示とスペクトラムアナライザーの **Spectrum** と、高速道路の前方の IC / JCT / SA / PA までの距離・到着予定時刻を出す **ハイウェイモード** を 1 つにしたもの。
 - 高速道路の外では Spectrum を全画面表示。高速道路に入ると自動で 2 画面（左 Spectrum : 右ハイウェイ = 4 : 5）。
-- 現在の版は **v2.5.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
+- 現在の版は **v2.6.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
 
 ## 利用者について
 
@@ -23,7 +23,7 @@
 | モジュール | 内容 |
 |---|---|
 | `:core` | Android に依存しない演算（純粋な Kotlin/JVM）。地図データ（HWDB）、道路グラフ、マップマッチング、前方経路（カーナビの案内に合わせる `route/NavGuide`）、到着予測、渋滞、オービス、エンジン統合（`HighwayEngine`）、電池の節約の判定（`PowerPolicy`）、画面の切替判定と区画割り（`dual/HighwayPresence`, `dual/DualGeometry`）。**JVM 上でテストできる** |
-| `:app` | Android アプリ。`com.example.spectrum`（Spectrum：音声解析 `SpectrumEngine`、音声の自動探索 `SessionProber`、描画 `PlayerRenderer` / `PlayerView`、スペアナの表示の種類ごとの描画 `SpectrumPainter`、ジャケットの色 `ArtPalette`、見た目の設定 `SpectrumStyle`、通知の受け渡し `NotificationHooks`）と `com.example.highwaymode`（スマホ画面、常駐サービス、`engine/EngineHost`、`car/DualCarScreen`（Android Auto）、`ui/PanelRenderer`（ハイウェイ側の描画）、`ui/SettingsActivity`（設定画面）・`ui/DevSettingsActivity`（開発者向け設定）・`ui/SpectrumPickers`（スペアナの見本・選ぶ画面）、`nav/NavNotifications`（Google マップのナビの通知の読み取り）） |
+| `:app` | Android アプリ。`com.example.spectrum`（Spectrum：音声解析 `SpectrumEngine`、音声の自動探索 `SessionProber`、描画 `PlayerRenderer` / `PlayerView`、スペアナの表示の種類ごとの描画 `SpectrumPainter`、ジャケットの色 `ArtPalette`、見た目の設定 `SpectrumStyle`、通知の受け渡し `NotificationHooks`、音楽の画面に出すカーナビの案内 `Guidance`）と `com.example.highwaymode`（スマホ画面、常駐サービス、`engine/EngineHost`、`car/DualCarScreen`（Android Auto）、`ui/PanelRenderer`（ハイウェイ側の描画）、`ui/SettingsActivity`（設定画面）・`ui/DevSettingsActivity`（開発者向け設定）・`ui/SpectrumPickers`（スペアナの見本・選ぶ画面）、`nav/NavNotifications`（Google マップのナビの通知の読み取り）） |
 | `:datatool` | PC・CI 用の地図データ（HWDB）作成ツール |
 
 ファイル構成の詳細は README の「ファイル構成」。
@@ -42,15 +42,19 @@
   - 読めない状態が続いたら付け直します（ウォッチドッグ）。
   - 音声セッションを知らせないアプリ（Amazon Music など）は、`SessionProber` が新しい番号から 8 刻みでさかのぼって音の大きさを測り、探します（録音はしない）。
 - **描画の軽さ**：スペアナの LED は 1 本 1 回の `drawRect`（BitmapShader）。動きは経過時間で計算します。ジャケットの縮小や色の計算は別スレッド。毎フレームの割り当てを避けてください。
-- **スペアナの表示の種類（v2.5）**：`SpectrumPainter` が 8 種類（`SpectrumStyle.VISUAL_*`：LED・なめらかなバー・ミラー・ライン・ドット・レトロ・アナログメーター 2 種）を描きます。音楽の画面（スマホ・車）と設定画面の見本（`SpectrumPreviewView`）で共用。
+- **スペアナの表示の種類（v2.5、v2.6 で作り直し）**：`SpectrumPainter` が 8 種類（`SpectrumStyle.VISUAL_*`：LED・なめらかなバー・ミラー・ライン・ドット・カーオーディオ（`VISUAL_RETRO` の番号）・アナログメーター（アンバー照明 `VISUAL_METER`・ブルー照明 `VISUAL_METER_DARK`））を描きます。音楽の画面（スマホ・車）と設定画面の見本（`SpectrumPreviewView`）で共用。
+  - v2.6：利用者の写真（2000 年代のカーオーディオ、Kenwood の MD/CD レシーバーの表示）に合わせて、LED（標準）以外は**表示窓**（`drawPanel`：紫がかった黒・左下の紫の光・ガラスの映り込み）の中に描きます。カーオーディオ（`drawCarAudio`）は `Canvas.skew` で傾けた細い段のバー（段の模様は 1 本 1 回）・ピンクのピーク・左の目盛り・下の映り込み（専用の段の模様で縮めて薄く）。ピーク・ブルー照明の針の色は `accentFor`（バーの色の反対側の色合い。青ならピンク）。音楽の画面の背景は `SpectrumPainter.screenBackground`（LED 以外は紫がかった暗い灰色）。
+  - メーターの針は `NEEDLE_K`・`NEEDLE_D`（約 30 rad/s・減衰比 0.7。約 0.07 秒で振れる。v2.5 は約 0.3 秒）。入力は帯の最大値と実効値を混ぜた値（`level`）。表示窓はメーターの大きさに合わせる（`meterWindow`）。
   - 模様・グラデーション・メーターの目盛り板は、区画・色・種類が変わったときだけ作り直します（作り直しの判断は数値の比較。文字列のキーを毎フレーム作らない）。目盛り板の古い画像は `recycle()` しない（描画中の画面が使っていることがある）。
   - 色は `SpectrumStyle.colorsFor`（帯ごとの下・上の色）→ `painter.setColors`。決まった色は `fixedColors`、ジャケットの色・カラーコードは `gradientFor`（その色を中ほどに、下を濃く・上を明るく、色合いを少しずらす）。ジャケットの代表色は `ArtPalette.dominant`（色合い 24 区分の重み付き。白黒は銀色）をジャケットの別スレッドで求めます。
   - 保存する番号（色 `bar_theme` の 0〜5、表示 `bar_visual`）は前の版と互換にしてあります。番号を並べ替えないでください（選ぶ画面の並びは `PICKER_ORDER`）。
   - 音楽の画面でスペアナを長押し（`PlayerView.onSpectrumLongPress`）すると表示の種類を順に切り替えます（20 回タップの数には入れない）。
+- **音楽の画面の配置（v2.6）**：スマホの縦画面（`portraitLayout`）と車の 2 画面の縦長の区画（`splitLayout` の stacked）は、**ジャケットの下にスペアナを置き、重ねません**（v2.5 まではジャケットの下半分に重ねていて、表示窓・消えている段がジャケットに被った）。ジャケットの大きさは区画の高さの約 56%。
 - **Google マップのナビ連携（v2.5）**：`MediaListenerService`（通知へのアクセス）が受け取った通知を `NotificationHooks` で `nav/NavNotifications` へ渡し、Google マップの「実行中」の通知から文字（extras と独自の表示 RemoteViews を組み立てた文字）を集めて `NavText.parse` で距離と案内の文にします（1.5 秒にまとめて読む）。
   - `EngineHost.setNavInstruction` → `HighwayEngine.setNavInstruction`。案内の文が変わったら前方経路を作り直し、`buildRoute` で `NavGuide.plan`（JCT の乗り換え先を `NavForkChooser` で選び直す）→ `NavGuide.match`（降りる IC）。降りる IC より先の施設は一覧に出しません。結果は `FacilityView.navExit` / `navNote` と `HighwaySnapshot.nav`（`NavView`）。
   - 照合は文を解釈せず、前方経路の施設名・分岐の先の道路名と路線番号・ランプの行き先が案内の文に含まれるかで決めます（言い回しの違いに強くするため）。通知の実際の形は実機で未確認なので、開発者向け設定の「Google マップのナビ連携（確認用）」で受け取った文字（部品の名前つき）を見てもらい、合わない言い回しがあれば `NavText` / `NavGuide` を直してください。
   - このアプリは Android Auto の `NavigationManager.navigationStarted()` を呼びません（呼ぶと、ナビ中のほかのアプリ（Google マップ）のナビが止められる可能性がある）。ナビ連携のため、今後も呼ばないでください。
+  - **音楽の画面の案内の帯（v2.6）**：`NavNotifications` が読んだ案内を `com.example.spectrum.Guidance` に入れ（`Prefs.navBanner`。経路合わせ `Prefs.navSync` とは別にオン・オフ）、`PlayerRenderer` がスペアナの区画の上を帯にして描きます（`guideSplit`・`drawGuidance`。一般道でも、スマホ・車の両方）。矢印は通知の大きなアイコン（1 色の図形なら白くする `maneuverIcon`）、無ければ案内の文から `Guidance.arrowFor` で推定して描く。帯のタップはスマホだけ Google マップを開く（`PlayerView.onGuideTap` → `NavNotifications.openNavApp`）。`NavNotifications.install` はエンジンの起動・`MainActivity`・`HighwayCarAppService` のどこから呼んでもよい（エンジンが動いていなくても帯を出すため）。
 - **電池**：`PowerPolicy` が GPS の間隔とセンサーの ON/OFF を決めます（高速道路上・近く・デモ・設定で節約オフのときは常に毎秒）。
 - **設定画面（v2.4、v2.5 で項目を追加）**：スマホの下部バーの［⋮］で `ui/SettingsActivity`（1 画面にまとめたもの。部品は `ui/SettingsUi`、ダイアログは `ui/SettingsDialogs`）。値は `data/Prefs` に保存し、選んだらすぐ反映（保存ボタンなし）。
   - v2.5 で、音声の読み取り（Shizuku。手順つき `SettingsDialogs.showShizukuGuide`）・渋滞情報（取得元・API キー・取り方の手順 `showKeyGuide`・キーの確認 `testKey`。おすすめは TomTom）・地図データの版（`mapVersion`）・Google マップのナビ連携を通常の設定画面に入れました。
@@ -68,6 +72,7 @@
   - v2.4 の作業環境では dl.google.com（Android SDK・Google Maven）につながらず、ルートの `build.gradle.kts` が AGP を読むため `./gradlew :core:test` もそのままでは動きませんでした。作業用フォルダ（リポジトリの外）に Gradle の小さなビルドを作り、`:core` はリポジトリのソースを指してテスト、`:app` は Maven Central の `org.robolectric:android-all:16-robolectric-13921718`（Android 16 のフレームワーク）と、androidx（Car App Library 1.7.0・lifecycle・core）・Shizuku・`R`・`BuildConfig` の代用品（使っている部分だけの Java のスタブ）で Kotlin をコンパイルして確認しました（この道具もリポジトリには入れていません）。
   - リポジトリの `.github/workflows/`（build-app・build-hwdb）は v2.4 の直前のコミットで消えていたので、v2.3 の内容のまま戻しました。
   - v2.5 も同じ方法（作業用フォルダの小さな Gradle のビルド）で `:core:test` と `:app` の Kotlin のコンパイルを確認しました。
+  - v2.6 では見た目の確認に、作業用フォルダで **Skia（Android と同じ描画エンジン）の JVM 版 Skiko**（Maven Central の `org.jetbrains.skiko:skiko-awt` と `skiko-awt-runtime-linux-x64`）の上に、`android.graphics`（Canvas・Paint・Bitmap・Shader・Path など）の代わりを書き、リポジトリの `PlayerRenderer.kt`・`SpectrumPainter.kt`・`SpectrumStyle.kt`・`ArtPalette.kt`・`Guidance.kt` をそのままコンパイルして PNG に描きました（`NowPlaying`・`SpectrumEngine` は代用品）。README の `docs/preview_v26_*.png` はこれで作ったものです（道具はリポジトリに入れていません）。Robolectric は依存の androidx.test が Google のサーバーにしか無く、この環境では使えませんでした。
 
 ## 守ること（重要）
 
@@ -78,9 +83,16 @@
 - 改行コードは `.gitattributes` で LF に統一しています（`*.bat` / `*.cmd` だけ CRLF）。
 - 新しい権限を追加したり、取得するデータを変えたりしたら、`docs/PRIVACY.md` も更新してください。
 
-## 実機で未確認の点（v2.5 時点）
+## 実機で未確認の点（v2.6 時点）
 
 利用者の実機での確認待ちです。報告があればここから調べてください。
+
+v2.6 で入れたもの:
+
+- カーオーディオ表示・表示窓・照明付きメーターの見た目と重さ（車の画面の 30fps。斜めのバーは ANTI_ALIAS で描くので少し重くなる）。写真の雰囲気に近いか（紫の強さ・段の細かさ・バーの明るさ）。
+- 針の速さ（約 0.07 秒）が速すぎないか・ちらつかないか。
+- 縦画面・車の 2 画面でジャケットが小さくなりすぎないか（区画の高さの約 56%）。
+- 音楽の画面の案内の帯: Google マップの通知の大きなアイコンが矢印の画像か（開発者向け設定の確認用の「矢印の画像: 読み取れた」）、一般道の案内の言い回しでの矢印の推定、距離の表示、帯のタップで Google マップが開くか。Android Auto 接続中もスマホに通知が出て帯が出るか。
 
 v2.5 で入れたもの:
 

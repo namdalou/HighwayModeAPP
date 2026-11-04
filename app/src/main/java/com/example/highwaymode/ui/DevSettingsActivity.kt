@@ -246,7 +246,8 @@ class DevSettingsActivity : Activity() {
             append("受信: ").append(if (NavNotifications.lastReadWallMs == 0L) "まだありません" else Formats.clock(NavNotifications.lastReadWallMs)).append('\n')
             append("ナビ中: ").append(if (NavNotifications.active) "はい" else "いいえ").append('\n')
             append("距離: ").append(NavNotifications.lastDistanceM?.let { Formats.distance(it) } ?: "読み取れず").append('\n')
-            append("案内: ").append(NavNotifications.lastText ?: "—").append("\n\n")
+            append("案内: ").append(NavNotifications.lastText ?: "—").append('\n')
+            append("矢印の画像: ").append(if (NavNotifications.lastIconOk) "読み取れた" else "読み取れず（案内の文から矢印を描く）").append("\n\n")
             append("照合: ").append(
                 when {
                     nav == null -> "なし（高速道路の外、または案内なし）"

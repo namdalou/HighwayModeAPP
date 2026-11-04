@@ -186,15 +186,20 @@ class PlayerRenderer {
 
     /**
      * 縦画面: 幅 240 固定、高さは実際の画面比率に合わせる(縦長スマホでも余白が出ないように)。
-     * 上に曲情報、中央にジャケット、下から中央の少し上までスペアナ、最下部に操作とシーク。
+     * 上に曲情報、その下にジャケット、ジャケットの下にスペアナ（重ねない）、最下部に操作とシーク。
+     * v2.5 まではジャケットの下半分にスペアナを重ねていたが、消えている段・表示窓を描く表示ではジャケットに被るので、
+     * v2.6 から重ねずに上下に並べる（ジャケットの大きさは画面の高さに合わせる）。
      */
     private fun portraitLayout(vh: Float): Layout {
-        val artSize = 160f
-        val artCy = vh * 0.47f
+        val midTop = 100f
+        val midBottom = vh - 74f
+        val gap = 10f
+        val artSize = ((midBottom - midTop - gap) * 0.56f).coerceIn(96f, 168f)
+        val specTop = midTop + artSize + gap
         return Layout(
             vw = 240f, vh = vh,
-            art = RectF(120f - artSize / 2, artCy - artSize / 2, 120f + artSize / 2, artCy + artSize / 2),
-            spec = RectF(10f, vh * 0.45f, 230f, vh - 74f),
+            art = RectF(120f - artSize / 2, midTop, 120f + artSize / 2, midTop + artSize),
+            spec = RectF(10f, specTop, 230f, midBottom),
             specOnly = RectF(10f, 40f, 230f, vh - 74f),
             textX = 34f, textRight = 228f, iconX = 12f,
             titleY = 34f, albumY = 60f, artistY = 86f,
@@ -215,7 +220,7 @@ class PlayerRenderer {
      * 2 画面（車の画面・スマホ横画面の左側。Spectrum 4 : ハイウェイ 5）用: 幅 400 固定、高さは区画の比率に合わせる。
      * 上に曲名・アルバム名・アーティスト名（アイコン付き。運転中でも読めるよう大きく）、
      * 中段にジャケットとスペアナ、下に操作ボタンとシーク。
-     * 中段に高さがあるとき（縦長の区画）は、従来の縦画面と同じくジャケットの下半分にスペアナを重ねる。
+     * 中段に高さがあるとき（縦長の区画）は、ジャケットを上に、その下にスペアナを置く（v2.6 から重ねない）。
      */
     private fun splitLayout(vh: Float): Layout {
         val roomy = vh >= 290f
@@ -238,10 +243,10 @@ class PlayerRenderer {
         val spec: RectF
         val stacked = midH >= 230f
         if (stacked) {
-            // 縦長: ジャケットを中央に、下半分にスペアナを重ねる（従来の縦画面と同じ見え方）
-            val a = min(midH - 60f, 210f)
+            // 縦長: ジャケットを上の中央に、その下にスペアナ（重ねない）
+            val a = ((midH - 10f) * 0.56f).coerceIn(90f, 210f)
             art = RectF(200f - a / 2, midTop, 200f + a / 2, midTop + a)
-            spec = RectF(12f, midTop + a * 0.5f, 388f, midBottom)
+            spec = RectF(12f, midTop + a + 10f, 388f, midBottom)
         } else {
             // 横長: 左にジャケット、右にスペアナ
             val a = min(midH, 172f).coerceAtLeast(40f)
@@ -280,6 +285,9 @@ class PlayerRenderer {
     /** ジャケット(アルバムアート)がタップされたときの処理 */
     var onArtTap: (() -> Unit)? = null
 
+    /** カーナビの案内の帯がタップされたときの処理（スマホではナビのアプリを開く。車の画面では何もしない） */
+    var onGuideTap: (() -> Unit)? = null
+
     private val n = SpectrumEngine.BANDS
     private val target = FloatArray(n)
     private val level = FloatArray(n)
@@ -299,6 +307,8 @@ class PlayerRenderer {
     private var bgTop = Float.NaN
     private var bgLeft = Float.NaN
     private var bgHeight = -1
+    private var bgStyle = -1
+    private val bgColors = IntArray(2)
 
     /** スペアナの表示（LED・バー・ライン・ドット・レトロ・メーターなど）を描く部品 */
     private val painter = SpectrumPainter(n)
@@ -444,12 +454,16 @@ class PlayerRenderer {
     fun draw(c: Canvas, left: Int, top: Int, w: Int, h: Int) {
         val l = left.toFloat()
         val t = top.toFloat()
-        if (t != bgTop || l != bgLeft || h != bgHeight) {
+        // 背景: 表示の種類に合わせる（カーオーディオ系は、表示窓が引き立つ紫がかった暗い灰色）
+        val style = SpectrumStyle.visual
+        if (t != bgTop || l != bgLeft || h != bgHeight || style != bgStyle) {
             bgTop = t
             bgLeft = l
             bgHeight = h
+            bgStyle = style
+            SpectrumPainter.screenBackground(style, bgColors)
             bg.shader = LinearGradient(
-                l, t, l, t + h, Color.rgb(14, 42, 58), Color.rgb(4, 12, 20), Shader.TileMode.CLAMP
+                l, t, l, t + h, bgColors[0], bgColors[1], Shader.TileMode.CLAMP
             )
         }
         c.drawRect(l, t, l + w, t + h, bg)
@@ -481,25 +495,193 @@ class PlayerRenderer {
         c.save()
         c.translate(ox, oy)
         c.scale(scale, scale)
+        // カーナビの案内（ナビ中）: スペアナの区画の上の部分に帯を出す（一般道でも）
+        guideShown = Guidance.active
         if (NowPlaying.hasInfo) {
-            drawArt(c)                         // スペアナより先に描く(縦画面では重なる)
-            drawSpectrum(c, lay.spec, withArt = true)
+            drawArt(c)
+            drawSpectrum(c, guideSplit(lay.spec), withArt = true)
             drawTexts(c)
             drawControls(c)
             if (NowPlaying.durationMs > 0 || NowPlaying.state != null) drawSeek(c)
         } else {
             // 曲情報が取れないとき: スペアナを大きく表示
-            drawSpectrum(c, lay.specOnly, withArt = false)
+            drawSpectrum(c, guideSplit(lay.specOnly), withArt = false)
             drawControls(c)
             drawHint(c)
         }
+        if (guideShown) drawGuidance(c, guideRect)
         c.restore()
+    }
+
+    // ---------------------------------------------------------------- カーナビの案内の帯
+
+    private var guideShown = false
+    private val guideRect = RectF()
+    private val guideSpec = RectF()
+    private val guidePath = Path()
+    private var gkVersion = -1
+    private var gkAvail = -1f
+    private var gkLine = ""
+    private var gkDist = ""
+    private var gkTwo = false
+    private var gkSize = -1f
+
+    /** 案内を出すときは、スペアナの区画の上を帯に使い、残りをスペアナにする */
+    private fun guideSplit(spec: RectF): RectF {
+        if (!guideShown) return spec
+        val bh = (spec.height() * 0.3f).coerceIn(28f, 40f)
+        guideRect.set(spec.left, spec.top, spec.right, spec.top + bh)
+        guideSpec.set(spec.left, spec.top + bh + 5f, spec.right, spec.bottom)
+        return guideSpec
+    }
+
+    private fun drawGuidance(c: Canvas, r: RectF) {
+        // 地の色: 濃い緑（Google マップの案内の色）と、上側の細い光
+        shape.style = Paint.Style.FILL
+        shape.color = Color.rgb(14, 102, 56)
+        c.drawRoundRect(r, 6f, 6f, shape)
+        shape.color = Color.argb(40, 255, 255, 255)
+        c.drawRect(r.left + 5f, r.top + 0.8f, r.right - 5f, r.top + 1.5f, shape)
+        // 矢印（ナビアプリの画像。無ければ案内の文から描く）
+        val ih = r.height() - 8f
+        iconRect.set(r.left + 5f, r.top + 4f, r.left + 5f + ih, r.bottom - 4f)
+        val icon = Guidance.icon
+        if (icon != null && !icon.isRecycled) {
+            artSrc.set(0, 0, icon.width, icon.height)
+            c.drawBitmap(icon, artSrc, iconRect, bmpPaint)
+        } else {
+            drawArrow(c, iconRect, Guidance.arrow)
+        }
+        val x = iconRect.right + 7f
+        val avail = r.right - 6f - x
+        // 2 段（距離の下に案内の文）にするか: 区画が横に長くなければ 2 段
+        val two = r.width() / r.height() < 7.5f
+        val big = r.height() * (if (two) 0.40f else 0.5f)
+        val small = r.height() * (if (two) 0.30f else 0.36f)
+        if (Guidance.version != gkVersion || avail != gkAvail || two != gkTwo || big != gkSize) {
+            gkVersion = Guidance.version
+            gkAvail = avail
+            gkTwo = two
+            gkSize = big
+            gkDist = Guidance.distanceM?.let { Guidance.distanceLabel(it) } ?: ""
+            text.typeface = BOLD
+            text.textSize = big
+            val distW = if (gkDist.isEmpty()) 0f else text.measureText(gkDist) + 6f
+            text.typeface = Typeface.DEFAULT
+            text.textSize = small
+            val lineAvail = if (two) avail else avail - distW
+            gkLine = TextUtils.ellipsize(Guidance.text.orEmpty(), text, lineAvail.coerceAtLeast(10f), TextUtils.TruncateAt.END).toString()
+        }
+        text.textAlign = Paint.Align.LEFT
+        text.color = Color.WHITE
+        if (two) {
+            text.typeface = BOLD
+            text.textSize = big
+            val y1 = r.top + r.height() * 0.46f
+            c.drawText(if (gkDist.isEmpty()) Guidance.source else gkDist, x, y1, text)
+            text.typeface = Typeface.DEFAULT
+            text.textSize = small
+            text.color = Color.rgb(222, 245, 230)
+            c.drawText(gkLine, x, r.top + r.height() * 0.84f, text)
+        } else {
+            val base = r.centerY() + big * 0.36f
+            var xx = x
+            if (gkDist.isNotEmpty()) {
+                text.typeface = BOLD
+                text.textSize = big
+                c.drawText(gkDist, xx, base, text)
+                xx += text.measureText(gkDist) + 6f
+            }
+            text.typeface = Typeface.DEFAULT
+            text.textSize = small
+            text.color = Color.rgb(222, 245, 230)
+            c.drawText(gkLine, xx, base, text)
+        }
+        text.typeface = Typeface.DEFAULT
+    }
+
+    /** 白い矢印（Guidance.ARROW_*）を box の中に描く */
+    private fun drawArrow(c: Canvas, box: RectF, kind: Int) {
+        val s = min(box.width(), box.height())
+        val l = box.centerX() - s / 2f
+        val t = box.centerY() - s / 2f
+        fun X(f: Float) = l + s * f
+        fun Y(f: Float) = t + s * f
+        shape.color = Color.WHITE
+        shape.style = Paint.Style.STROKE
+        shape.strokeWidth = s * 0.15f
+        shape.strokeCap = Paint.Cap.ROUND
+        shape.strokeJoin = Paint.Join.ROUND
+        val p = guidePath
+        p.reset()
+        // 矢印の先（三角）は塗りで描く
+        var hx = 0f; var hy = 0f; var dx = 0f; var dy = -1f
+        when (kind) {
+            Guidance.ARROW_RIGHT, Guidance.ARROW_LEFT -> {
+                val sg = if (kind == Guidance.ARROW_RIGHT) 1f else -1f
+                p.moveTo(X(0.5f - 0.18f * sg), Y(0.92f))
+                p.lineTo(X(0.5f - 0.18f * sg), Y(0.42f))
+                p.lineTo(X(0.5f + 0.2f * sg), Y(0.42f))
+                hx = X(0.5f + 0.38f * sg); hy = Y(0.42f); dx = sg; dy = 0f
+            }
+            Guidance.ARROW_SLIGHT_RIGHT, Guidance.ARROW_SLIGHT_LEFT -> {
+                val sg = if (kind == Guidance.ARROW_SLIGHT_RIGHT) 1f else -1f
+                p.moveTo(X(0.5f - 0.12f * sg), Y(0.92f))
+                p.lineTo(X(0.5f - 0.12f * sg), Y(0.56f))
+                p.lineTo(X(0.5f + 0.16f * sg), Y(0.28f))
+                hx = X(0.5f + 0.3f * sg); hy = Y(0.14f); dx = 0.707f * sg; dy = -0.707f
+            }
+            Guidance.ARROW_UTURN -> {
+                // 日本の U ターン（右回り）: 左を上がって右へ回り、右を下がる
+                p.moveTo(X(0.3f), Y(0.92f))
+                p.lineTo(X(0.3f), Y(0.4f))
+                p.quadTo(X(0.3f), Y(0.12f), X(0.52f), Y(0.12f))
+                p.quadTo(X(0.74f), Y(0.12f), X(0.74f), Y(0.4f))
+                p.lineTo(X(0.74f), Y(0.52f))
+                hx = X(0.74f); hy = Y(0.72f); dx = 0f; dy = 1f
+            }
+            Guidance.ARROW_DEST -> {
+                // 目的地: 旗
+                p.moveTo(X(0.32f), Y(0.92f))
+                p.lineTo(X(0.32f), Y(0.1f))
+                c.drawPath(p, shape)
+                shape.style = Paint.Style.FILL
+                p.reset()
+                p.moveTo(X(0.32f), Y(0.1f))
+                p.lineTo(X(0.82f), Y(0.26f))
+                p.lineTo(X(0.32f), Y(0.44f))
+                p.close()
+                c.drawPath(p, shape)
+                shape.style = Paint.Style.FILL
+                return
+            }
+            else -> {
+                // 直進（方向が分からないときも）
+                p.moveTo(X(0.5f), Y(0.92f))
+                p.lineTo(X(0.5f), Y(0.36f))
+                hx = X(0.5f); hy = Y(0.1f); dx = 0f; dy = -1f
+            }
+        }
+        c.drawPath(p, shape)
+        // 先の三角
+        shape.style = Paint.Style.FILL
+        val hl = s * 0.3f
+        val hw = s * 0.24f
+        val bx = hx - dx * hl
+        val by = hy - dy * hl
+        p.reset()
+        p.moveTo(hx, hy)
+        p.lineTo(bx - dy * hw, by + dx * hw)
+        p.lineTo(bx + dy * hw, by - dx * hw)
+        p.close()
+        c.drawPath(p, shape)
     }
 
     fun onTap(x: Float, y: Float): Boolean {
         val vx = (x - ox) / scale
         val vy = (y - oy) / scale
         when {
+            guideShown && guideRect.contains(vx, vy) -> onGuideTap?.invoke()
             lay.prev.contains(vx, vy) -> NowPlaying.prev()
             lay.play.contains(vx, vy) -> NowPlaying.playPause()
             lay.next.contains(vx, vy) -> NowPlaying.next()
@@ -576,20 +758,12 @@ class PlayerRenderer {
             }
         }
 
-        // 描く区画: メーターは、ジャケットに重なるならジャケットの下に置く（目盛り板でジャケットを隠さない）
+        // 描く区画（v2.6 から、どの画面の配置でもジャケットとは重ならない。念のため重なるときは表示窓を描かない）
         specRect.set(r)
         var panel = true
         if (withArt) {
             val art = lay.art
-            val overlaps = r.top < art.bottom && r.bottom > art.top && r.left < art.right && r.right > art.left
-            if (overlaps) {
-                if (style == SpectrumStyle.VISUAL_METER || style == SpectrumStyle.VISUAL_METER_DARK) {
-                    val below = r.bottom - (art.bottom + 4f)
-                    if (below >= 34f) specRect.top = art.bottom + 4f
-                } else {
-                    panel = false
-                }
-            }
+            if (r.top < art.bottom && r.bottom > art.top && r.left < art.right && r.right > art.left) panel = false
         }
         painter.draw(c, specRect, style, visArr, peak, scale, lay.segUnit, panel, f60 / 60f)
 
@@ -614,6 +788,7 @@ class PlayerRenderer {
         val vy = (y - oy) / scale
         val r = if (NowPlaying.hasInfo) lay.spec else lay.specOnly
         if (!r.contains(vx, vy)) return false
+        if (guideShown && guideRect.contains(vx, vy)) return false
         // ジャケットのタップ（音楽アプリを開く）と重なる場所は除く
         return !(NowPlaying.hasInfo && lay.art.contains(vx, vy))
     }

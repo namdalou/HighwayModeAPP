@@ -64,6 +64,13 @@ class PlayerView(context: Context) : View(context) {
 
     /** スペアナの場所を長押ししたとき（統合したアプリでは表示の種類を順に切り替える。未設定なら何もしない） */
     var onSpectrumLongPress: (() -> Unit)? = null
+
+    /** カーナビの案内の帯をタップしたとき（統合したアプリではナビのアプリを開く） */
+    var onGuideTap: (() -> Unit)?
+        get() = renderer.onGuideTap
+        set(v) {
+            renderer.onGuideTap = v
+        }
     private var downX = 0f
     private var downY = 0f
     private var longPressed = false

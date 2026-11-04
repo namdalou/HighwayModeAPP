@@ -7,6 +7,7 @@ import androidx.car.app.CarAppService
 import androidx.car.app.Session
 import androidx.car.app.validation.HostValidator
 import com.example.highwaymode.data.AppSettings
+import com.example.highwaymode.nav.NavNotifications
 import com.example.spectrum.MediaListenerService
 import com.example.spectrum.MediaTracker
 import com.example.spectrum.NowPlaying
@@ -27,6 +28,8 @@ class HighwayCarAppService : CarAppService() {
         NowPlaying.init(this)
         SpectrumEngine.init(this)
         MediaTracker.start(this)
+        // Google マップのナビの通知を読む（音楽の画面の案内の帯・前方の経路合わせ）
+        NavNotifications.install(this)
         if (!NowPlaying.listenerConnected) {
             try {
                 NotificationListenerService.requestRebind(ComponentName(this, MediaListenerService::class.java))
