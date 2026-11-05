@@ -155,6 +155,14 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_NAV_BANNER, true)
         set(v) = sp.edit().putBoolean(KEY_NAV_BANNER, v).apply()
 
+    /**
+     * 車の画面: 右上のボタンが出たときに一覧を下げる量を足す（0 = 自動、1 = 少し多め +16dp、2 = 多め +32dp）。
+     * ボタンの下端を車（Android Auto の版）が正しく知らせてこないときに使う（v2.6.1）
+     */
+    var stripExtra: Int
+        get() = sp.getInt(KEY_STRIP_EXTRA, 0).coerceIn(0, 2)
+        set(v) = sp.edit().putInt(KEY_STRIP_EXTRA, v.coerceIn(0, 2)).apply()
+
     /** 電池の節約（高速道路から離れている・停車中は GPS の間隔をあける）。オフならいつも毎秒測位 */
     var batterySaver: Boolean
         get() = sp.getBoolean(KEY_BATTERY_SAVER, true)
@@ -218,6 +226,7 @@ class Prefs(context: Context) {
         private const val KEY_BATTERY_SAVER = "battery_saver"
         private const val KEY_NAV_SYNC = "nav_sync_google_maps"
         private const val KEY_NAV_BANNER = "nav_banner_music"
+        private const val KEY_STRIP_EXTRA = "car_strip_extra"
 
         val DEFAULT_ENDPOINTS: List<String> = OverpassHttp.DEFAULT_ENDPOINTS
 

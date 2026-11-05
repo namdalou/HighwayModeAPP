@@ -49,6 +49,7 @@ import com.example.spectrum.PlayerRenderer
 import com.example.spectrum.SpectrumEngine
 import kotlin.math.abs
 import kotlin.math.exp
+import kotlin.math.max
 
 /**
  * 車の画面（Android Auto）。ナビ用テンプレートの地図面に、Spectrum とハイウェイモードを描く。
@@ -96,6 +97,18 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         private const val STRIP_HIDE_MS = 10_000L
         /** 一覧をボタンの下へずらす・戻す動きの時定数（約 0.2 秒で動き終わる） */
         private const val SHIFT_TAU_MS = 70.0
+
+        /**
+         * 右上のボタンの下端の見積もり [dp]（上の余白 12 ＋ ボタン 60 ＋ 一覧との間 8）。
+         * 車によっては Android Auto が知らせる表示範囲の上端がボタンの下端より小さく、
+         * その分だけ下げると一覧がボタンに重なる（v2.6 まで）。知らせてくる値とこの見積もりの大きいほうまで下げる
+         */
+        private const val STRIP_BOTTOM_DP = 80f
+
+        /** 確認用（開発者向け設定）: 車の画面の大きさ・Android Auto が知らせた表示範囲・一覧を下げた量 */
+        @Volatile
+        var areaInfo: String = "まだ車の画面を表示していません"
+            private set
     }
 
     private val prefs = Prefs(carContext)
@@ -193,6 +206,8 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
 
     /** 最後に読んだ設定の版（スマホの設定画面で変えたら読み直す） */
     private var settingsVersion = AppSettings.version
+    /** 右上のボタンが出たときに一覧を下げる量に足す分 [dp]（設定。0 / 16 / 32） */
+    @Volatile private var stripExtraDp = prefs.stripExtra * 16f
 
     /** 表示の設定を読み直す（メインスレッド） */
     private fun reloadSettings() {
@@ -200,6 +215,7 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         panel.displayMode = prefs.displayMode
         panel.showCamerasInList = prefs.camerasInList
         autoSwitch = prefs.autoSwitch
+        stripExtraDp = prefs.stripExtra * 16f
         panelInvalid = true
     }
 
@@ -532,8 +548,9 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
                 targetH = 0f
             }
             v.top > 0 -> {
+                // ボタンの下端まで下げる: 知らせてきた表示範囲の上端・安定した範囲の上端・ボタンの大きさの見積もりの最大
                 reserveW = stripWidthEstimate(w)
-                targetH = v.top.toFloat()
+                targetH = max(max(v.top.toFloat(), if (sCopy.isEmpty) 0f else sCopy.top.toFloat()), stripBottomEstimate())
             }
             hostReportsStrip -> {
                 reserveW = 0f
@@ -546,6 +563,13 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         }
         val shiftH = animateShift(targetH, now)
         val shifting = shiftH != targetH
+        if (now - areaInfoAt > 1000L) {
+            areaInfoAt = now
+            areaInfo = "画面 ${w.toInt()}×${h.toInt()}・密度 ${"%.2f".format(density)}\n" +
+                "表示範囲 ${if (v.isEmpty) "（知らせなし）" else "${v.left},${v.top},${v.right},${v.bottom}"}\n" +
+                "安定した範囲 ${if (sCopy.isEmpty) "（知らせなし）" else "${sCopy.left},${sCopy.top},${sCopy.right},${sCopy.bottom}"}\n" +
+                "ボタン ${if (stripUp) "表示中" else "隠れている"}・一覧を下げる量 ${targetH.toInt()}px（見積もり ${stripBottomEstimate().toInt()}px）"
+        }
         if (reserveW != panel.headerRightReserve || shiftH != panel.topRightReserveH) {
             panel.headerRightReserve = reserveW
             panel.topRightReserveH = shiftH
@@ -602,6 +626,11 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         shiftShownH = if (abs(diff) < 1f) target else shiftShownH + diff * (1f - exp(-dt / SHIFT_TAU_MS).toFloat())
         return shiftShownH
     }
+
+    private var areaInfoAt = 0L
+
+    /** 右上のボタンの下端の見積もり [px]（設定で足す分を含む） */
+    private fun stripBottomEstimate(): Float = (STRIP_BOTTOM_DP + stripExtraDp) * density
 
     /**
      * 右上のボタン列のおおよその幅。Android Auto は幅の広い画面では文字、狭い画面ではアイコンで出す

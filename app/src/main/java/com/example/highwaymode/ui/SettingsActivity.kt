@@ -288,6 +288,14 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
             if (bad.isEmpty()) run.value("問題ありません", SettingsUi.C_OK)
             else run.value("確認が必要: " + bad.joinToString("・") { it.title }, SettingsUi.C_WARN)
         }
+        ui.choiceRow(
+            aa, "右上のボタンが出たときに一覧を下げる量",
+            arrayOf("自動（標準）", "少し多め", "多め"), prefs.stripExtra,
+            "車の画面で、ボタンとハイウェイの一覧が重なるときは「少し多め」「多め」に"
+        ) {
+            prefs.stripExtra = it
+            AppSettings.changed(this)
+        }
         ui.switchRow(
             aa, "電池の節約",
             "高速道路から離れているときや停車中は、位置情報の取得を控えます（高速道路の近くでは毎秒）。オフにすると、いつも毎秒取得します。",
