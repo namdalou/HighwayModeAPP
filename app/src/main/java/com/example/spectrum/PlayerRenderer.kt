@@ -454,7 +454,7 @@ class PlayerRenderer {
     fun draw(c: Canvas, left: Int, top: Int, w: Int, h: Int) {
         val l = left.toFloat()
         val t = top.toFloat()
-        // 背景: 表示の種類に合わせる（カーオーディオ系は、表示窓が引き立つ紫がかった暗い灰色）
+        // 背景（v2.8 から、どの表示の種類も同じ）
         val style = SpectrumStyle.visual
         if (t != bgTop || l != bgLeft || h != bgHeight || style != bgStyle) {
             bgTop = t
@@ -499,13 +499,13 @@ class PlayerRenderer {
         guideShown = Guidance.active
         if (NowPlaying.hasInfo) {
             drawArt(c)
-            drawSpectrum(c, guideSplit(lay.spec), withArt = true)
+            drawSpectrum(c, guideSplit(lay.spec))
             drawTexts(c)
             drawControls(c)
             if (NowPlaying.durationMs > 0 || NowPlaying.state != null) drawSeek(c)
         } else {
             // 曲情報が取れないとき: スペアナを大きく表示
-            drawSpectrum(c, guideSplit(lay.specOnly), withArt = false)
+            drawSpectrum(c, guideSplit(lay.specOnly))
             drawControls(c)
             drawHint(c)
         }
@@ -725,9 +725,8 @@ class PlayerRenderer {
 
     /**
      * スペアナ: 帯ごとの高さ・ピークの動き（経過時間で計算）を求めて、設定の表示の種類で描く（[SpectrumPainter]）。
-     * @param withArt ジャケットと同じ画面に描く（縦長の画面では、ジャケットの下半分に重なる）
      */
-    private fun drawSpectrum(c: Canvas, r: RectF, withArt: Boolean) {
+    private fun drawSpectrum(c: Canvas, r: RectF) {
         val st = SpectrumEngine.status
         if (st != SpectrumEngine.Status.RUNNING) target.fill(0f)
 
@@ -758,14 +757,10 @@ class PlayerRenderer {
             }
         }
 
-        // 描く区画（v2.6 から、どの画面の配置でもジャケットとは重ならない。念のため重なるときは表示窓を描かない）
+        // 描く区画（v2.6 から、どの画面の配置でもジャケットとは重ならない）
         specRect.set(r)
-        var panel = true
-        if (withArt) {
-            val art = lay.art
-            if (r.top < art.bottom && r.bottom > art.top && r.left < art.right && r.right > art.left) panel = false
-        }
-        painter.draw(c, specRect, style, visArr, peak, scale, lay.segUnit, panel, f60 / 60f)
+        // メーターは、高さに伸ばして 1 で切る前の強さ（level）で振る（切ると強弱が消えて、針が端に張り付くため）
+        painter.draw(c, specRect, style, visArr, peak, scale, lay.segUnit, f60 / 60f, raw = level)
 
         val msg = when (st) {
             SpectrumEngine.Status.NO_PERMISSION -> "マイク権限を許可してください"
