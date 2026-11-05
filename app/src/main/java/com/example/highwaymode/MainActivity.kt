@@ -88,7 +88,7 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, ModeBarView.Callbac
         NavNotifications.install(this)
         // スペアナを長押し → 表示の種類を順に切り替える（LED → バー → … → メーター）
         player.onSpectrumLongPress = {
-            val next = (SpectrumStyle.visual + 1) % SpectrumStyle.VISUAL_LABELS.size
+            val next = SpectrumStyle.nextVisual(SpectrumStyle.visual)
             SpectrumStyle.setVisual(this, next)
             Toast.makeText(this, "スペアナ: ${SpectrumStyle.VISUAL_LABELS[next]}（長押しで切り替え）", Toast.LENGTH_SHORT).show()
         }

@@ -52,12 +52,32 @@ object SpectrumStyle {
     const val VISUAL_RETRO = 5
     const val VISUAL_METER = 6
     const val VISUAL_METER_DARK = 7
+    /** v2.7: 昔のカーオーディオ（9 帯 × 左右・奥へすぼまる格子） */
+    const val VISUAL_CA_STEREO = 8
+    /** v2.7: 昔のカーオーディオのグラフィックイコライザー（蛍光表示管の 15 本） */
+    const val VISUAL_CA_EQ = 9
+
+    /** カーオーディオ（本物の表示の再現。[CarAudioPainter] で描く） */
+    fun isCarAudio(v: Int): Boolean = v == VISUAL_RETRO || v == VISUAL_CA_STEREO || v == VISUAL_CA_EQ
 
     /** 表示の種類の名前（番号順） */
     val VISUAL_LABELS = arrayOf(
         "LED（標準）", "なめらかなバー", "ミラー（上下対称）", "ライン（波形）", "ドット（LED マトリクス）",
-        "カーオーディオ", "アナログメーター（アンバー照明）", "アナログメーター（ブルー照明）"
+        "カーオーディオ（ブルー）", "アナログメーター（アンバー照明）", "アナログメーター（ブルー照明）",
+        "カーオーディオ（ステレオ）", "カーオーディオ（イコライザー）"
     )
+
+    /** 選ぶ画面・長押しで切り替える順（カーオーディオを LED の次にまとめる） */
+    val VISUAL_ORDER = intArrayOf(
+        VISUAL_LED, VISUAL_RETRO, VISUAL_CA_STEREO, VISUAL_CA_EQ, VISUAL_BARS, VISUAL_MIRROR, VISUAL_LINE, VISUAL_DOTS,
+        VISUAL_METER, VISUAL_METER_DARK
+    )
+
+    /** 長押しで次の表示の種類へ */
+    fun nextVisual(v: Int): Int {
+        val i = VISUAL_ORDER.indexOf(v)
+        return VISUAL_ORDER[(if (i < 0) 0 else i + 1) % VISUAL_ORDER.size]
+    }
 
     /** 表示の種類の説明（番号順） */
     val VISUAL_NOTES = arrayOf(
@@ -66,9 +86,11 @@ object SpectrumStyle {
         "表示窓の中央から上下に広がる光るバー",
         "方眼の上に、周波数の山を光る線で描く",
         "丸い LED を並べた液晶のような表示（消えている LED もうっすら）",
-        "2000 年代のカーオーディオの表示。紫の表示窓に、斜めに傾いた細い段のバーとピンクのピーク、映り込み",
+        "昔の 2DIN デッキの表示。紫の画面に、奥へすぼまる 20 本の青いバー。白いピークはふわっと浮かんで消える",
         "暖かい色の照明のメーター。左が低音・右が高音。針は拍に合わせて俊敏に振れる",
-        "青い照明にピンクの針のメーター。夜の車内向け"
+        "青い照明にピンクの針のメーター。夜の車内向け",
+        "昔の 2DIN デッキの表示。9 つの帯を左右 2 本ずつ、奥へすぼまる格子に水色の段。青いピークは止まってから落ちる",
+        "昔のグラフィックイコライザーの蛍光表示管。幅の広い 15 本のバー（下が白・上が水色）が素早く動く"
     )
 
     /** 高さ（感度）の選択肢と倍率 */
