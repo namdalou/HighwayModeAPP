@@ -16,6 +16,7 @@ import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.floor
+import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
@@ -28,9 +29,12 @@ import kotlin.math.sqrt
  *  - LED（標準）… 段に分かれたバー。段の色と隙間を描いた細い画像を模様にして、1 本 1 回で描く（v2.4 までと同じ）
  *  - カーオーディオ（ブルー・ステレオ・イコライザー。v2.7）… 利用者が示した動画の、昔のカーオーディオの表示を再現したもの。
  *    本数・色・動き・ピークの動きは [CarAudioPainter] が持つ（ブルーの保存する番号は v2.5 の「レトロ」・v2.6 の「カーオーディオ」と同じ）
- *  - なめらかなバー・ミラー・ライン・ドット … 同じ表示窓の中に、光るバー・線・LED マトリクスで描く（ピークは同じピンク系）
+ *  - なめらかなバー・ミラー・ライン・ドット … 光るバー・線・LED マトリクス（ピークはバーの色を白に寄せた色）
  *  - アナログメーター（アンバー照明・ブルー照明）… 照明付きのカーオーディオのメーター。目盛り板は画像として 1 回だけ描き、
- *    針はばね・ダンパーで俊敏に動かす（約 0.07 秒で振れる）
+ *    針はばね・ダンパーで俊敏に動かす（約 0.05 秒で振れる）。入力は「最近 2 秒の平均からどれだけ大きいか」で、端に張り付かない（v2.8）
+ *
+ * v2.8 から、どの表示も表示窓（枠・紫の板・ガラスの映り込み）や消えている段を描かず、LED（標準）と同じように
+ * 音楽の画面の背景の上にバー（ブロック）だけを描く。
  *
  * 座標は呼び出し側の座標（PlayerRenderer の仮想座標）。scale は 1 単位あたりの画素数で、模様の画像を画面の画素に合わせるのに使う。
  * 毎フレームの割り当てはしない（模様・グラデーション・目盛り板は、区画・色・種類が変わったときだけ作り直す）。
@@ -42,10 +46,8 @@ class SpectrumPainter(private val n: Int) {
     private val colBottom = IntArray(n) { Color.rgb(0, 90, 200) }
     private val colTop = IntArray(n) { Color.rgb(40, 190, 245) }
     private var uniform = true
-    /** LED（標準）のピーク（上の色を白に寄せた色） */
+    /** ピーク（上の色を白に寄せた色。どの色でも、バーより少し明るく見える） */
     private var peakColor = Color.rgb(215, 225, 235)
-    /** カーオーディオ系のピーク・針の色（バーの色の反対側の色合い。標準の青ならピンク） */
-    private var accent = Color.rgb(255, 70, 200)
     /** 色が変わるたびに増える（模様の作り直しの判断） */
     private var colorsVersion = 0
 
@@ -64,7 +66,6 @@ class SpectrumPainter(private val n: Int) {
         uniform = (1 until n).all { colBottom[it] == colBottom[0] && colTop[it] == colTop[0] }
         // ピークは上の色を白に寄せた色（どの色でも、バーより少し明るく見える）
         peakColor = mix(colTop[n / 2], Color.WHITE, 0.55f)
-        accent = accentFor(colTop[n / 2], uniform)
         carAudio.setColors(colBottom, colTop, uniform)
         colorsVersion++
     }
@@ -80,7 +81,6 @@ class SpectrumPainter(private val n: Int) {
     }
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val tmp = RectF()
-    private val inner = RectF()
     private val matrix = Matrix()
 
     /** アナログメーターの針がまだ動いている（描き直しの間隔を決めるのに使う） */
@@ -93,12 +93,12 @@ class SpectrumPainter(private val n: Int) {
      * @param peak 帯ごとのピーク（0〜1）
      * @param scale 1 単位あたりの画素数
      * @param segUnit LED の 1 段の高さ（隙間込み）
-     * @param panel 表示窓（暗い板）を描いてよい（ほかの絵に重ねていない）
      * @param dtSec 前のフレームからの経過（メーターの針の動き）
+     * @param raw 帯ごとの強さ（高さに伸ばして 1 で切る前の値）。メーターの入力に使う（無ければ vis）
      */
     fun draw(
         c: Canvas, r: RectF, style: Int, vis: FloatArray, peak: FloatArray,
-        scale: Float, segUnit: Float, panel: Boolean, dtSec: Float
+        scale: Float, segUnit: Float, dtSec: Float, raw: FloatArray? = null
     ) {
         if (r.width() <= 2f || r.height() <= 2f || scale <= 0f) return
         animating = false
@@ -117,98 +117,24 @@ class SpectrumPainter(private val n: Int) {
             animating = carAudio.animating
             return
         }
-        // カーオーディオ系: 表示窓の中に描く（メーターは、表示窓をメーターの大きさに合わせる）
-        val pad = (min(r.width(), r.height()) * 0.06f).coerceIn(2.5f, 7f)
-        inner.set(r.left + pad, r.top + pad, r.right - pad, r.bottom - pad)
-        val meter = style == SpectrumStyle.VISUAL_METER || style == SpectrumStyle.VISUAL_METER_DARK
-        val win = if (meter) meterWindow(inner, pad, r) else r
-        if (panel) drawPanel(c, win)
+        // そのほか: 区画いっぱいに、バー・線・メーターだけを描く（表示窓は描かない）
         when (style) {
-            SpectrumStyle.VISUAL_BARS -> drawBars(c, inner, vis, peak, mirror = false)
-            SpectrumStyle.VISUAL_MIRROR -> drawBars(c, inner, vis, peak, mirror = true)
-            SpectrumStyle.VISUAL_LINE -> drawLine(c, inner, vis, peak)
-            SpectrumStyle.VISUAL_DOTS -> drawDots(c, inner, vis, peak, scale)
-            SpectrumStyle.VISUAL_METER -> drawMeters(c, inner, vis, scale, blue = false, dtSec = dtSec)
-            else -> drawMeters(c, inner, vis, scale, blue = true, dtSec = dtSec)
+            SpectrumStyle.VISUAL_BARS -> drawBars(c, r, vis, peak, mirror = false)
+            SpectrumStyle.VISUAL_MIRROR -> drawBars(c, r, vis, peak, mirror = true)
+            SpectrumStyle.VISUAL_LINE -> drawLine(c, r, vis, peak)
+            SpectrumStyle.VISUAL_DOTS -> drawDots(c, r, vis, peak, scale)
+            SpectrumStyle.VISUAL_METER -> drawMeters(c, r, raw ?: vis, scale, blue = false, dtSec = dtSec)
+            else -> drawMeters(c, r, raw ?: vis, scale, blue = true, dtSec = dtSec)
         }
-        if (panel) drawGloss(c, win)
     }
 
-    // ================================================================== 表示窓（カーオーディオの液晶・蛍光表示管の窓）
-
-    private val panelKey = RectF()
-    private var panelBg: LinearGradient? = null
-    private var panelGlowA: RadialGradient? = null
-    private var panelGlowB: RadialGradient? = null
-    private var panelGloss: LinearGradient? = null
-
-    private fun panelRadius(r: RectF) = (min(r.width(), r.height()) * 0.07f).coerceIn(3f, 8f)
-
-    private fun checkPanel(r: RectF) {
-        if (r == panelKey && panelBg != null) return
-        panelKey.set(r)
-        val big = max(r.width(), r.height())
-        // 奥が深い紫がかった黒（下ほど紫）
-        panelBg = LinearGradient(
-            0f, r.top, 0f, r.bottom,
-            intArrayOf(Color.rgb(16, 12, 34), Color.rgb(11, 8, 25), Color.rgb(30, 12, 48)), floatArrayOf(0f, 0.55f, 1f),
-            Shader.TileMode.CLAMP
-        )
-        // 左下からにじむ紫の光（写真の照明のもれ）・右上のかすかな青
-        panelGlowA = RadialGradient(
-            r.left + r.width() * 0.1f, r.bottom, big * 0.72f,
-            intArrayOf(Color.argb(110, 176, 44, 206), Color.argb(34, 124, 32, 176), Color.argb(0, 124, 32, 176)), floatArrayOf(0f, 0.5f, 1f),
-            Shader.TileMode.CLAMP
-        )
-        panelGlowB = RadialGradient(
-            r.right - r.width() * 0.08f, r.top, big * 0.5f,
-            Color.argb(34, 50, 110, 255), Color.argb(0, 50, 110, 255), Shader.TileMode.CLAMP
-        )
-        // ガラスの映り込み（上の方を少しだけ明るく）
-        panelGloss = LinearGradient(
-            0f, r.top, 0f, r.top + r.height() * 0.42f,
-            Color.argb(20, 255, 255, 255), Color.argb(0, 255, 255, 255), Shader.TileMode.CLAMP
-        )
-    }
-
-    private fun drawPanel(c: Canvas, r: RectF) {
-        checkPanel(r)
-        val rad = panelRadius(r)
-        fill.shader = panelBg
-        c.drawRoundRect(r, rad, rad, fill)
-        fill.shader = panelGlowA
-        c.drawRoundRect(r, rad, rad, fill)
-        fill.shader = panelGlowB
-        c.drawRoundRect(r, rad, rad, fill)
-        fill.shader = null
-        // 縁（外は黒、内側に細い光）
-        stroke.shader = null
-        stroke.strokeWidth = 1.4f
-        stroke.color = Color.rgb(3, 2, 8)
-        c.drawRoundRect(r, rad, rad, stroke)
-        tmp.set(r.left + 1.1f, r.top + 1.1f, r.right - 1.1f, r.bottom - 1.1f)
-        stroke.strokeWidth = 0.6f
-        stroke.color = Color.argb(110, 110, 96, 170)
-        c.drawRoundRect(tmp, rad * 0.8f, rad * 0.8f, stroke)
-    }
-
-    private fun drawGloss(c: Canvas, r: RectF) {
-        checkPanel(r)
-        val rad = panelRadius(r)
-        fill.shader = panelGloss
-        tmp.set(r.left + 1.2f, r.top + 1.2f, r.right - 1.2f, r.top + r.height() * 0.42f)
-        c.drawRoundRect(tmp, rad * 0.8f, rad * 0.8f, fill)
-        fill.shader = null
-    }
-
-    // ================================================================== 段の模様（LED・カーオーディオ共通）
+    // ================================================================== 段の模様（LED）
 
     /**
      * 段の模様: 幅 1 画素・高さ = 全段分の画像に、段ごとの色（下の濃い色 → 上の明るい色）と段の隙間（透明）を描く。
      * 画面の画素と 1 対 1 で重なるよう、描く倍率に合わせて作る（区画・色が変わったときだけ）。
-     * fade > 0 なら映り込み用（上＝根元に近いほど濃く、下へ行くほど薄く。並びも上下を逆に）
      */
-    private class SegCache(n: Int, val bright: Boolean) {
+    private class SegCache(n: Int) {
         val shaders = arrayOfNulls<BitmapShader>(n)
         val heights = IntArray(n)
         var rows = -1
@@ -219,7 +145,7 @@ class SpectrumPainter(private val n: Int) {
         var uni = false
     }
 
-    private val ledCache = SegCache(n, bright = false)
+    private val ledCache = SegCache(n)
 
     /** 区画・色が変わっていたら、段の模様を捨てる（1 フレームに 1 回） */
     private fun SegCache.check(rows: Int, unit: Float, segH: Float, scale: Float) {
@@ -234,35 +160,22 @@ class SpectrumPainter(private val n: Int) {
         }
     }
 
-    private fun SegCache.shader(i: Int, reflection: Boolean = false): BitmapShader? {
+    private fun SegCache.shader(i: Int): BitmapShader? {
         val idx = if (uniform) 0 else i
         shaders[idx]?.let { return it }
-        // カーオーディオは下の色も明るめに（発光している表示らしく）
-        val cb = if (bright) mix(colBottom[idx], colTop[idx], 0.3f) else colBottom[idx]
-        val ct = if (bright) mix(colTop[idx], Color.WHITE, 0.12f) else colTop[idx]
+        val cb = colBottom[idx]
+        val ct = colTop[idx]
         val hPx = ceil(rows * unit * scale).toInt().coerceIn(1, 4096)
         val px = IntArray(hPx)
         val total = rows * unit
         for (y in 0 until hPx) {
-            if (reflection) {
-                // 映り込み: 画像の上端 = 根元。下へ行くほど上の段（明るい色）で、薄くなる
-                val fromBase = (y + 0.5f) / scale
-                val rr = floor(fromBase / unit).toInt()
-                val within = fromBase - rr * unit
-                px[y] = if (rr in 0 until rows && within < seg) {
-                    val k = if (rows > 1) rr.toFloat() / (rows - 1) else 0f
-                    val a = (0.34f * (1f - k).pow(1.6f) * 255f).toInt()
-                    withAlpha(mix(cb, ct, k), a)
-                } else 0
-            } else {
-                // 画像の上端からの位置 → 下端（バーの根元）からの位置
-                val fromBottom = total - (y + 0.5f) / scale
-                val rr = floor(fromBottom / unit).toInt()
-                val within = fromBottom - rr * unit
-                px[y] = if (rr in 0 until rows && within < seg) {
-                    mix(cb, ct, if (rows > 1) rr.toFloat() / (rows - 1) else 0f)
-                } else 0
-            }
+            // 画像の上端からの位置 → 下端（バーの根元）からの位置
+            val fromBottom = total - (y + 0.5f) / scale
+            val rr = floor(fromBottom / unit).toInt()
+            val within = fromBottom - rr * unit
+            px[y] = if (rr in 0 until rows && within < seg) {
+                mix(cb, ct, if (rows > 1) rr.toFloat() / (rows - 1) else 0f)
+            } else 0
         }
         val bmp = try {
             Bitmap.createBitmap(1, hPx, Bitmap.Config.ARGB_8888)
@@ -370,7 +283,7 @@ class SpectrumPainter(private val n: Int) {
         val reflH = if (!mirror && r.height() >= 46f) r.height() * 0.17f else 0f
         val base = r.bottom - reflH - (if (reflH > 0f) 1.5f else 0f)
         val h = base - r.top
-        capPaint.color = accent
+        capPaint.color = peakColor
         checkBarCache(r.top, if (mirror) r.bottom else base, mirror)
         if (mirror) {
             plain.shader = null
@@ -459,19 +372,6 @@ class SpectrumPainter(private val n: Int) {
                 lineStrokeShader = LinearGradient(r.left, 0f, r.right, 0f, colTop, null, Shader.TileMode.CLAMP)
             }
         }
-        // 目盛りの線（オシロスコープのような方眼）
-        plain.shader = null
-        plain.color = withAlpha(colTop[0], 26)
-        val rowsG = 5
-        for (k in 1 until rowsG) {
-            val y = r.top + r.height() * k / rowsG
-            c.drawRect(r.left, y - 0.25f, r.right, y + 0.25f, plain)
-        }
-        val colsG = 8
-        for (k in 1 until colsG) {
-            val x = r.left + r.width() * k / colsG
-            c.drawRect(x - 0.25f, r.top, x + 0.25f, r.bottom, plain)
-        }
         val h = r.height() - 2.5f
         val step = r.width() / n
         for (i in 0 until n) {
@@ -493,11 +393,11 @@ class SpectrumPainter(private val n: Int) {
         stroke.strokeWidth = 1.7f
         c.drawPath(curve, stroke)
         stroke.shader = null
-        // ピークの線（ピンク）
+        // ピークの線（バーの色を白に寄せた色）
         for (i in 0 until n) py[i] = r.bottom - peak[i] * h - 1.2f
         buildSmooth(peakCurve, r.left, r.right, false, r.bottom)
-        stroke.color = accent
-        stroke.alpha = 160
+        stroke.color = peakColor
+        stroke.alpha = 150
         stroke.strokeWidth = 1.0f
         c.drawPath(peakCurve, stroke)
         stroke.alpha = 255
@@ -536,7 +436,6 @@ class SpectrumPainter(private val n: Int) {
     private var dkVer = -1
     private var dkUni = false
     private val dotPaint = Paint()
-    private val dotGhostPaint = Paint().apply { alpha = 34 }
 
     /** 区画・色が変わっていたら、LED の列の模様を捨てる（1 フレームに 1 回） */
     private fun checkDotCache(pitchPx: Int, rows: Int, rad: Float, scale: Float) {
@@ -595,9 +494,6 @@ class SpectrumPainter(private val n: Int) {
             matrix.setScale(1f / scale, 1f / scale)
             matrix.postTranslate(gx0, top)
             sh.setLocalMatrix(matrix)
-            // 消えている LED（全部の列を 1 回で）
-            dotGhostPaint.shader = sh
-            c.drawRect(gx0, top, gx0 + pitch * n, yb, dotGhostPaint)
             dotPaint.shader = sh
             for (i in 0 until n) {
                 val lit = (vis[i] * rows).toInt()
@@ -609,8 +505,6 @@ class SpectrumPainter(private val n: Int) {
                 matrix.setScale(1f / scale, 1f / scale)
                 matrix.postTranslate(gx0 + i * pitch, top)
                 sh.setLocalMatrix(matrix)
-                dotGhostPaint.shader = sh
-                c.drawRect(gx0 + i * pitch, top, gx0 + (i + 1) * pitch, yb, dotGhostPaint)
                 val lit = (vis[i] * rows).toInt()
                 if (lit > 0) {
                     dotPaint.shader = sh
@@ -624,9 +518,7 @@ class SpectrumPainter(private val n: Int) {
             val row = min((peak[i] * rows).toInt(), rows - 1)
             val cx = gx0 + (i + 0.5f) * pitch
             val cyy = yb - (row + 0.5f) * pitch
-            fill.color = withAlpha(accent, 80)
-            c.drawCircle(cx, cyy, rad * 1.35f, fill)
-            fill.color = accent
+            fill.color = peakColor
             c.drawCircle(cx, cyy, rad * 0.92f, fill)
         }
     }
@@ -637,6 +529,11 @@ class SpectrumPainter(private val n: Int) {
         var pos = 0f
         var vel = 0f
         var hold = 0f
+        /** 入力の最近の平均（dB）と、ばらつき（dB の 2 乗）。NaN = 無音のあと（次の音を基準にする） */
+        var mean = Float.NaN
+        var varDb = 4f
+        /** 音が鳴り始めてからの秒数（鳴り始めは平均を早く合わせる） */
+        var age = 0f
     }
 
     private val needles = arrayOf(Needle(), Needle())
@@ -659,53 +556,64 @@ class SpectrumPainter(private val n: Int) {
     /** 針の振れ（-44°〜+44°、少しだけ振り切れる） */
     private fun needleAngle(pos: Float): Float = -44f + 88f * pos.coerceIn(-0.02f, 1.06f)
 
-    private val meterWin = RectF()
     private var meterCount = 1
     private var meterW = 0f
     private var meterH = 0f
 
-    /** メーターの並び（2 つ並べるか・大きさ）を決めて、表示窓（メーターの外側に余白）を返す */
-    private fun meterWindow(r: RectF, pad: Float, outer: RectF): RectF {
-        val two = r.width() >= r.height() * 1.5f
-        val count = if (two) 2 else 1
-        // メーターの大きさ（横:縦 = 約 1.72:1。両端の目盛りの数字が板に収まるように）
-        val gap = if (two) r.width() * 0.035f else 0f
-        val cellW = (r.width() - gap * (count - 1)) / count
-        val mh = min(r.height(), cellW / 1.72f)
+    /**
+     * メーターの並びと大きさを決める（区画の中、左右・上下の中央。横:縦 = 約 1.72:1。両端の目盛りの数字が板に収まるように）。
+     * 2 つ（左 = 低音・右 = 高音。横に並べるか縦に積む）にしても十分大きければ 2 つ、そうでなければ 1 つを大きく（v2.8）
+     */
+    private fun meterLayout(r: RectF) {
+        val w = r.width()
+        val h = r.height()
+        val gapX = w * 0.035f
+        val gapY = h * 0.05f
+        val one = min(h, w / 1.72f)
+        val side = min(h, (w - gapX) / 2f / 1.72f)
+        val stack = min((h - gapY) / 2f, w / 1.72f)
+        val count: Int
+        val mh: Float
+        val stacked: Boolean
+        if (max(side, stack) >= one * 0.72f) {
+            count = 2
+            stacked = stack > side
+            mh = if (stacked) stack else side
+        } else {
+            count = 1
+            stacked = false
+            mh = one
+        }
         val mw = mh * 1.72f
-        val totalW = mw * count + gap * (count - 1)
-        val left = r.left + (r.width() - totalW) / 2f
-        val topY = r.top + (r.height() - mh) / 2f
-        for (k in 0 until count) faceRect[k].set(left + k * (mw + gap), topY, left + k * (mw + gap) + mw, topY + mh)
+        val totalW = if (count == 2 && !stacked) mw * 2 + gapX else mw
+        val totalH = if (count == 2 && stacked) mh * 2 + gapY else mh
+        val left = r.left + (w - totalW) / 2f
+        val topY = r.top + (h - totalH) / 2f
+        for (k in 0 until count) {
+            val x = if (stacked) left else left + k * (mw + gapX)
+            val y = if (stacked) topY + k * (mh + gapY) else topY
+            faceRect[k].set(x, y, x + mw, y + mh)
+        }
         meterCount = count
         meterW = mw
         meterH = mh
-        meterWin.set(
-            max(outer.left, left - pad), max(outer.top, topY - pad),
-            min(outer.right, left + totalW + pad), min(outer.bottom, topY + mh + pad)
-        )
-        return meterWin
     }
 
     private fun drawMeters(c: Canvas, r: RectF, vis: FloatArray, scale: Float, blue: Boolean, dtSec: Float) {
+        meterLayout(r)
         val count = meterCount
         val two = count == 2
         val mw = meterW
         val mh = meterH
         if (mw <= 1f || mh <= 1f) return
 
-        // 入力: 低音（左）・高音（右）、1 つのときは全体。最大値と実効値を混ぜて、拍に合わせてよく振れるように
-        val targets = meterTargets
-        if (two) {
-            targets[0] = level(vis, 0, 7)
-            targets[1] = level(vis, n / 2, n)
-        } else {
-            targets[0] = level(vis, 0, n)
-        }
+        // 入力: 低音（左）・高音（右）、1 つのときは全体（v の値は 1 で切る前の強さ。切ると強弱が消えるため）
         for (k in 0 until count) {
-            val tgt = (targets[k] * 1.15f).coerceIn(0f, 1.06f)
-            stepNeedle(needles[k], tgt, dtSec)
-            if (kotlin.math.abs(needles[k].vel) > 0.01f || kotlin.math.abs(needles[k].pos - tgt) > 0.02f) animating = true
+            val s = if (!two) meterInput(vis, 0, n) else if (k == 0) meterInput(vis, 0, 7) else meterInput(vis, n / 2, n)
+            val nd = needles[k]
+            val tgt = needleTarget(nd, s, dtSec)
+            stepNeedle(nd, tgt, dtSec)
+            if (kotlin.math.abs(nd.vel) > 0.01f || kotlin.math.abs(nd.pos - tgt) > 0.01f || s > 0.004f) animating = true
         }
 
         // 目盛り板（画像として 1 回だけ描く）
@@ -748,11 +656,10 @@ class SpectrumPainter(private val n: Int) {
         }
     }
 
-    private val meterTargets = FloatArray(2)
     private val srcRect = android.graphics.Rect()
 
-    /** 帯の範囲の強さ（最大値と実効値を混ぜる） */
-    private fun level(v: FloatArray, from: Int, to: Int): Float {
+    /** 帯の範囲の強さ（最大値 3 割・実効値 7 割） */
+    private fun meterInput(v: FloatArray, from: Int, to: Int): Float {
         var s = 0f
         var mx = 0f
         var cnt = 0
@@ -762,13 +669,39 @@ class SpectrumPainter(private val n: Int) {
             cnt++
         }
         if (cnt == 0) return 0f
-        return 0.55f * mx + 0.45f * sqrt(s / cnt)
+        return 0.3f * mx + 0.7f * sqrt(s / cnt)
     }
 
     /**
-     * 針の動き（ばね・ダンパー）。v2.5 は VU メーターらしく約 0.3 秒かけて振れていたが、
-     * v2.6 から俊敏に（約 0.07 秒で目標に届き、ほんの少しだけ行き過ぎる）
+     * 針の目標の位置（v2.8）。バーの高さはいつも上の方にあるので、そのまま針にすると右の端に張り付く（v2.7 まで）。
+     * そこで、いまの強さ（dB）が最近 [AVG_TAU] 秒の平均よりどれだけ大きいかを、最近のばらつきで割って VU の目盛りに写す。
+     * 平均の音で [CENTER_VU] dB（目盛りの中ほど）、拍で右へ、拍の合間で左へ大きく振れる。曲の音量・設定の高さによらない。
+     * 無音では左の端へ戻る
      */
+    private fun needleTarget(nd: Needle, s: Float, dt: Float): Float {
+        if (s < 0.004f) {
+            nd.mean = Float.NaN
+            return 0f
+        }
+        val d = 20f * log10(s)
+        if (nd.mean.isNaN()) {
+            nd.mean = d
+            nd.varDb = 4f
+            nd.age = 0f
+        }
+        if (dt > 0f) {
+            // 鳴り始めの 1 秒は平均を早く合わせる（音が立ち上がる間、針が右へ振り切れたままにならないように）
+            nd.age += dt
+            val a = min(1f, dt / (if (nd.age < 1f) 0.25f else AVG_TAU))
+            nd.mean += (d - nd.mean) * a
+            val dev = d - nd.mean
+            nd.varDb += (dev * dev - nd.varDb) * a
+        }
+        val sd = max(sqrt(nd.varDb), SD_MIN)
+        return vuPos((CENTER_VU + EXPAND * (d - nd.mean) / sd).coerceIn(-26f, 3.4f))
+    }
+
+    /** 針の動き（ばね・ダンパー）。約 0.05 秒で目標に届き、少しだけ行き過ぎる（v2.8 で v2.6 より速く） */
     private fun stepNeedle(nd: Needle, target: Float, dt: Float) {
         var t = dt.coerceIn(0f, 0.1f)
         while (t > 0f) {
@@ -779,7 +712,7 @@ class SpectrumPainter(private val n: Int) {
             t -= h
         }
         nd.pos = nd.pos.coerceIn(-0.02f, 1.08f)
-        nd.hold = if (nd.pos >= vuPos(1f)) 0.35f else max(0f, nd.hold - dt)
+        nd.hold = if (nd.pos >= vuPos(1f)) 0.3f else max(0f, nd.hold - dt)
     }
 
     /** 目盛り板（大きさ w×h の座標で描く）。blue = ブルー照明、そうでなければアンバー照明 */
@@ -822,7 +755,8 @@ class SpectrumPainter(private val n: Int) {
         val cy = h * 1.18f
         val arcR = h * 0.95f
         val scaleColor = if (blue) Color.rgb(150, 226, 255) else Color.rgb(58, 28, 6)
-        val redColor = if (blue) accent else Color.rgb(190, 24, 16)
+        // +1〜+3 の赤い目盛り（ブルー照明は、青い板の上でよく見える明るい朱色）
+        val redColor = if (blue) Color.rgb(255, 104, 72) else Color.rgb(190, 24, 16)
         val arc = RectF(cx - arcR, cy - arcR, cx + arcR, cy + arcR)
         val a0 = needleAngle(vuPos(-20f))
         val aZero = needleAngle(vuPos(0f))
@@ -896,12 +830,12 @@ class SpectrumPainter(private val n: Int) {
         stroke.shader = null
         stroke.strokeCap = Paint.Cap.ROUND
         if (blue) {
-            // 光る針（ピンク）
-            stroke.color = withAlpha(accent, 90)
+            // 光る白い針（青い板の上でいちばん見やすい）
+            stroke.color = Color.argb(80, 170, 220, 255)
             stroke.strokeWidth = h * 0.05f
             c.drawLine(cx, cy, tx, ty, stroke)
-            stroke.color = mix(accent, Color.WHITE, 0.35f)
-            stroke.strokeWidth = h * 0.018f
+            stroke.color = Color.rgb(246, 250, 255)
+            stroke.strokeWidth = h * 0.02f
             c.drawLine(cx, cy, tx, ty, stroke)
         } else {
             // 影と黒い針
@@ -955,19 +889,28 @@ class SpectrumPainter(private val n: Int) {
             demoPeak[i] = if (still) (v + 0.12f).coerceAtMost(1f) else max(v, demoPeak[i] - dtSec * 0.6f)
         }
         if (still) {
-            // 止めた見本では、メーターの針をその位置に置く
-            needles[0].pos = (level(demoVis, 0, 7) * 1.15f).coerceAtMost(1.06f)
-            needles[1].pos = (level(demoVis, n / 2, n) * 1.15f).coerceAtMost(1.06f)
+            // 止めた見本では、メーターの針を目盛りの中ほど（低音は 0、高音は -4）に置く
+            needles[0].pos = vuPos(-0.5f)
+            needles[1].pos = vuPos(-4f)
             needles[0].vel = 0f
             needles[1].vel = 0f
         }
-        draw(c, r, style, demoVis, demoPeak, scale, max(3.5f, r.height() / 22f), true, if (still) 0f else dtSec)
+        draw(c, r, style, demoVis, demoPeak, scale, max(3.5f, r.height() / 22f), if (still) 0f else dtSec)
     }
 
     companion object {
-        /** 針のばねの強さと減衰（約 30 rad/s・減衰比 0.7: 約 0.07 秒で振れ、行き過ぎは 5% ほど） */
-        private const val NEEDLE_K = 900f
-        private const val NEEDLE_D = 42f
+        /** 針のばねの強さと減衰（約 38 rad/s・減衰比 0.6: 約 0.05 秒で振れ、行き過ぎは 9% ほど） */
+        private const val NEEDLE_K = 1444f
+        private const val NEEDLE_D = 46f
+
+        /** 平均の音での針の位置（VU の dB。+3 が右の端、0 が赤い目盛りの始まり） */
+        private const val CENTER_VU = -1.5f
+        /** 平均との差（ばらつきで割った値）を VU の dB にする倍率。大きいほど拍に合わせて大きく振れる */
+        private const val EXPAND = 3.0f
+        /** 平均・ばらつきを取る長さ（時定数・秒） */
+        private const val AVG_TAU = 2.0f
+        /** ばらつきの下限（dB）。ほとんど変わらない音で、細かい揺れを広げすぎないように */
+        private const val SD_MIN = 1.2f
 
         fun mix(a: Int, b: Int, t: Float): Int {
             val k = t.coerceIn(0f, 1f)
@@ -981,28 +924,13 @@ class SpectrumPainter(private val n: Int) {
         fun withAlpha(c: Int, a: Int): Int = (c and 0x00FFFFFF) or (a.coerceIn(0, 255) shl 24)
 
         /**
-         * カーオーディオ系のピーク・針の色: バーの色の反対側の色合い（標準の青 → ピンク、緑 → 青紫など）。
-         * 虹色（帯ごとに色が違う）・白っぽい色はピンク
+         * 表示の種類ごとの、音楽の画面の背景（上・下）。v2.8 から、どの表示も LED（標準）と同じ背景
+         * （v2.6〜v2.7 のカーオーディオ系の紫がかった灰色は、見にくいのでやめた）
          */
-        fun accentFor(top: Int, uniform: Boolean): Int {
-            val hsv = FloatArray(3)
-            Color.colorToHSV(top, hsv)
-            if (!uniform || hsv[1] < 0.15f) return Color.rgb(255, 70, 200)
-            hsv[0] = (hsv[0] + 125f) % 360f
-            hsv[1] = 0.72f
-            hsv[2] = 1f
-            return Color.HSVToColor(hsv)
-        }
-
-        /** 表示の種類ごとの、音楽の画面の背景（上・下）。カーオーディオ系は、表示窓が引き立つ紫がかった暗い灰色 */
+        @Suppress("UNUSED_PARAMETER")
         fun screenBackground(style: Int, out: IntArray) {
-            if (style == SpectrumStyle.VISUAL_LED) {
-                out[0] = Color.rgb(14, 42, 58)
-                out[1] = Color.rgb(4, 12, 20)
-            } else {
-                out[0] = Color.rgb(30, 27, 44)
-                out[1] = Color.rgb(8, 7, 13)
-            }
+            out[0] = Color.rgb(14, 42, 58)
+            out[1] = Color.rgb(4, 12, 20)
         }
     }
 }
