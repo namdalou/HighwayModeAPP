@@ -235,6 +235,19 @@ class DevSettingsActivity : Activity() {
         ui.actionRow(aa, "動作状態（詳細）", "常駐サービス・GPS・電池・通信・渋滞情報・曲情報") {
             SettingsDialogs.showRunStatus(this)
         }
+        ui.actionRow(aa, "車の画面の表示範囲（確認用）", "右上のボタンと一覧が重なるときの確認用（画面の大きさ・Android Auto が知らせた範囲・下げた量）") {
+            val msg = com.example.highwaymode.car.DualCarScreen.areaInfo
+            AlertDialog.Builder(this, SettingsUi.DIALOG_THEME)
+                .setTitle("車の画面の表示範囲")
+                .setMessage(msg + "\n\n右上のボタンを出した状態で開くと、ボタン表示中の値になります（車の画面を表示したままスマホで開く）。")
+                .setPositiveButton("閉じる", null)
+                .setNeutralButton("コピー") { _, _ ->
+                    val cm = getSystemService(android.content.ClipboardManager::class.java)
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("車の画面の表示範囲", msg))
+                    toast("コピーしました")
+                }
+                .show()
+        }
 
         ui.note(c, "戻ると閉じます。次に開くときは、音楽の画面の何もない場所を 20 回続けてタップして、パスワードを入力してください。")
     }
