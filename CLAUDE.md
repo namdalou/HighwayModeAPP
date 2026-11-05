@@ -7,7 +7,7 @@
 - Android アプリ「Spectrum ハイウェイ」。スマホと Android Auto（車の画面）に対応。
 - 音楽プレーヤー表示とスペクトラムアナライザーの **Spectrum** と、高速道路の前方の IC / JCT / SA / PA までの距離・到着予定時刻を出す **ハイウェイモード** を 1 つにしたもの。
 - 高速道路の外では Spectrum を全画面表示。高速道路に入ると自動で 2 画面（左 Spectrum : 右ハイウェイ = 4 : 5）。
-- 現在の版は **v2.6.1**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
+- 現在の版は **v2.7.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
 
 ## 利用者について
 
@@ -23,7 +23,7 @@
 | モジュール | 内容 |
 |---|---|
 | `:core` | Android に依存しない演算（純粋な Kotlin/JVM）。地図データ（HWDB）、道路グラフ、マップマッチング、前方経路（カーナビの案内に合わせる `route/NavGuide`）、到着予測、渋滞、オービス、エンジン統合（`HighwayEngine`）、電池の節約の判定（`PowerPolicy`）、画面の切替判定と区画割り（`dual/HighwayPresence`, `dual/DualGeometry`）。**JVM 上でテストできる** |
-| `:app` | Android アプリ。`com.example.spectrum`（Spectrum：音声解析 `SpectrumEngine`、音声の自動探索 `SessionProber`、描画 `PlayerRenderer` / `PlayerView`、スペアナの表示の種類ごとの描画 `SpectrumPainter`、ジャケットの色 `ArtPalette`、見た目の設定 `SpectrumStyle`、通知の受け渡し `NotificationHooks`、音楽の画面に出すカーナビの案内 `Guidance`）と `com.example.highwaymode`（スマホ画面、常駐サービス、`engine/EngineHost`、`car/DualCarScreen`（Android Auto）、`ui/PanelRenderer`（ハイウェイ側の描画）、`ui/SettingsActivity`（設定画面）・`ui/DevSettingsActivity`（開発者向け設定）・`ui/SpectrumPickers`（スペアナの見本・選ぶ画面）、`nav/NavNotifications`（Google マップのナビの通知の読み取り）） |
+| `:app` | Android アプリ。`com.example.spectrum`（Spectrum：音声解析 `SpectrumEngine`、音声の自動探索 `SessionProber`、描画 `PlayerRenderer` / `PlayerView`、スペアナの表示の種類ごとの描画 `SpectrumPainter`、昔のカーオーディオの 3 つの表示 `CarAudioPainter`、ジャケットの色 `ArtPalette`、見た目の設定 `SpectrumStyle`、通知の受け渡し `NotificationHooks`、音楽の画面に出すカーナビの案内 `Guidance`）と `com.example.highwaymode`（スマホ画面、常駐サービス、`engine/EngineHost`、`car/DualCarScreen`（Android Auto）、`ui/PanelRenderer`（ハイウェイ側の描画）、`ui/SettingsActivity`（設定画面）・`ui/DevSettingsActivity`（開発者向け設定）・`ui/SpectrumPickers`（スペアナの見本・選ぶ画面）、`nav/NavNotifications`（Google マップのナビの通知の読み取り）） |
 | `:datatool` | PC・CI 用の地図データ（HWDB）作成ツール |
 
 ファイル構成の詳細は README の「ファイル構成」。
@@ -43,7 +43,9 @@
   - 読めない状態が続いたら付け直します（ウォッチドッグ）。
   - 音声セッションを知らせないアプリ（Amazon Music など）は、`SessionProber` が新しい番号から 8 刻みでさかのぼって音の大きさを測り、探します（録音はしない）。
 - **描画の軽さ**：スペアナの LED は 1 本 1 回の `drawRect`（BitmapShader）。動きは経過時間で計算します。ジャケットの縮小や色の計算は別スレッド。毎フレームの割り当てを避けてください。
-- **スペアナの表示の種類（v2.5、v2.6 で作り直し）**：`SpectrumPainter` が 8 種類（`SpectrumStyle.VISUAL_*`：LED・なめらかなバー・ミラー・ライン・ドット・カーオーディオ（`VISUAL_RETRO` の番号）・アナログメーター（アンバー照明 `VISUAL_METER`・ブルー照明 `VISUAL_METER_DARK`））を描きます。音楽の画面（スマホ・車）と設定画面の見本（`SpectrumPreviewView`）で共用。
+- **スペアナの表示の種類（v2.5、v2.6・v2.7 で作り直し）**：`SpectrumPainter` が 10 種類（`SpectrumStyle.VISUAL_*`：LED・なめらかなバー・ミラー・ライン・ドット・アナログメーター（アンバー照明 `VISUAL_METER`・ブルー照明 `VISUAL_METER_DARK`）と、カーオーディオ 3 種（ブルー `VISUAL_RETRO`・ステレオ `VISUAL_CA_STEREO`・イコライザー `VISUAL_CA_EQ`））を描きます。音楽の画面（スマホ・車）と設定画面の見本（`SpectrumPreviewView`）で共用。選ぶ画面・長押しの順は `VISUAL_ORDER`。
+  - **カーオーディオ 3 種（v2.7、`CarAudioPainter`）**：利用者が示した動画（https://x.com/lugh_cat/status/2117889896769896560 の動画 2〜4。昔の 2DIN デッキ 2 台とカセットのグラフィックイコライザーの表示）を 1 コマずつ測って再現したもの。ブルー＝20 本 × 14 段・奥へすぼまる台形（上が下の 82%）・白いピークはバーから離れると 0.35 高さ/秒で上へ浮かんで消える・消えている段は赤紫。ステレオ＝9 帯 × 左右 2 本（24 帯を 18 本にまとめる）× 11 段＋いつも点灯の床の段・台形（78%）・下が白っぽい水色/中が水色/上が青・青いピークは 0.5 秒止まってから 1.6 高さ/秒で落ちる。イコライザー＝15 本・下 45% が白・上が水色・細い線の集まり・ピークなし。動きは表示ごと（`ballistics`：上がりは速く、落ちるのは一定の速さ。ブルー 2.2・ステレオ 2.3・イコライザー 4.5 高さ/秒）。台形は平らな絵を `Matrix.setPolyToPoly` の射影変換で写し、段は画面上で等間隔になるよう位置を逆算（`uniformRows`）。色の設定が標準の青なら本物の色、ほかの色なら点灯している段だけその色。
+  - v2.6 の「カーオーディオ」（利用者の写真を元にした斜めのバー・映り込み）は、v2.7 のブルーに置き換えた（保存する番号は同じ `VISUAL_RETRO`）。
   - v2.6：利用者の写真（2000 年代のカーオーディオ、Kenwood の MD/CD レシーバーの表示）に合わせて、LED（標準）以外は**表示窓**（`drawPanel`：紫がかった黒・左下の紫の光・ガラスの映り込み）の中に描きます。カーオーディオ（`drawCarAudio`）は `Canvas.skew` で傾けた細い段のバー（段の模様は 1 本 1 回）・ピンクのピーク・左の目盛り・下の映り込み（専用の段の模様で縮めて薄く）。ピーク・ブルー照明の針の色は `accentFor`（バーの色の反対側の色合い。青ならピンク）。音楽の画面の背景は `SpectrumPainter.screenBackground`（LED 以外は紫がかった暗い灰色）。
   - メーターの針は `NEEDLE_K`・`NEEDLE_D`（約 30 rad/s・減衰比 0.7。約 0.07 秒で振れる。v2.5 は約 0.3 秒）。入力は帯の最大値と実効値を混ぜた値（`level`）。表示窓はメーターの大きさに合わせる（`meterWindow`）。
   - 模様・グラデーション・メーターの目盛り板は、区画・色・種類が変わったときだけ作り直します（作り直しの判断は数値の比較。文字列のキーを毎フレーム作らない）。目盛り板の古い画像は `recycle()` しない（描画中の画面が使っていることがある）。
@@ -84,17 +86,18 @@
 - 改行コードは `.gitattributes` で LF に統一しています（`*.bat` / `*.cmd` だけ CRLF）。
 - 新しい権限を追加したり、取得するデータを変えたりしたら、`docs/PRIVACY.md` も更新してください。
 
-## 実機で未確認の点（v2.6.1 時点）
+## 実機で未確認の点（v2.7 時点）
 
 利用者の実機での確認待ちです。報告があればここから調べてください。
+
+v2.7 で入れたもの:
+
+- カーオーディオ 3 種（ブルー・ステレオ・イコライザー）が動画に近いか（本数・色・動き・ピークの動き）。実際の音楽での振れ方（入力を 1.1〜1.2 倍にしている）。射影変換で描く台形の重さ（車の画面の 30fps）。
+- 動画の確認には、作業環境のネットワーク設定で `x.com`・`cdn.syndication.twimg.com`・`video.twimg.com`・`pbs.twimg.com` を許可してもらった（埋め込み用の情報 `cdn.syndication.twimg.com/tweet-result?id=…` から動画の URL を取り、ffmpeg でコマにして測った）。
 
 v2.6.1 で入れたもの:
 
 - 右上のボタンが出たとき、一覧がボタンの下まで下がるか（見積もり 80dp で足りるか。足りなければ「車の画面の表示範囲（確認用）」の値をもらう）。
-
-保留中（v2.6.1 時点）:
-
-- スペアナを、利用者が示した動画（https://x.com/lugh_cat/status/2117889896769896560 の動画 2〜4。昔のカーオーディオのスペアナ）に忠実に合わせる。作業環境のネットワーク設定で x.com が許可されておらず、動画を確認できていない（第三者のミラーで取りに行くのは不可）。利用者が x.com などを許可するか、動画の画面の画像を送ってくれたら、スペアナの本数・動きを合わせる（利用者の言葉では「今とはスペアナの本数、動きなどいろいろ違う」）。
 
 v2.6 で入れたもの:
 

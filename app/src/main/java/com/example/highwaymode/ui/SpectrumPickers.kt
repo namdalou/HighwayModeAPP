@@ -139,7 +139,7 @@ object SpectrumPickers {
         val tops = IntArray(SpectrumEngine.BANDS)
         SpectrumStyle.colorsFor(SpectrumStyle.theme, PREVIEW_ART, bottoms, tops)
         lateinit var dialog: AlertDialog
-        for (v in SpectrumStyle.VISUAL_LABELS.indices) {
+        for (v in SpectrumStyle.VISUAL_ORDER) {
             val row = LinearLayout(a).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL

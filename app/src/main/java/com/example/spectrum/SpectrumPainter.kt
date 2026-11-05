@@ -26,8 +26,8 @@ import kotlin.math.sqrt
  * スペアナの表示の種類（[SpectrumStyle.VISUAL_LED] など）を描く。音楽の画面（スマホ・車）と、設定画面の見本で共用する。
  *
  *  - LED（標準）… 段に分かれたバー。段の色と隙間を描いた細い画像を模様にして、1 本 1 回で描く（v2.4 までと同じ）
- *  - カーオーディオ（v2.6。保存する番号は v2.5 の「レトロ」）… 2000 年代のカーオーディオの表示: 暗い紫の表示窓、
- *    斜めに傾いた細い段のバー、ピンクのピーク、左の目盛り、下の映り込み
+ *  - カーオーディオ（ブルー・ステレオ・イコライザー。v2.7）… 利用者が示した動画の、昔のカーオーディオの表示を再現したもの。
+ *    本数・色・動き・ピークの動きは [CarAudioPainter] が持つ（ブルーの保存する番号は v2.5 の「レトロ」・v2.6 の「カーオーディオ」と同じ）
  *  - なめらかなバー・ミラー・ライン・ドット … 同じ表示窓の中に、光るバー・線・LED マトリクスで描く（ピークは同じピンク系）
  *  - アナログメーター（アンバー照明・ブルー照明）… 照明付きのカーオーディオのメーター。目盛り板は画像として 1 回だけ描き、
  *    針はばね・ダンパーで俊敏に動かす（約 0.07 秒で振れる）
@@ -65,6 +65,7 @@ class SpectrumPainter(private val n: Int) {
         // ピークは上の色を白に寄せた色（どの色でも、バーより少し明るく見える）
         peakColor = mix(colTop[n / 2], Color.WHITE, 0.55f)
         accent = accentFor(colTop[n / 2], uniform)
+        carAudio.setColors(colBottom, colTop, uniform)
         colorsVersion++
     }
 
@@ -105,6 +106,17 @@ class SpectrumPainter(private val n: Int) {
             drawLed(c, r, vis, peak, scale, segUnit)
             return
         }
+        // 昔のカーオーディオの再現（本数・色・動き・ピークの動きは CarAudioPainter が持つ）
+        if (SpectrumStyle.isCarAudio(style)) {
+            val st = when (style) {
+                SpectrumStyle.VISUAL_CA_STEREO -> CarAudioPainter.STYLE_STEREO
+                SpectrumStyle.VISUAL_CA_EQ -> CarAudioPainter.STYLE_EQ
+                else -> CarAudioPainter.STYLE_BLUE
+            }
+            carAudio.draw(c, r, st, vis, scale, dtSec)
+            animating = carAudio.animating
+            return
+        }
         // カーオーディオ系: 表示窓の中に描く（メーターは、表示窓をメーターの大きさに合わせる）
         val pad = (min(r.width(), r.height()) * 0.06f).coerceIn(2.5f, 7f)
         inner.set(r.left + pad, r.top + pad, r.right - pad, r.bottom - pad)
@@ -117,8 +129,7 @@ class SpectrumPainter(private val n: Int) {
             SpectrumStyle.VISUAL_LINE -> drawLine(c, inner, vis, peak)
             SpectrumStyle.VISUAL_DOTS -> drawDots(c, inner, vis, peak, scale)
             SpectrumStyle.VISUAL_METER -> drawMeters(c, inner, vis, scale, blue = false, dtSec = dtSec)
-            SpectrumStyle.VISUAL_METER_DARK -> drawMeters(c, inner, vis, scale, blue = true, dtSec = dtSec)
-            else -> drawCarAudio(c, inner, vis, peak, scale)
+            else -> drawMeters(c, inner, vis, scale, blue = true, dtSec = dtSec)
         }
         if (panel) drawGloss(c, win)
     }
@@ -209,8 +220,6 @@ class SpectrumPainter(private val n: Int) {
     }
 
     private val ledCache = SegCache(n, bright = false)
-    private val carCache = SegCache(n, bright = true)
-    private val reflCache = SegCache(n, bright = true)
 
     /** 区画・色が変わっていたら、段の模様を捨てる（1 フレームに 1 回） */
     private fun SegCache.check(rows: Int, unit: Float, segH: Float, scale: Float) {
@@ -312,118 +321,10 @@ class SpectrumPainter(private val n: Int) {
         }
     }
 
-    // ================================================================== カーオーディオ（写真の再現）
+    // ================================================================== カーオーディオ（昔の表示の再現）
 
-    // 斜めに描くので縁をなめらかに（ANTI_ALIAS）
-    private val carPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val ghostPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { alpha = 24 }
-    private val glowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { alpha = 70 }
-    private val reflPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val tickPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val accentPaint = Paint(Paint.ANTI_ALIAS_FLAG)
-
-    /** バーの傾き（上へ行くほど右へ。tan で約 7°） */
-    private val slantK = 0.12f
-
-    private fun drawCarAudio(c: Canvas, r: RectF, vis: FloatArray, peak: FloatArray, scale: Float) {
-        val roomy = r.height() >= 46f
-        // 下に映り込み（全体の 2 割）
-        val reflH = if (roomy) r.height() * 0.2f else 0f
-        val base = r.bottom - reflH - (if (roomy) 1.6f else 0f)
-        val h = base - r.top
-        if (h <= 6f) return
-        // 1 段（隙間込み）: 細い段がたくさん並ぶように
-        val unit = (h / 17f).coerceIn(2.4f, 5.0f)
-        val segH = unit * 0.56f
-        val rows = floor((h - segH) / unit).toInt() + 1
-        if (rows < 3) return
-        val top = rows * unit
-        // 左に目盛り（段ごとの短い線）
-        val tickW = if (r.width() >= 110f) (r.width() * 0.035f).coerceIn(3.5f, 9f) else 0f
-        val x0 = r.left + tickW + (if (tickW > 0f) 2.5f else 0f)
-        // 上の段が右へずれる分をあけておく
-        val x1 = r.right - slantK * top
-        val pitch = (x1 - x0) / n
-        val gap = max(1.2f, pitch * 0.3f)
-        val barW = pitch - gap
-        if (barW <= 0.4f) return
-
-        carCache.check(rows, unit, segH, scale)
-        accentPaint.color = accent
-
-        // ---- バー（根元を原点に、斜めに傾けた座標で描く）
-        c.save()
-        c.translate(0f, base)
-        c.skew(-slantK, 0f)
-        if (tickW > 0f) {
-            for (rr in 0 until rows) {
-                val major = rr % 4 == 0
-                tickPaint.color = withAlpha(colTop[0], if (major) 150 else 70)
-                val y = -rr * unit
-                val tl = if (major) tickW else tickW * 0.6f
-                c.drawRect(r.left + tickW - tl, y - segH, r.left + tickW, y, tickPaint)
-            }
-        }
-        for (i in 0 until n) {
-            val sh = carCache.shader(i)
-            if (sh != null && (i == 0 || !uniform)) {
-                matrix.setScale(1f / scale, 1f / scale)
-                matrix.postTranslate(0f, -carCache.heights[if (uniform) 0 else i] / scale)
-                sh.setLocalMatrix(matrix)
-            }
-            val bx = x0 + i * pitch
-            val lit = min((vis[i] * rows).toInt(), rows)
-            if (sh != null) {
-                // 消えている段もかすかに（液晶・表示管の消えている部分）
-                ghostPaint.shader = sh
-                c.drawRect(bx, -top, bx + barW, 0f, ghostPaint)
-                if (lit > 0) {
-                    // にじみ（少し広く淡く重ねる）
-                    glowPaint.shader = sh
-                    c.drawRect(bx - 0.8f, -lit * unit - 0.4f, bx + barW + 0.8f, 0f, glowPaint)
-                    carPaint.shader = sh
-                    c.drawRect(bx, -lit * unit, bx + barW, 0f, carPaint)
-                }
-            }
-            // ピーク: ピンクの段（にじみつき）
-            if (peak[i] > 0.04f) {
-                val pr = min(max((peak[i] * rows).toInt(), lit), rows - 1)
-                val pb = -pr * unit
-                accentPaint.alpha = 80
-                c.drawRect(bx - 0.8f, pb - segH - 0.6f, bx + barW + 0.8f, pb + 0.6f, accentPaint)
-                accentPaint.alpha = 255
-                c.drawRect(bx, pb - segH, bx + barW, pb, accentPaint)
-            }
-        }
-        c.restore()
-
-        // ---- 映り込み（下へ、縮めて薄く。傾きも映る向きに）
-        if (reflH > 2f) {
-            val rs = reflH / top
-            val unitR = unit * rs
-            val segR = segH * rs
-            reflCache.check(rows, unitR, segR, scale)
-            c.save()
-            c.translate(0f, base + 1.6f)
-            c.skew(slantK, 0f)
-            for (i in 0 until n) {
-                val sh = reflCache.shader(i, reflection = true) ?: continue
-                if (i == 0 || !uniform) {
-                    matrix.setScale(1f / scale, 1f / scale)
-                    sh.setLocalMatrix(matrix)
-                }
-                val lit = min((vis[i] * rows).toInt(), rows)
-                if (lit <= 0) continue
-                reflPaint.shader = sh
-                val bx = x0 + i * pitch
-                c.drawRect(bx, 0f, bx + barW, lit * unitR, reflPaint)
-            }
-            c.restore()
-            // 水平線（映り込みとの境目）
-            tickPaint.color = withAlpha(colTop[0], 60)
-            c.drawRect(x0, base + 0.4f, x1, base + 0.9f, tickPaint)
-        }
-    }
+    /** 昔のカーオーディオの 3 種類（ブルー・ステレオ・イコライザー）を描く部品（v2.7） */
+    private val carAudio = CarAudioPainter(n)
 
     // ================================================================== なめらかなバー・ミラー
 
