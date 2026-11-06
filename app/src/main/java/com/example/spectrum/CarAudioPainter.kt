@@ -18,14 +18,17 @@ import kotlin.math.min
  * v2.8 から、表示窓（枠・照らされた画面）・消えている段・飾り（目盛り・矢印・周波数の文字）は描かず、
  * LED（標準）と同じように、音楽の画面の背景の上に点灯している段（ブロック）だけを描く。
  *
- *  - [STYLE_BLUE] ブルー: 奥へすぼまる 20 本 × 14 段の青いバー。白いピークはバーから離れると、ふわっと上へ浮かんで消える
- *  - [STYLE_STEREO] ステレオ: 9 つの帯を左右 2 本ずつ（18 本 × 12 段）。奥へすぼまる形に、下が白っぽい水色・中ほどが水色・上が青の段。
- *    いちばん下の段はいつも点灯。青いピークは少し止まってから落ちる
+ *  - [STYLE_BLUE] ブルー: 奥へすぼまる 20 本の青いバー。細い段（約 30 段。区画が小さいときは減らす）の間に青いもや。
+ *    白いピークはバーから離れると、ふわっと上へ浮かんで消える
+ *  - [STYLE_STEREO] ステレオ: 9 つの帯（v2.9 で左右 2 本を 1 本にまとめた）× 15 段＋床の段。奥へすぼまる形に、
+ *    二重線の段（下が白っぽい水色・中ほどが水色・上が青）と、段の間に青緑のもや。床の段は音が出ている間だけ点灯。
+ *    青いピークは少し止まってから落ちる
  *  - [STYLE_EQ] イコライザー: 蛍光表示管の 15 本の幅の広いバー。下半分が白、上が水色。細い線の集まりで、とても速く動く
  *
  * バーの動きは本物の表示に合わせて、ここで計算する（上がるのは速く、落ちるのは一定の速さ。ピークの動きも表示ごと）。
  * 奥へすぼまる形は、平らに描いた絵を射影変換（Matrix.setPolyToPoly）で台形に写して描く（1 本 1 回で描くのはそのまま）。
  * 色の設定が標準の青のときは本物の色で、ほかの色を選んだときは点灯している段をその色にする。
+ * v2.9: 動画のコマを測り直して、段の数・段の太さ・色・段の間のもや（点灯しているところだけ）を合わせた。
  */
 class CarAudioPainter(private val bands: Int) {
 
@@ -64,15 +67,26 @@ class CarAudioPainter(private val bands: Int) {
         val f = if (rows > 1) k.toFloat() / (rows - 1) else 0f
         if (!authentic) return mix(tintBottom, tintTop, f)
         return when (style) {
-            STYLE_BLUE -> mix(Color.rgb(58, 112, 246), Color.rgb(168, 214, 255), f * f)
+            // 動画（DPX-990MD）: 点灯している段は明るい水色がかった青（下ほど少し深い青）
+            STYLE_BLUE -> mix(Color.rgb(96, 168, 255), Color.rgb(160, 218, 255), f)
+            // 動画（DPX-5000）: 床は白っぽい青、下の段は白っぽい水色、中ほどは水色、上は青
             STYLE_STEREO -> when {
-                k == 0 -> Color.rgb(74, 124, 255)                  // いちばん下（いつも点灯）
-                f < 0.25f -> Color.rgb(200, 248, 255)              // 白っぽい水色
-                f < 0.66f -> Color.rgb(76, 218, 246)               // 水色
-                else -> Color.rgb(74, 136, 255)                    // 青
+                k == 0 -> Color.rgb(150, 196, 232)
+                f < 0.3f -> Color.rgb(160, 250, 255)
+                f < 0.68f -> Color.rgb(96, 224, 252)
+                else -> Color.rgb(84, 146, 255)
             }
             else -> if (f < 0.45f) Color.rgb(236, 246, 234) else Color.rgb(36, 224, 244)
         }
+    }
+
+    /**
+     * 段の間のもや（動画の表示の、光っている段の間がうっすら光る色）。点灯しているところだけ、段と同じ幅で描く
+     * （外側にはみ出すと枠のように見えるので、はみ出さない）
+     */
+    private fun hazeColor(style: Int): Int {
+        if (!authentic) return withAlpha(tintBottom, 80)
+        return if (style == STYLE_STEREO) Color.argb(84, 20, 150, 180) else Color.argb(90, 40, 90, 235)
     }
 
     // ================================================================== 状態（バーの動き）
@@ -165,6 +179,7 @@ class CarAudioPainter(private val bands: Int) {
     private val litPattern = Pattern()
     private val peakPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val litPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val hazePaint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     /**
      * 行の模様を作る（区画・色が変わったときだけ。判断は数値の比較で、毎フレームの割り当てはしない）。画像の下端 = 行 0 の下。
@@ -186,6 +201,11 @@ class CarAudioPainter(private val bands: Int) {
                 for (k in 0 until rows) {
                     if (v >= rowTop[k] && v < rowBot[k]) {
                         c = litColor(style, k, rows)
+                        // ステレオの段は二重線（上下の細い線が明るく、間は少し暗い）
+                        if (style == STYLE_STEREO && k > 0) {
+                            val u = (v - rowTop[k]) / (rowBot[k] - rowTop[k])
+                            if (u > 0.36f && u < 0.64f) c = mix(c, Color.rgb(10, 60, 80), 0.45f)
+                        }
                         break
                     }
                 }
@@ -306,13 +326,14 @@ class CarAudioPainter(private val bands: Int) {
         resample(vis, m, 1.1f)
         ballistics(m, dt, rise = 6f, fall = 2.2f)
         area.set(r)
-        val rows = 14
         val fw = area.width()
         val fh = area.height()
+        // 段の数: 動画は約 30 段の細い段。小さな区画では段が細くなりすぎないよう減らす（1 段 4.2 単位以上）
+        val rows = (fh / 4.2f).toInt().coerceIn(16, 30)
         val unit = fh / rows
-        val segH = unit * 0.56f
+        val segH = unit * 0.5f
         val pitch = fw / m
-        val slatW = pitch * 0.74f
+        val slatW = pitch * 0.62f
         val off = (pitch - slatW) / 2f
         // 浮かぶピーク: バーに押し上げられ、離れるとゆっくり上へ浮かんで、上まで行くと消える
         for (j in 0 until m) {
@@ -327,47 +348,52 @@ class CarAudioPainter(private val bands: Int) {
                 }
             }
         }
-        perspective(area, fw, fh, 0.82f)
-        val geom = uniformRows(rows, 0.56f, fw, fh, 0.82f)
+        perspective(area, fw, fh, 0.84f)
+        val geom = uniformRows(rows, 0.5f, fw, fh, 0.84f)
         val lit = pattern(STYLE_BLUE, rows, unit, segH, scale, uniformGeom = geom)
         c.save()
         c.concat(persp)
         placePatternTop(scale)
         litPaint.shader = lit
-        peakPaint.color = Color.rgb(236, 244, 255)
+        hazePaint.color = hazeColor(STYLE_BLUE)
+        peakPaint.color = Color.rgb(228, 242, 255)
         for (j in 0 until m) {
             val x = j * pitch + off
             val litRows = (disp[j] * rows + 0.001f).toInt().coerceIn(0, rows)
             if (litRows > 0 && lit != null) {
-                val top = rowTop[litRows - 1] - unit * 0.12f
-                c.drawRect(x, top, x + slatW, fh, litPaint)
+                val top = rowTop[litRows - 1]
+                c.drawRect(x, top, x + slatW, fh, hazePaint)
+                c.drawRect(x, top - unit * 0.05f, x + slatW, fh, litPaint)
             }
             val p = peakPos[j]
             if (p > 0f) {
                 val pr = (p * rows).toInt().coerceIn(0, rows - 1)
-                if (pr >= litRows) c.drawRect(x, rowTop[pr], x + slatW, rowBot[pr], peakPaint)
+                if (pr >= litRows) {
+                    val pt = rowTop[pr]
+                    val pb = rowBot[pr]
+                    c.drawRect(x, pt, x + slatW, pb, peakPaint)
+                }
             }
         }
         c.restore()
     }
 
-    // ================================================================== ステレオ（9 帯 × 左右・奥へすぼまる形）
+    // ================================================================== ステレオ（9 帯・奥へすぼまる形・二重線の段）
 
     private fun drawStereo(c: Canvas, r: RectF, vis: FloatArray, scale: Float, dt: Float) {
-        val m = 18
+        val m = 9
         resample(vis, m, 1.1f)
         ballistics(m, dt, rise = 6f, fall = 2.3f)
         area.set(r)
-        val rows = 12            // 行 0 = いつも点灯している床
+        val rows = 16            // 行 0 = 床（音が出ている間は点灯）＋ 15 段
         val fw = area.width()
         val fh = area.height()
         val unit = fh / rows
-        val segH = unit * 0.48f
-        // 9 組 × 左右 2 本: 組の中の隙間は小さく、組の間は広く
-        val pairPitch = fw / 9f
-        val colW = pairPitch * 0.38f
-        val innerGap = pairPitch * 0.06f
-        val pairOff = (pairPitch - colW * 2f - innerGap) / 2f
+        val segH = unit * 0.56f
+        // 9 本（動画は左右 2 本の組。v2.9 で 1 本にまとめた。幅は組と同じ）
+        val pitch = fw / m
+        val colW = pitch * 0.78f
+        val off = (pitch - colW) / 2f
         // ピーク: 少し止まってから落ちる
         for (j in 0 until m) {
             val top = disp[j]
@@ -387,25 +413,26 @@ class CarAudioPainter(private val bands: Int) {
                 }
             }
         }
-        perspective(area, fw, fh, 0.78f)
-        val geom = uniformRows(rows, 0.48f, fw, fh, 0.78f)
+        perspective(area, fw, fh, 0.74f)
+        val geom = uniformRows(rows, 0.56f, fw, fh, 0.74f)
         val lit = pattern(STYLE_STEREO, rows, unit, segH, scale, uniformGeom = geom)
         c.save()
         c.concat(persp)
         placePatternTop(scale)
         litPaint.shader = lit
-        peakPaint.color = if (authentic) Color.rgb(84, 140, 255) else mix(tintTop, Color.WHITE, 0.35f)
+        hazePaint.color = hazeColor(STYLE_STEREO)
+        peakPaint.color = if (authentic) Color.rgb(88, 148, 255) else mix(tintTop, Color.WHITE, 0.35f)
         for (j in 0 until m) {
-            val pair = j / 2
-            val x = pair * pairPitch + pairOff + (j % 2) * (colW + innerGap)
-            // 行 0（床）はいつも点灯
-            val litRows = (1 + (disp[j] * (rows - 1) + 0.001f).toInt()).coerceIn(1, rows)
-            if (lit != null) {
-                val top = rowTop[litRows - 1] - unit * 0.15f
+            val x = j * pitch + off
+            // 音が出ていない帯は床も消す（再生していないときに何も出さない）
+            val litRows = if (disp[j] < 0.015f) 0 else (1 + (disp[j] * (rows - 1) + 0.001f).toInt()).coerceIn(1, rows)
+            if (litRows > 0 && lit != null) {
+                val top = rowTop[litRows - 1]
+                if (litRows > 1) c.drawRect(x, top, x + colW, rowTop[0], hazePaint)
                 c.drawRect(x, top, x + colW, fh, litPaint)
             }
             val p = peakPos[j]
-            if (p > 0.02f) {
+            if (p > 0.02f && litRows > 0) {
                 val pr = (1 + (p * (rows - 1)).toInt()).coerceIn(1, rows - 1)
                 if (pr >= litRows) c.drawRect(x, rowTop[pr], x + colW, rowBot[pr], peakPaint)
             }
@@ -442,4 +469,5 @@ class CarAudioPainter(private val bands: Int) {
     }
 
     private fun mix(a: Int, b: Int, t: Float): Int = SpectrumPainter.mix(a, b, t)
+    private fun withAlpha(c: Int, a: Int): Int = SpectrumPainter.withAlpha(c, a)
 }

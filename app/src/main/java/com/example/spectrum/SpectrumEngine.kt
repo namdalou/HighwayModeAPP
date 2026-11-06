@@ -98,6 +98,21 @@ object SpectrumEngine {
     private const val SILENCE_BELOW_REF_DB = 60f
     /** これより小さい音(dBFS)は完全な無音(音声データが 0) */
     private const val DIGITAL_SILENCE_DB = -95f
+
+    // ---- 動きのなめらかさ(v2.9。設定画面の見本のように、ちらつかずに流れるように) ----
+    /**
+     * 帯ごとの強さ(dB)を時間でならす割合(25ms ごとの読み取り 1 回あたり)。
+     * 上がるときは速く(拍に遅れない)、下がるときはゆっくり(1 回ごとの FFT のばらつきでちらつかない)
+     */
+    private const val SMOOTH_ATTACK = 0.5f
+    private const val SMOOTH_RELEASE = 0.15f
+    /** 隣の帯とならす割合(両隣それぞれ)。周波数の山の形がなめらかにつながる */
+    private const val SMOOTH_NEIGHBOR = 0.25f
+    /** 形の基準(いちばん大きい帯)が下がる速さ(dB/秒)。拍の合間に全体が少し下がり、すぐ次の帯が天井に張り付かない */
+    private const val SHAPE_RELEASE_DB_PER_SEC = 12f
+    /** 曲の強弱(loudness)をならす割合(読み取り 1 回あたり。上がる・下がる) */
+    private const val LOUD_ATTACK = 0.6f
+    private const val LOUD_RELEASE = 0.25f
     /** スマホの音量の変化を確認する間隔(ms) */
     private const val VOLUME_CHECK_MS = 300L
 
@@ -448,6 +463,14 @@ object SpectrumEngine {
         private val edges: IntArray
         private val tilt: FloatArray
         private val db = FloatArray(BANDS)
+        /** 隣の帯とならした値(作業用)と、時間でならした値(v2.9) */
+        private val dbF = FloatArray(BANDS)
+        private val dbS = FloatArray(BANDS)
+        private var smoothed = false
+        /** 形の基準(ならした値の最大。すぐ上がり、ゆっくり下がる) */
+        private var shapeRef = -100f
+        /** ならした強弱(0..1)。-1 = まだ無い */
+        private var loudS = -1f
         private val out = FloatArray(BANDS)
         private var ref = -100f   // 自動追従する基準レベル(直近の最大値)。音量が測れない端末用
         private var loudRef = -100f   // 曲の音量の基準(直近の大きい音)
@@ -525,17 +548,48 @@ object SpectrumEngine {
             if (silent) {
                 out.fill(0f)                       // ほぼ無音
                 loudness = 0f
-            } else if (rmsDb != null) {
+                // ならした値は捨てる(次に鳴り始めたら、その音から始める)
+                smoothed = false
+                shapeRef = -100f
+                loudS = -1f
+                return out
+            }
+            // 帯の強さをならす(隣の帯・時間)。frameMaxDb はならした値の最大
+            val k = (dt / 0.025f).coerceIn(0.2f, 4f)
+            val att = 1f - (1f - SMOOTH_ATTACK).pow(k)
+            val rel = 1f - (1f - SMOOTH_RELEASE).pow(k)
+            for (b in 0 until BANDS) {
+                val l = db[if (b > 0) b - 1 else b]
+                val r = db[if (b < BANDS - 1) b + 1 else b]
+                dbF[b] = db[b] * (1f - 2f * SMOOTH_NEIGHBOR) + (l + r) * SMOOTH_NEIGHBOR
+            }
+            frameMaxDb = -100f
+            for (b in 0 until BANDS) {
+                dbS[b] = when {
+                    !smoothed -> dbF[b]
+                    dbF[b] > dbS[b] -> dbS[b] + (dbF[b] - dbS[b]) * att
+                    else -> dbS[b] + (dbF[b] - dbS[b]) * rel
+                }
+                db[b] = dbS[b]
+                if (db[b] > frameMaxDb) frameMaxDb = db[b]
+            }
+            smoothed = true
+            if (rmsDb != null) {
                 // ---- 曲の強弱を反映 ----
                 // 曲の音量の基準: 大きい音には即追従、静かになってもゆっくりしか下げない
                 // → 静かな部分は低く、盛り上がる部分は高く表示される
                 loudRef = if (rmsDb > loudRef) rmsDb else loudRef - LOUD_RELEASE_DB_PER_SEC * dt
-                val loud = ((rmsDb - (loudRef - LOUD_RANGE_DB)) / LOUD_RANGE_DB).coerceIn(0f, 1f)
+                val loudNow = ((rmsDb - (loudRef - LOUD_RANGE_DB)) / LOUD_RANGE_DB).coerceIn(0f, 1f)
+                val la = 1f - (1f - LOUD_ATTACK).pow(k)
+                val lr = 1f - (1f - LOUD_RELEASE).pow(k)
+                loudS = if (loudS < 0f) loudNow else loudS + (loudNow - loudS) * (if (loudNow > loudS) la else lr)
+                val loud = loudS
                 loudness = loud
                 val loudFactor = LOUD_MIN + (1f - LOUD_MIN) * loud
-                // 周波数ごとの形: その瞬間の一番大きい帯域を基準にする
+                // 周波数ごとの形: 一番大きい帯域を基準にする(基準はすぐ上がり、ゆっくり下がる)
+                shapeRef = if (frameMaxDb > shapeRef) frameMaxDb else max(frameMaxDb, shapeRef - SHAPE_RELEASE_DB_PER_SEC * dt)
                 for (b in 0 until BANDS) {
-                    val x = ((db[b] - frameMaxDb + SHAPE_RANGE_DB) / SHAPE_RANGE_DB).coerceIn(0f, 1f)
+                    val x = ((db[b] - shapeRef + SHAPE_RANGE_DB) / SHAPE_RANGE_DB).coerceIn(0f, 1f)
                     out[b] = x * x * HEADROOM * loudFactor
                 }
             } else {
