@@ -43,6 +43,10 @@ class PlayerRenderer {
         private val BAR_BOTTOM = Color.rgb(0, 90, 200)     // 深い青
         private val BAR_TOP = Color.rgb(40, 190, 245)      // 明るい水色寄りの青
 
+        /** バーの動き（ばねの強さ [rad/s]。上がるとき・下がるとき）。v2.9 */
+        private const val RISE_W = 26f
+        private const val FALL_W = 12f
+
         /** 長い曲名などの流し表示: 先頭で止める時間 / 末尾で止める時間 / 流す速さ(仮想座標/秒) */
         private const val MARQUEE_HOLD_START_MS = 3000L
         private const val MARQUEE_HOLD_END_MS = 1500L
@@ -291,6 +295,8 @@ class PlayerRenderer {
     private val n = SpectrumEngine.BANDS
     private val target = FloatArray(n)
     private val level = FloatArray(n)
+    /** バーの動きの速さ（ばねの動き。v2.9） */
+    private val levelVel = FloatArray(n)
     private val peak = FloatArray(n)
 
     private var scale = 1f
@@ -724,18 +730,40 @@ class PlayerRenderer {
     }
 
     /**
+     * バーの高さを目標（解析の値）へ動かす（v2.9）。v2.8 までは「目標との差の一定の割合ずつ」動かしていて、
+     * 解析の値が 25ms ごとに段々に変わるたびにカクッと跳ねた。v2.9 からは、ばね（減衰比 1）で動かして速さが続くようにし、
+     * 設定画面の見本のように、なめらかに上がって下がる（上がるときは約 0.08 秒、下がるときは約 0.2 秒で目標の近く）
+     */
+    private fun stepLevel(i: Int, dt: Float) {
+        val tgt = target[i]
+        if (dt <= 0f) return
+        var t = dt.coerceAtMost(0.1f)
+        while (t > 0f) {
+            val h = min(t, 0.008f)
+            val w = if (tgt > level[i]) RISE_W else FALL_W
+            val acc = w * w * (tgt - level[i]) - 2f * w * levelVel[i]
+            levelVel[i] += acc * h
+            level[i] += levelVel[i] * h
+            t -= h
+        }
+        if (level[i] < 0f) {
+            level[i] = 0f
+            if (levelVel[i] < 0f) levelVel[i] = 0f
+        }
+    }
+
+    /**
      * スペアナ: 帯ごとの高さ・ピークの動き（経過時間で計算）を求めて、設定の表示の種類で描く（[SpectrumPainter]）。
      */
     private fun drawSpectrum(c: Canvas, r: RectF) {
         val st = SpectrumEngine.status
         if (st != SpectrumEngine.Status.RUNNING) target.fill(0f)
 
-        // 経過時間に合わせた動き(60fps で 1 フレームあたり 上がる 0.6・下がる 0.18・ピーク 0.01 と同じ速さ)
+        // 経過時間に合わせた動き（ピークは 60fps で 1 フレームあたり 0.01 と同じ速さ）
         val nowMs = SystemClock.uptimeMillis()
         val f60 = if (lastSpecMs == 0L) 1f else ((nowMs - lastSpecMs) / (1000f / 60f)).coerceIn(0f, 6f)
         lastSpecMs = nowMs
-        val riseK = 1f - 0.4f.pow(f60)
-        val fallK = 1f - 0.82f.pow(f60)
+        val dtSec = f60 / 60f
         val peakFall = 0.01f * f60
         val style = SpectrumStyle.visual
         // ピークを止めておく時間（レトロは長め。昔の表示管のように少し止まってから落ちる）
@@ -745,7 +773,7 @@ class PlayerRenderer {
         // バーの高さ（設定の「スペアナの高さ」で伸びを変える）
         val gain = lay.gain * SpectrumStyle.gainScale
         for (i in 0 until n) {
-            level[i] += (target[i] - level[i]) * (if (target[i] > level[i]) riseK else fallK)
+            stepLevel(i, dtSec)
             // 小さな値は切り捨てて(下の段のちらつき防止)、残りを伸ばして高さを使い切る
             val vis = (((level[i] - floor) / (1f - floor)) * gain).coerceIn(0f, 1f)
             visArr[i] = vis

@@ -117,7 +117,10 @@ class SpectrumPainter(private val n: Int) {
             animating = carAudio.animating
             return
         }
-        // そのほか: 区画いっぱいに、バー・線・メーターだけを描く（表示窓は描かない）
+        // そのほか: 区画いっぱいに、バー・線・メーターだけを描く（表示窓は描かない）。
+        // 音が無い（再生していない）ときは、バー・線は何も描かない（v2.9。メーターは針を左に置いて描く）
+        val meter = style == SpectrumStyle.VISUAL_METER || style == SpectrumStyle.VISUAL_METER_DARK
+        if (!meter && silent(vis, peak)) return
         when (style) {
             SpectrumStyle.VISUAL_BARS -> drawBars(c, r, vis, peak, mirror = false)
             SpectrumStyle.VISUAL_MIRROR -> drawBars(c, r, vis, peak, mirror = true)
@@ -126,6 +129,12 @@ class SpectrumPainter(private val n: Int) {
             SpectrumStyle.VISUAL_METER -> drawMeters(c, r, raw ?: vis, scale, blue = false, dtSec = dtSec)
             else -> drawMeters(c, r, raw ?: vis, scale, blue = true, dtSec = dtSec)
         }
+    }
+
+    /** 帯の高さもピークも、ほぼ 0（音が出ていない） */
+    private fun silent(vis: FloatArray, peak: FloatArray): Boolean {
+        for (i in 0 until n) if (vis[i] > 0.004f || peak[i] > 0.004f) return false
+        return true
     }
 
     // ================================================================== 段の模様（LED）
@@ -295,7 +304,11 @@ class SpectrumPainter(private val n: Int) {
             barPaint.shader = sh
             val bx = r.left + i * (barW + gap)
             if (mirror) {
-                val hh = max(0.7f, vis[i] * (r.height() / 2f - 1.5f))
+                val hh = vis[i] * (r.height() / 2f - 1.5f)
+                if (hh < 0.4f) {
+                    if (peak[i] > 0.03f) drawMirrorPeak(c, bx, barW, cy, r, peak[i])
+                    continue
+                }
                 // にじみ
                 barPaint.alpha = 60
                 tmp.set(bx - 0.8f, cy - hh - 0.8f, bx + barW + 0.8f, cy + hh + 0.8f)
@@ -303,14 +316,7 @@ class SpectrumPainter(private val n: Int) {
                 barPaint.alpha = 255
                 tmp.set(bx, cy - hh, bx + barW, cy + hh)
                 c.drawRoundRect(tmp, rad, rad, barPaint)
-                if (peak[i] > 0.03f) {
-                    val ph = peak[i] * (r.height() / 2f - 1.5f) + 1f
-                    val capH = max(1.2f, barW * 0.22f)
-                    tmp.set(bx, cy - ph - capH, bx + barW, cy - ph)
-                    c.drawRoundRect(tmp, capH / 2f, capH / 2f, capPaint)
-                    tmp.set(bx, cy + ph, bx + barW, cy + ph + capH)
-                    c.drawRoundRect(tmp, capH / 2f, capH / 2f, capPaint)
-                }
+                if (peak[i] > 0.03f) drawMirrorPeak(c, bx, barW, cy, r, peak[i])
             } else {
                 val bh = vis[i] * (h - 3f)
                 if (bh > 0.6f) {
@@ -343,6 +349,15 @@ class SpectrumPainter(private val n: Int) {
             plain.color = withAlpha(colTop[0], 60)
             c.drawRect(r.left, base + 0.4f, r.right, base + 0.9f, plain)
         }
+    }
+
+    private fun drawMirrorPeak(c: Canvas, bx: Float, barW: Float, cy: Float, r: RectF, pk: Float) {
+        val ph = pk * (r.height() / 2f - 1.5f) + 1f
+        val capH = max(1.2f, barW * 0.22f)
+        tmp.set(bx, cy - ph - capH, bx + barW, cy - ph)
+        c.drawRoundRect(tmp, capH / 2f, capH / 2f, capPaint)
+        tmp.set(bx, cy + ph, bx + barW, cy + ph + capH)
+        c.drawRoundRect(tmp, capH / 2f, capH / 2f, capPaint)
     }
 
     // ================================================================== ライン
@@ -562,39 +577,28 @@ class SpectrumPainter(private val n: Int) {
 
     /**
      * メーターの並びと大きさを決める（区画の中、左右・上下の中央。横:縦 = 約 1.72:1。両端の目盛りの数字が板に収まるように）。
-     * 2 つ（左 = 低音・右 = 高音。横に並べるか縦に積む）にしても十分大きければ 2 つ、そうでなければ 1 つを大きく（v2.8）
+     * いつも 2 つ（左・上 = 低音、右・下 = 高音）。横に並べるか縦に積むかは、メーターが大きくなる方（v2.9。v2.8 は 1 つにすることがあった）
      */
     private fun meterLayout(r: RectF) {
         val w = r.width()
         val h = r.height()
         val gapX = w * 0.035f
         val gapY = h * 0.05f
-        val one = min(h, w / 1.72f)
         val side = min(h, (w - gapX) / 2f / 1.72f)
         val stack = min((h - gapY) / 2f, w / 1.72f)
-        val count: Int
-        val mh: Float
-        val stacked: Boolean
-        if (max(side, stack) >= one * 0.72f) {
-            count = 2
-            stacked = stack > side
-            mh = if (stacked) stack else side
-        } else {
-            count = 1
-            stacked = false
-            mh = one
-        }
+        val stacked = stack > side
+        val mh = if (stacked) stack else side
         val mw = mh * 1.72f
-        val totalW = if (count == 2 && !stacked) mw * 2 + gapX else mw
-        val totalH = if (count == 2 && stacked) mh * 2 + gapY else mh
+        val totalW = if (stacked) mw else mw * 2 + gapX
+        val totalH = if (stacked) mh * 2 + gapY else mh
         val left = r.left + (w - totalW) / 2f
         val topY = r.top + (h - totalH) / 2f
-        for (k in 0 until count) {
+        for (k in 0 until 2) {
             val x = if (stacked) left else left + k * (mw + gapX)
             val y = if (stacked) topY + k * (mh + gapY) else topY
             faceRect[k].set(x, y, x + mw, y + mh)
         }
-        meterCount = count
+        meterCount = 2
         meterW = mw
         meterH = mh
     }
