@@ -28,6 +28,7 @@ import kotlin.math.pow
  *
  * バーの動きは、ここで計算する（上がるのは速く、落ちるのは一定の速さ。ピークの動きも表示ごと）。
  * v2.10 で、利用者の「遅い・高すぎる」に合わせて、上がる速さを 2〜3 倍に、入力の伸び（v2.7 は 1.1〜1.2 倍）を 1.0〜1.05 倍にした。
+ * v2.12 で、さらに上がり 24（イコライザー 40）・下がり 3.6（6）高さ/秒に速くした。
  * 奥へすぼまる形は、平らに描いた絵を射影変換（Matrix.setPolyToPoly）で台形に写して描く（1 本 1 回で描くのはそのまま）。
  * 色の設定が標準の青のときは本物の色で、ほかの色を選んだときは点灯している段をその色にする。
  * v2.9: 動画のコマを測り直して、段の数・段の太さ・色・段の間のもや（点灯しているところだけ）を合わせた。
@@ -337,7 +338,7 @@ class CarAudioPainter(private val bands: Int) {
     private fun drawBlue(c: Canvas, r: RectF, vis: FloatArray, scale: Float, dt: Float) {
         val m = 20
         resample(vis, m, 1.0f)
-        ballistics(m, dt, rise = 16f, fall = 2.8f)
+        ballistics(m, dt, rise = 24f, fall = 3.6f)
         area.set(r)
         val fw = area.width()
         val fh = area.height()
@@ -404,7 +405,7 @@ class CarAudioPainter(private val bands: Int) {
     private fun drawStereo(c: Canvas, r: RectF, vis: FloatArray, scale: Float, dt: Float) {
         val m = 9
         resample(vis, m, 1.0f)
-        ballistics(m, dt, rise = 16f, fall = 2.8f)
+        ballistics(m, dt, rise = 24f, fall = 3.6f)
         area.set(r)
         val rows = 16            // 行 0 = 床（音が出ている間は点灯）＋ 15 段
         val fw = area.width()
@@ -466,7 +467,7 @@ class CarAudioPainter(private val bands: Int) {
     private fun drawEq(c: Canvas, r: RectF, vis: FloatArray, scale: Float, dt: Float) {
         val m = 15
         resample(vis, m, 1.05f)
-        ballistics(m, dt, rise = 30f, fall = 5f)
+        ballistics(m, dt, rise = 40f, fall = 6f)
         area.set(r)
         // 細い線の集まり（蛍光表示管の 1 本 1 本の線）
         val unit = (area.height() / 40f).coerceAtLeast(1.0f)

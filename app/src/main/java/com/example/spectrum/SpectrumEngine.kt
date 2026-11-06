@@ -104,22 +104,26 @@ object SpectrumEngine {
     // (拍で上へ、拍の合間で下へ。ずっと鳴っている音は中ほどに落ち着く)。下がる速さは画面(PlayerRenderer)で一定にする
     /** 帯ごとの強さ(dB)を時間でならす割合(25ms ごとの読み取り 1 回あたり。上がる・下がる) */
     private const val SMOOTH_ATTACK = 0.8f
-    private const val SMOOTH_RELEASE = 0.45f
+    private const val SMOOTH_RELEASE = 0.6f
     /** 隣の帯とならす割合(両隣それぞれ)。周波数の山の形がつながる */
     private const val SMOOTH_NEIGHBOR = 0.15f
-    /** 帯ごとの「最近の平均」を取る長さ(時定数・秒) */
-    private const val BAND_AVG_SEC = 1.0f
-    /** 全体の基準(最近いちばん大きい帯)が下がる速さ(dB/秒) */
-    private const val TOP_RELEASE_DB_PER_SEC = 6f
+    /** 帯ごとの「最近の平均」を取る長さ(時定数・秒)。v2.12 で 1.0 → 0.6(鳴り続ける音が早く中ほどへ戻り、動きが速く見える) */
+    private const val BAND_AVG_SEC = 0.6f
+    /** 全体の基準(最近いちばん大きい帯)が下がる速さ(dB/秒)。v2.12 で 6 → 10 */
+    private const val TOP_RELEASE_DB_PER_SEC = 10f
     /** 周波数ごとの形(平均と基準の差)を縮める割合。小さいほど帯ごとの高さの差が小さい */
     private const val SPEC_K = 0.5f
-    /** 平均からの差(拍・音の立ち上がり)を広げる割合。大きいほどメリハリが強い */
-    private const val DYN_K = 2.0f
+    /** 平均からの差(拍・音の立ち上がり)を広げる割合。大きいほどメリハリが強い(v2.12 で 2.0 → 2.4) */
+    private const val DYN_K = 2.4f
     /** 基準より何 dB 下までを表すか(0)と、基準より何 dB 上で一番上になるか */
     private const val SHOW_BELOW_DB = 20f
     private const val SHOW_ABOVE_DB = 10f
-    /** 一番上(1.0)に当たる値。PlayerRenderer の伸び(1.0〜1.25)をかけて、天井に届くのは強い拍だけ */
+    /**
+     * 写した位置が 1 のときの高さ(v2.12)。1 を超えた分(とても強い拍。基準より [TOP_EXT_DB] 以上)だけで残りの上の 2 割を使う。
+     * v2.11 までは画面の伸び(横画面 1.25)で天井に届かせていて、横画面では上に張り付いて見えた。v2.12 から伸びはどの画面も 1.0
+     */
     private const val TOP_LEVEL = 0.8f
+    private const val TOP_EXT_DB = 12f
     /** 曲の強弱(loudness)をならす割合(読み取り 1 回あたり。上がる・下がる) */
     private const val LOUD_ATTACK = 0.6f
     private const val LOUD_RELEASE = 0.25f
@@ -601,11 +605,13 @@ object SpectrumEngine {
                 loudness = -1f
                 1f
             }
-            // 高さ: 周波数ごとの形(縮めて)＋最近の平均からの差(広げて)を、基準の 20 dB 下〜10 dB 上に写す
+            // 高さ: 周波数ごとの形(縮めて)＋最近の平均からの差(広げて)を、基準の 20 dB 下〜10 dB 上に写す。
+            // 10 dB 上を超えた分は、さらに 12 dB で残りの上の部分(天井まで)を使う(天井に届くのはとても強い拍だけ)
             for (b in 0 until BANDS) {
                 val p = (dbAvg[b] - topRef) * SPEC_K + (dbS[b] - dbAvg[b]) * DYN_K
                 val x = ((p + SHOW_BELOW_DB) / (SHOW_BELOW_DB + SHOW_ABOVE_DB)).coerceIn(0f, 1f)
-                out[b] = x * TOP_LEVEL * loudFactor
+                val over = ((p - SHOW_ABOVE_DB) / TOP_EXT_DB).coerceIn(0f, 1f)
+                out[b] = (x * TOP_LEVEL + over * (1f - TOP_LEVEL)) * loudFactor
             }
             // 受け取る側(画面)はその場で写すので、配列は使い回す(毎回の確保をしない)
             return out
