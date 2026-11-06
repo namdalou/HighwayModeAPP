@@ -65,12 +65,6 @@ object SpectrumEngine {
     @Volatile private var lastOpenedPkg: String? = null
 
     // ---- 感度調整用の値 ----
-    /** (音量が測れない端末用)表示するダイナミックレンジ(dB) */
-    private const val RANGE_DB = 37f
-    /** 最大音量時のバーの高さ(0..1)。1 未満にすると天井に張り付きにくい */
-    private const val HEADROOM = 0.7f
-    /** (音量が測れない端末用)基準レベルが下がる速さ(dB/フレーム) */
-    private const val REF_RELEASE_DB = 0.08f
     /** これ未満の振幅は無音とみなす(8bit量子化ノイズ対策) */
     private const val GATE = 2.5f
     /** 高音域の補正(dB/オクターブ)。音楽は高音ほど小さいので持ち上げる */
@@ -88,9 +82,7 @@ object SpectrumEngine {
      */
     private const val LOUD_RELEASE_DB_PER_SEC = 1.0f
     /** いちばん静かな部分でのバーの高さの割合(0..1)。0 に近いほど静かな部分でほぼ動かない */
-    private const val LOUD_MIN = 0.15f
-    /** 周波数ごとのバランス(形)を、その瞬間の一番大きい帯域から何 dB 下まで表すか */
-    private const val SHAPE_RANGE_DB = 30f
+    private const val LOUD_MIN = 0.35f
     /**
      * 曲の音量の基準からこれ以上小さい音は無音とみなす(dB)。
      * スマホの音量によらず「音が出ていれば動く」よう、絶対値ではなく基準からの差で判定する。
@@ -99,17 +91,28 @@ object SpectrumEngine {
     /** これより小さい音(dBFS)は完全な無音(音声データが 0) */
     private const val DIGITAL_SILENCE_DB = -95f
 
-    // ---- 動きのなめらかさ(v2.9。設定画面の見本のように、ちらつかずに流れるように) ----
-    /**
-     * 帯ごとの強さ(dB)を時間でならす割合(25ms ごとの読み取り 1 回あたり)。
-     * 上がるときは速く(拍に遅れない)、下がるときはゆっくり(1 回ごとの FFT のばらつきでちらつかない)
-     */
-    private const val SMOOTH_ATTACK = 0.5f
-    private const val SMOOTH_RELEASE = 0.15f
-    /** 隣の帯とならす割合(両隣それぞれ)。周波数の山の形がなめらかにつながる */
-    private const val SMOOTH_NEIGHBOR = 0.25f
-    /** 形の基準(いちばん大きい帯)が下がる速さ(dB/秒)。拍の合間に全体が少し下がり、すぐ次の帯が天井に張り付かない */
-    private const val SHAPE_RELEASE_DB_PER_SEC = 12f
+    // ---- 高さと動き(v2.10) ----
+    // v2.9 は、なめらかにするために帯の強さを時間でならしすぎて、バーが上の方に張り付いたまま、ほとんど動かなかった。
+    // v2.10 は、ならしは FFT のばらつきを抑える程度にして、高さを「その帯の最近の平均からどれだけ大きいか」で付ける
+    // (拍で上へ、拍の合間で下へ。ずっと鳴っている音は中ほどに落ち着く)。下がる速さは画面(PlayerRenderer)で一定にする
+    /** 帯ごとの強さ(dB)を時間でならす割合(25ms ごとの読み取り 1 回あたり。上がる・下がる) */
+    private const val SMOOTH_ATTACK = 0.8f
+    private const val SMOOTH_RELEASE = 0.45f
+    /** 隣の帯とならす割合(両隣それぞれ)。周波数の山の形がつながる */
+    private const val SMOOTH_NEIGHBOR = 0.15f
+    /** 帯ごとの「最近の平均」を取る長さ(時定数・秒) */
+    private const val BAND_AVG_SEC = 1.0f
+    /** 全体の基準(最近いちばん大きい帯)が下がる速さ(dB/秒) */
+    private const val TOP_RELEASE_DB_PER_SEC = 6f
+    /** 周波数ごとの形(平均と基準の差)を縮める割合。小さいほど帯ごとの高さの差が小さい */
+    private const val SPEC_K = 0.5f
+    /** 平均からの差(拍・音の立ち上がり)を広げる割合。大きいほどメリハリが強い */
+    private const val DYN_K = 2.0f
+    /** 基準より何 dB 下までを表すか(0)と、基準より何 dB 上で一番上になるか */
+    private const val SHOW_BELOW_DB = 20f
+    private const val SHOW_ABOVE_DB = 10f
+    /** 一番上(1.0)に当たる値。PlayerRenderer の伸び(1.0〜1.25)をかけて、天井に届くのは強い拍だけ */
+    private const val TOP_LEVEL = 0.8f
     /** 曲の強弱(loudness)をならす割合(読み取り 1 回あたり。上がる・下がる) */
     private const val LOUD_ATTACK = 0.6f
     private const val LOUD_RELEASE = 0.25f
@@ -466,13 +469,14 @@ object SpectrumEngine {
         /** 隣の帯とならした値(作業用)と、時間でならした値(v2.9) */
         private val dbF = FloatArray(BANDS)
         private val dbS = FloatArray(BANDS)
+        /** 帯ごとの最近の平均(dB) */
+        private val dbAvg = FloatArray(BANDS)
         private var smoothed = false
-        /** 形の基準(ならした値の最大。すぐ上がり、ゆっくり下がる) */
-        private var shapeRef = -100f
+        /** 全体の基準(ならした値の最大。すぐ上がり、ゆっくり下がる) */
+        private var topRef = -100f
         /** ならした強弱(0..1)。-1 = まだ無い */
         private var loudS = -1f
         private val out = FloatArray(BANDS)
-        private var ref = -100f   // 自動追従する基準レベル(直近の最大値)。音量が測れない端末用
         private var loudRef = -100f   // 曲の音量の基準(直近の大きい音)
 
         /** 強弱の基準を捨てて、次に届く音を新しい基準にする(音量変更時) */
@@ -550,7 +554,7 @@ object SpectrumEngine {
                 loudness = 0f
                 // ならした値は捨てる(次に鳴り始めたら、その音から始める)
                 smoothed = false
-                shapeRef = -100f
+                topRef = -100f
                 loudS = -1f
                 return out
             }
@@ -563,6 +567,7 @@ object SpectrumEngine {
                 val r = db[if (b < BANDS - 1) b + 1 else b]
                 dbF[b] = db[b] * (1f - 2f * SMOOTH_NEIGHBOR) + (l + r) * SMOOTH_NEIGHBOR
             }
+            val avgA = min(1f, dt / BAND_AVG_SEC)
             frameMaxDb = -100f
             for (b in 0 until BANDS) {
                 dbS[b] = when {
@@ -570,37 +575,30 @@ object SpectrumEngine {
                     dbF[b] > dbS[b] -> dbS[b] + (dbF[b] - dbS[b]) * att
                     else -> dbS[b] + (dbF[b] - dbS[b]) * rel
                 }
-                db[b] = dbS[b]
-                if (db[b] > frameMaxDb) frameMaxDb = db[b]
+                dbAvg[b] = if (!smoothed) dbS[b] else dbAvg[b] + (dbS[b] - dbAvg[b]) * avgA
+                if (dbS[b] > frameMaxDb) frameMaxDb = dbS[b]
             }
             smoothed = true
-            if (rmsDb != null) {
-                // ---- 曲の強弱を反映 ----
+            topRef = if (frameMaxDb > topRef) frameMaxDb else max(frameMaxDb, topRef - TOP_RELEASE_DB_PER_SEC * dt)
+            // 曲の強弱(音量が測れる端末だけ): 静かな部分は全体を低く
+            val loudFactor = if (rmsDb != null) {
                 // 曲の音量の基準: 大きい音には即追従、静かになってもゆっくりしか下げない
-                // → 静かな部分は低く、盛り上がる部分は高く表示される
                 loudRef = if (rmsDb > loudRef) rmsDb else loudRef - LOUD_RELEASE_DB_PER_SEC * dt
                 val loudNow = ((rmsDb - (loudRef - LOUD_RANGE_DB)) / LOUD_RANGE_DB).coerceIn(0f, 1f)
                 val la = 1f - (1f - LOUD_ATTACK).pow(k)
                 val lr = 1f - (1f - LOUD_RELEASE).pow(k)
                 loudS = if (loudS < 0f) loudNow else loudS + (loudNow - loudS) * (if (loudNow > loudS) la else lr)
-                val loud = loudS
-                loudness = loud
-                val loudFactor = LOUD_MIN + (1f - LOUD_MIN) * loud
-                // 周波数ごとの形: 一番大きい帯域を基準にする(基準はすぐ上がり、ゆっくり下がる)
-                shapeRef = if (frameMaxDb > shapeRef) frameMaxDb else max(frameMaxDb, shapeRef - SHAPE_RELEASE_DB_PER_SEC * dt)
-                for (b in 0 until BANDS) {
-                    val x = ((db[b] - shapeRef + SHAPE_RANGE_DB) / SHAPE_RANGE_DB).coerceIn(0f, 1f)
-                    out[b] = x * x * HEADROOM * loudFactor
-                }
+                loudness = loudS
+                LOUD_MIN + (1f - LOUD_MIN) * loudS
             } else {
-                // 音量が測れない端末: 従来の方法(基準を自動追従)
-                ref = if (frameMaxDb > ref) frameMaxDb else ref - REF_RELEASE_DB
-                val floor = ref - RANGE_DB
-                for (b in 0 until BANDS) {
-                    val x = ((db[b] - floor) / RANGE_DB).coerceIn(0f, 1f)
-                    out[b] = x * x * HEADROOM      // 2乗で上の方を圧縮
-                }
                 loudness = -1f
+                1f
+            }
+            // 高さ: 周波数ごとの形(縮めて)＋最近の平均からの差(広げて)を、基準の 20 dB 下〜10 dB 上に写す
+            for (b in 0 until BANDS) {
+                val p = (dbAvg[b] - topRef) * SPEC_K + (dbS[b] - dbAvg[b]) * DYN_K
+                val x = ((p + SHOW_BELOW_DB) / (SHOW_BELOW_DB + SHOW_ABOVE_DB)).coerceIn(0f, 1f)
+                out[b] = x * TOP_LEVEL * loudFactor
             }
             // 受け取る側(画面)はその場で写すので、配列は使い回す(毎回の確保をしない)
             return out

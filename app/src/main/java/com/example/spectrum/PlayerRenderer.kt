@@ -43,9 +43,12 @@ class PlayerRenderer {
         private val BAR_BOTTOM = Color.rgb(0, 90, 200)     // 深い青
         private val BAR_TOP = Color.rgb(40, 190, 245)      // 明るい水色寄りの青
 
-        /** バーの動き（ばねの強さ [rad/s]。上がるとき・下がるとき）。v2.9 */
-        private const val RISE_W = 26f
-        private const val FALL_W = 12f
+        /**
+         * バーの動き（v2.10）: 上がるときは時定数 [RISE_TAU] 秒ですぐ目標へ、下がるときは一定の速さ [FALL_PER_SEC]（解析の値/秒。
+         * 画面の高さでは毎秒 2〜2.5 本分）で落ちる。昔のスペアナのように、拍でパッと上がって、すっと落ちる
+         */
+        private const val RISE_TAU = 0.025f
+        private const val FALL_PER_SEC = 2.0f
 
         /** 長い曲名などの流し表示: 先頭で止める時間 / 末尾で止める時間 / 流す速さ(仮想座標/秒) */
         private const val MARQUEE_HOLD_START_MS = 3000L
@@ -167,26 +170,33 @@ class PlayerRenderer {
     )
 
     /**
-     * 横画面(Android Auto 全画面・横向きスマホ・ディスプレイオーディオ) 400x214。
+     * 横画面(Android Auto 全画面・横向きスマホ・ディスプレイオーディオ): 高さ 214、幅は画面の比率に合わせる(400〜640)。
      * 左上ジャケット、右にスペアナ(高め)、左下に曲情報、右下に大きい操作ボタン、最下部にシーク。
+     * v2.9 までは幅 400 に固定して画面に収めていたので、横に長い画面(車の 1920x720 など)では左右に大きな余白が出ていた。
+     * v2.10 から、横に長い分はスペアナ・曲情報・シークを横に広げる(ジャケット・文字・ボタンの大きさと形はそのまま)。
      */
-    private val landscape = Layout(
-        vw = 400f, vh = 214f,
-        art = RectF(12f, 8f, 128f, 124f),       // 下端をスペアナの下端に揃える
-        spec = RectF(148f, 8f, 380f, 124f),     // 左右の余白(ジャケットとの間・右端)をどちらも 20 に
-        specOnly = RectF(12f, 8f, 388f, 126f),
-        textX = 32f, textRight = 228f, iconX = 12f,
-        titleY = 140f, albumY = 158f, artistY = 176f,
-        titleSize = 14f, subSize = 12f,
-        prev = RectF(240f, 139f, 274f, 173f),
-        play = RectF(280f, 138f, 340f, 174f),
-        next = RectF(346f, 139f, 380f, 173f),
-        seekX0 = 72f, seekX1 = 322f, seekY = 198f,
-        timeY = 202f, timeSize = 11f,
-        seekTouch = RectF(66f, 186f, 328f, 214f),
-        hintY = 202f,
-        segUnit = 4.2f, gain = 1.25f, noiseFloor = 0.06f
-    )
+    private fun landscapeLayout(vw: Float): Layout {
+        val dx = vw - 400f
+        return Layout(
+            vw = vw, vh = 214f,
+            art = RectF(10f, 8f, 126f, 124f),       // 下端をスペアナの下端に揃える
+            spec = RectF(144f, 8f, vw - 10f, 124f), // ジャケットとの間 18・右端 10
+            specOnly = RectF(10f, 8f, vw - 10f, 126f),
+            textX = 30f, textRight = 228f + dx, iconX = 10f,
+            titleY = 140f, albumY = 158f, artistY = 176f,
+            titleSize = 14f, subSize = 12f,
+            prev = RectF(244f + dx, 139f, 278f + dx, 173f),
+            play = RectF(284f + dx, 138f, 344f + dx, 174f),
+            next = RectF(350f + dx, 139f, 384f + dx, 173f),
+            seekX0 = 70f, seekX1 = 324f + dx, seekY = 198f,
+            timeY = 202f, timeSize = 11f,
+            seekTouch = RectF(64f, 186f, 330f + dx, 214f),
+            hintY = 202f,
+            segUnit = 4.2f, gain = 1.25f, noiseFloor = 0.06f
+        )
+    }
+    private val landscape = landscapeLayout(400f)
+    private var landscapeCache: Layout? = null
 
     /**
      * 縦画面: 幅 240 固定、高さは実際の画面比率に合わせる(縦長スマホでも余白が出ないように)。
@@ -295,8 +305,6 @@ class PlayerRenderer {
     private val n = SpectrumEngine.BANDS
     private val target = FloatArray(n)
     private val level = FloatArray(n)
-    /** バーの動きの速さ（ばねの動き。v2.9） */
-    private val levelVel = FloatArray(n)
     private val peak = FloatArray(n)
 
     private var scale = 1f
@@ -492,7 +500,10 @@ class PlayerRenderer {
             val pc = portraitCache
             if (pc != null && pc.vh == vh) pc else portraitLayout(vh).also { portraitCache = it }
         } else {
-            landscape
+            // 横画面: 幅を画面の比率に合わせる（横に長い画面でも左右に余白を出さない）
+            val vw = (214f * aspect).coerceIn(400f, 640f)
+            val lc = landscapeCache
+            if (lc != null && lc.vw == vw) lc else landscapeLayout(vw).also { landscapeCache = it }
         }
         scale = min(w / lay.vw, h / lay.vh)
         ox = l + (w - lay.vw * scale) / 2f
@@ -730,25 +741,17 @@ class PlayerRenderer {
     }
 
     /**
-     * バーの高さを目標（解析の値）へ動かす（v2.9）。v2.8 までは「目標との差の一定の割合ずつ」動かしていて、
-     * 解析の値が 25ms ごとに段々に変わるたびにカクッと跳ねた。v2.9 からは、ばね（減衰比 1）で動かして速さが続くようにし、
-     * 設定画面の見本のように、なめらかに上がって下がる（上がるときは約 0.08 秒、下がるときは約 0.2 秒で目標の近く）
+     * バーの高さを目標（解析の値）へ動かす。上がるのは速く（[RISE_TAU]）、下がるのは一定の速さ（[FALL_PER_SEC]）。
+     * v2.9 はばねでなめらかにしたが、遅くてほとんど動いて見えなかったので、v2.10 で上がり・下がりを別にした
      */
     private fun stepLevel(i: Int, dt: Float) {
-        val tgt = target[i]
         if (dt <= 0f) return
-        var t = dt.coerceAtMost(0.1f)
-        while (t > 0f) {
-            val h = min(t, 0.008f)
-            val w = if (tgt > level[i]) RISE_W else FALL_W
-            val acc = w * w * (tgt - level[i]) - 2f * w * levelVel[i]
-            levelVel[i] += acc * h
-            level[i] += levelVel[i] * h
-            t -= h
-        }
-        if (level[i] < 0f) {
-            level[i] = 0f
-            if (levelVel[i] < 0f) levelVel[i] = 0f
+        val tgt = target[i]
+        val d = dt.coerceAtMost(0.1f)
+        level[i] = if (tgt > level[i]) {
+            level[i] + (tgt - level[i]) * (1f - kotlin.math.exp(-d / RISE_TAU))
+        } else {
+            max(tgt, level[i] - FALL_PER_SEC * d)
         }
     }
 
