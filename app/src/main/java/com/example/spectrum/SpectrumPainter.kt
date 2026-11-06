@@ -202,45 +202,61 @@ class SpectrumPainter(private val n: Int) {
 
     private val ledPaint = Paint()
 
+    /**
+     * LED（標準）。ブロックの大きさと並びはどの画面でもスマホの縦画面と同じ（v2.12）:
+     * 段の間隔 = segUnit（点灯は 72%）、列の間隔 = 段の間隔 ÷ [LED_ROW_PER_COL]（列の隙間はその 22%）。
+     * 横に広い区画では、ブロックを大きくせず本数を増やす（24〜[LED_MAX_COLS] 本。帯の間の高さはなめらかにつなぐ）。
+     * v2.11 はバーの幅から段の高さを決めていたので、横画面ではブロックが縦画面の 2 倍近い大きさになっていた
+     */
     private fun drawLed(c: Canvas, r: RectF, vis: FloatArray, peak: FloatArray, scale: Float, segUnit: Float) {
         val x0 = r.left
         val y1 = r.bottom
-        // ブロックの形をどの画面でも同じに（v2.11）: 列の隙間は列の幅の約 2 割、段の高さはバーの幅から決める
-        // （スマホの縦画面と同じ縦横比。横に広い画面で、幅の広い薄い段にならないように）
-        val gap = max(2f, r.width() / n * 0.22f)
-        val barW = (r.width() - gap * (n - 1)) / n
-        val unit = max(segUnit, barW * 0.76f)
+        val unit = segUnit
         val segH = unit * 0.72f
         val rows = ((r.height() + unit - segH) / unit).toInt()
         if (rows <= 0) return
+        val colPitch = unit / LED_ROW_PER_COL
+        val m = (r.width() / colPitch).toInt().coerceIn(n, LED_MAX_COLS)
+        val gap = max(1.5f, r.width() / m * 0.22f)
+        val barW = (r.width() - gap * (m - 1)) / m
         ledCache.check(rows, unit, segH, scale)
-        for (i in 0 until n) {
-            val sh = ledCache.shader(i)
-            if (sh != null && (i == 0 || !uniform)) {
+        var placed: BitmapShader? = null
+        for (j in 0 until m) {
+            // 帯の位置（本数が帯の数と同じなら j そのもの。多いときは帯の間をつなぐ）
+            val u = if (m == n) j.toFloat() else ((j + 0.5f) * n / m - 0.5f).coerceIn(0f, (n - 1).toFloat())
+            val i0 = u.toInt().coerceIn(0, n - 1)
+            val i1 = min(i0 + 1, n - 1)
+            val f = u - i0
+            val v = vis[i0] + (vis[i1] - vis[i0]) * f
+            val pk = peak[i0] + (peak[i1] - peak[i0]) * f
+            val ci = if (uniform) 0 else (u + 0.5f).toInt().coerceIn(0, n - 1)
+            val sh = ledCache.shader(ci)
+            if (sh != null && sh !== placed) {
                 // 模様の 1 画素 = 画面の 1 画素、模様の下端 = バーの根元
                 matrix.setScale(1f / scale, 1f / scale)
-                matrix.postTranslate(0f, y1 - ledCache.heights[if (uniform) 0 else i] / scale)
+                matrix.postTranslate(0f, y1 - ledCache.heights[if (uniform) 0 else ci] / scale)
                 sh.setLocalMatrix(matrix)
+                placed = sh
             }
-            val bx = x0 + i * (barW + gap)
-            val lit = (vis[i] * rows).toInt()       // 切り捨て: 届いた段だけ点灯
+            val bx = x0 + j * (barW + gap)
+            val lit = (v * rows).toInt()       // 切り捨て: 届いた段だけ点灯
             if (lit > 0) {
                 if (sh != null) {
                     ledPaint.shader = sh
                     c.drawRect(bx, y1 - lit * unit, bx + barW, y1, ledPaint)
                 } else {
                     for (rr in 0 until lit) {
-                        plain.color = mix(colBottom[i], colTop[i], rr.toFloat() / max(1, rows - 1))
-                        val b = y1 - rr * unit
-                        c.drawRect(bx, b - segH, bx + barW, b, plain)
+                        plain.color = mix(colBottom[ci], colTop[ci], rr.toFloat() / max(1, rows - 1))
+                        val bb = y1 - rr * unit
+                        c.drawRect(bx, bb - segH, bx + barW, bb, plain)
                     }
                 }
             }
-            if (peak[i] > 0.04f) {
-                val row = min(max((peak[i] * rows).toInt(), lit), rows - 1)
-                val b = y1 - row * unit
+            if (pk > 0.04f) {
+                val row = min(max((pk * rows).toInt(), lit), rows - 1)
+                val bb = y1 - row * unit
                 plain.color = peakColor
-                c.drawRect(bx, b - segH * 0.6f, bx + barW, b, plain)
+                c.drawRect(bx, bb - segH * 0.6f, bx + barW, bb, plain)
             }
         }
     }
@@ -905,6 +921,10 @@ class SpectrumPainter(private val n: Int) {
     }
 
     companion object {
+        /** LED のブロック: 段の間隔 ÷ 列の間隔（スマホの縦画面: 5.5 ÷ 9.2）と、本数の上限 */
+        private const val LED_ROW_PER_COL = 0.6f
+        private const val LED_MAX_COLS = 64
+
         /** 針のばねの強さと減衰（約 38 rad/s・減衰比 0.6: 約 0.05 秒で振れ、行き過ぎは 9% ほど） */
         private const val NEEDLE_K = 1444f
         private const val NEEDLE_D = 46f

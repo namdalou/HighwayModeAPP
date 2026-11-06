@@ -44,11 +44,11 @@ class PlayerRenderer {
         private val BAR_TOP = Color.rgb(40, 190, 245)      // 明るい水色寄りの青
 
         /**
-         * バーの動き（v2.10）: 上がるときは時定数 [RISE_TAU] 秒ですぐ目標へ、下がるときは一定の速さ [FALL_PER_SEC]（解析の値/秒。
-         * 画面の高さでは毎秒 2〜2.5 本分）で落ちる。昔のスペアナのように、拍でパッと上がって、すっと落ちる
+         * バーの動き（v2.10、v2.12 で速く）: 上がるときは時定数 [RISE_TAU] 秒ですぐ目標へ、下がるときは一定の速さ [FALL_PER_SEC]
+         * （解析の値/秒。画面の高さでは毎秒約 4 本分）で落ちる。拍でパッと上がって、上がるよりは少しゆっくり落ちる
          */
-        private const val RISE_TAU = 0.025f
-        private const val FALL_PER_SEC = 2.0f
+        private const val RISE_TAU = 0.012f
+        private const val FALL_PER_SEC = 4.0f
 
         /** 長い曲名などの流し表示: 先頭で止める時間 / 末尾で止める時間 / 流す速さ(仮想座標/秒) */
         private const val MARQUEE_HOLD_START_MS = 3000L
@@ -198,7 +198,8 @@ class PlayerRenderer {
             timeY = 202f, timeSize = 11f,
             seekTouch = RectF(m + 56f, 186f, right - 64f, 214f),
             hintY = 202f,
-            segUnit = 4.2f, gain = 1.25f, noiseFloor = 0.06f,
+            // LED のブロックはスマホの縦画面と同じ大きさ（段の間隔 5.5）、伸びも縦画面と同じ 1.0（v2.12。1.25 だと上に張り付いて見えた）
+            segUnit = 5.5f, gain = 1.0f, noiseFloor = 0.03f,
             timeMargin = m
         )
     }
@@ -290,9 +291,9 @@ class PlayerRenderer {
             timeY = seekY + 4f, timeSize = 11f,
             seekTouch = RectF(60f, seekY - 13f, 340f, vh),
             hintY = seekY + 4f,
-            segUnit = if (stacked) 5.5f else 4.4f,
-            gain = if (stacked) 1.0f else 1.2f,
-            noiseFloor = if (stacked) 0.03f else 0.05f,
+            segUnit = 5.5f,
+            gain = 1.0f,
+            noiseFloor = 0.03f,
             boldTitle = true
         )
     }
