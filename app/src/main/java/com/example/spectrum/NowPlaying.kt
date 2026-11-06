@@ -9,6 +9,8 @@ import android.media.AudioManager
 import android.media.session.MediaController
 import android.media.session.PlaybackState
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.view.KeyEvent
 
@@ -76,18 +78,74 @@ object NowPlaying {
 
     fun playPause() {
         val c = controller
-        if (c != null) {
-            if (isPlaying) c.transportControls.pause() else c.transportControls.play()
+        if (isPlaying) {
+            playRequest++            // 確かめ中の再生をやめる（一時停止したのに再生し直さないように）
+            if (c != null) {
+                try { c.transportControls.pause() } catch (_: Exception) { mediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE) }
+            } else {
+                mediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE)
+            }
             return
         }
-        // 再生中のセッションをまだつかめていない
-        if (fallbackPlaying == true) {
-            mediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE)
+        requestPlay()
+    }
+
+    private val main = Handler(Looper.getMainLooper())
+    /** 再生の要求の番号（確かめの途中で一時停止・次の再生が押されたら、古い確かめはやめる） */
+    private var playRequest = 0
+
+    /**
+     * 再生（v2.11）。一時停止してしばらくたつと、音楽アプリがセッションを作り直したり止めたりして、
+     * 覚えているセッションに「再生」を送っても届かないことがある（再生ボタンが効かない）。
+     * そこで送ったあとに本当に再生が始まったか確かめ、始まらなければ次の方法で送り直す:
+     *  1. 覚えているセッション（無ければ、最後に使った音楽アプリを起こす MediaResumer）
+     *  2. セッションを選び直して再生 ＋ メディアボタンの「再生」（Bluetooth のボタンと同じ。押し直しで止まらない）
+     *  3. 音楽アプリの通知の「再生」ボタン（通知から再生できるときは必ず効く）
+     *  4. 最後に使った音楽アプリに接続して再生（メディアの再開）
+     * どれも「再生」だけを送り、「再生/一時停止の切り替え」は送らない（重なっても止まらない）
+     */
+    private fun requestPlay() {
+        val token = ++playRequest
+        val c = controller
+        if (c != null) {
+            try { c.transportControls.play() } catch (_: Exception) { }
         } else {
-            // 最後に使った音楽アプリを起こして再生する
             val ctx = appContext
             if (ctx != null) MediaResumer.play(ctx) else mediaKey(KeyEvent.KEYCODE_MEDIA_PLAY)
         }
+        main.postDelayed({ checkPlay(token, 1) }, 700L)
+    }
+
+    private fun checkPlay(token: Int, step: Int) {
+        if (token != playRequest || playingNow()) return
+        when (step) {
+            1 -> {
+                MediaTracker.pick()
+                controller?.let { try { it.transportControls.play() } catch (_: Exception) { } }
+                mediaKey(KeyEvent.KEYCODE_MEDIA_PLAY)
+                main.postDelayed({ checkPlay(token, 2) }, 900L)
+            }
+            2 -> {
+                val ctx = appContext
+                val pkg = controller?.packageName ?: sourcePackage.ifEmpty { ctx?.let { MediaResumer.lastPackage(it) } ?: "" }
+                MediaListenerService.instance?.pressPlayAction(pkg)
+                main.postDelayed({ checkPlay(token, 3) }, 1200L)
+            }
+            3 -> appContext?.let { MediaResumer.play(it, resumeOnly = true) }
+        }
+    }
+
+    /** いま何かが再生中か（覚えているセッション・ほかのセッション・端末の音のどれか） */
+    private fun playingNow(): Boolean {
+        val c = controller
+        val st = try { c?.playbackState } catch (_: Exception) { null }
+        if (st?.state == PlaybackState.STATE_PLAYING) {
+            state = st
+            return true
+        }
+        if (MediaTracker.anyPlaying()) return true
+        val am = appContext?.getSystemService(AudioManager::class.java)
+        return try { am?.isMusicActive == true } catch (_: Exception) { false }
     }
 
     fun seekToFraction(f: Float) {

@@ -166,7 +166,8 @@ class PlayerRenderer {
         val segUnit: Float,       // 1 段の高さ(隙間込み)。小さいほど段が細かく、動きが滑らか
         val gain: Float,          // 表示上の伸び。大きいほどバーが高く上がる
         val noiseFloor: Float,    // これ以下の小さな値は 0 とみなす(下の段のちらつき防止)
-        val boldTitle: Boolean = false
+        val boldTitle: Boolean = false,
+        val timeMargin: Float = 8f // 再生時間・残り時間の文字の、画面の端からの位置
     )
 
     /**
@@ -174,25 +175,31 @@ class PlayerRenderer {
      * 左上ジャケット、右にスペアナ(高め)、左下に曲情報、右下に大きい操作ボタン、最下部にシーク。
      * v2.9 までは幅 400 に固定して画面に収めていたので、横に長い画面(車の 1920x720 など)では左右に大きな余白が出ていた。
      * v2.10 から、横に長い分はスペアナ・曲情報・シークを横に広げる(ジャケット・文字・ボタンの大きさと形はそのまま)。
+     * v2.11: v2.10 は端まで使いすぎて窮屈だったので、左右に幅の約 4.5%（18〜28）、上に 12 の余白を取る
+     * （テレビ・車の画面の「見やすい範囲」の目安（端から 3.5〜5%）と、スマホの縦画面の余白（幅の約 4%）に合わせた）。
      */
     private fun landscapeLayout(vw: Float): Layout {
-        val dx = vw - 400f
+        val m = (vw * 0.045f).coerceIn(18f, 28f)   // 左右の余白
+        val top = 12f
+        val artSize = 110f
+        val right = vw - m
         return Layout(
             vw = vw, vh = 214f,
-            art = RectF(10f, 8f, 126f, 124f),       // 下端をスペアナの下端に揃える
-            spec = RectF(144f, 8f, vw - 10f, 124f), // ジャケットとの間 18・右端 10
-            specOnly = RectF(10f, 8f, vw - 10f, 126f),
-            textX = 30f, textRight = 228f + dx, iconX = 10f,
-            titleY = 140f, albumY = 158f, artistY = 176f,
+            art = RectF(m, top, m + artSize, top + artSize),        // 下端をスペアナの下端に揃える
+            spec = RectF(m + artSize + 18f, top, right, top + artSize),
+            specOnly = RectF(m, top, right, top + artSize + 4f),
+            textX = m + 20f, textRight = right - 160f, iconX = m,
+            titleY = 142f, albumY = 160f, artistY = 178f,
             titleSize = 14f, subSize = 12f,
-            prev = RectF(244f + dx, 139f, 278f + dx, 173f),
-            play = RectF(284f + dx, 138f, 344f + dx, 174f),
-            next = RectF(350f + dx, 139f, 384f + dx, 173f),
-            seekX0 = 70f, seekX1 = 324f + dx, seekY = 198f,
+            prev = RectF(right - 140f, 140f, right - 106f, 174f),
+            play = RectF(right - 100f, 139f, right - 40f, 175f),
+            next = RectF(right - 34f, 140f, right, 174f),
+            seekX0 = m + 62f, seekX1 = right - 70f, seekY = 198f,
             timeY = 202f, timeSize = 11f,
-            seekTouch = RectF(64f, 186f, 330f + dx, 214f),
+            seekTouch = RectF(m + 56f, 186f, right - 64f, 214f),
             hintY = 202f,
-            segUnit = 4.2f, gain = 1.25f, noiseFloor = 0.06f
+            segUnit = 4.2f, gain = 1.25f, noiseFloor = 0.06f,
+            timeMargin = m
         )
     }
     private val landscape = landscapeLayout(400f)
@@ -962,9 +969,9 @@ class PlayerRenderer {
         text.color = Color.WHITE
         text.textSize = lay.timeSize
         text.textAlign = Paint.Align.LEFT
-        c.drawText(posText, 8f, lay.timeY, text)
+        c.drawText(posText, lay.timeMargin, lay.timeY, text)
         text.textAlign = Paint.Align.RIGHT
-        c.drawText(remText, lay.vw - 8f, lay.timeY, text)
+        c.drawText(remText, lay.vw - lay.timeMargin, lay.timeY, text)
         text.textAlign = Paint.Align.LEFT
 
         val x0 = lay.seekX0

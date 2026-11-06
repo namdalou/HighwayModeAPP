@@ -205,9 +205,11 @@ class SpectrumPainter(private val n: Int) {
     private fun drawLed(c: Canvas, r: RectF, vis: FloatArray, peak: FloatArray, scale: Float, segUnit: Float) {
         val x0 = r.left
         val y1 = r.bottom
-        val gap = 2f
+        // ブロックの形をどの画面でも同じに（v2.11）: 列の隙間は列の幅の約 2 割、段の高さはバーの幅から決める
+        // （スマホの縦画面と同じ縦横比。横に広い画面で、幅の広い薄い段にならないように）
+        val gap = max(2f, r.width() / n * 0.22f)
         val barW = (r.width() - gap * (n - 1)) / n
-        val unit = segUnit
+        val unit = max(segUnit, barW * 0.76f)
         val segH = unit * 0.72f
         val rows = ((r.height() + unit - segH) / unit).toInt()
         if (rows <= 0) return

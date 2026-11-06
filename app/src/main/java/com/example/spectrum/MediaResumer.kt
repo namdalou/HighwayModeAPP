@@ -39,19 +39,22 @@ object MediaResumer {
     fun lastPackage(ctx: Context): String? =
         ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_LAST_PKG, null)
 
-    fun play(ctx: Context) {
+    /** @param resumeOnly 1 を飛ばして、最後に使った音楽アプリに接続して再生する（再生ボタンの最後の手段。v2.11） */
+    fun play(ctx: Context, resumeOnly: Boolean = false) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
-            main.post { play(ctx) }
+            main.post { play(ctx, resumeOnly) }
             return
         }
         val c = ctx.applicationContext
 
         // 1. 再生中のセッションを探し直す
-        MediaTracker.start(c)
-        MediaTracker.pick()
-        NowPlaying.controller?.let {
-            it.transportControls.play()
-            return
+        if (!resumeOnly) {
+            MediaTracker.start(c)
+            MediaTracker.pick()
+            NowPlaying.controller?.let {
+                try { it.transportControls.play() } catch (_: Exception) { NowPlaying.mediaKey(KeyEvent.KEYCODE_MEDIA_PLAY) }
+                return
+            }
         }
 
         // 2. 最後に使った音楽アプリに接続して再生を指示

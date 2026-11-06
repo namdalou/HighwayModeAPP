@@ -12,6 +12,7 @@ import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 
 /**
  * 昔のカーオーディオのスペアナを、利用者が示した動画（1990〜2000 年代の 2DIN デッキ・イコライザーの表示）に合わせて描く（v2.7）。
@@ -19,7 +20,7 @@ import kotlin.math.min
  * LED（標準）と同じように、音楽の画面の背景の上に点灯している段（ブロック）だけを描く。
  *
  *  - [STYLE_BLUE] ブルー: 奥へすぼまる 20 本の青いバー。細い段（約 30 段。区画が小さいときは減らす）の間に青いもや。
- *    白いピークはバーから離れると、ふわっと上へ浮かんで消える
+ *    白いピークは少し止まってから落ちてくる（v2.10 までは動画のように上へ浮かんで消えていた）
  *  - [STYLE_STEREO] ステレオ: 9 つの帯（v2.9 で左右 2 本を 1 本にまとめた）× 15 段＋床の段。奥へすぼまる形に、
  *    二重線の段（下が白っぽい水色・中ほどが水色・上が青）と、段の間に青緑のもや。床の段は音が出ている間だけ点灯。
  *    青いピークは少し止まってから落ちる
@@ -39,6 +40,9 @@ class CarAudioPainter(private val bands: Int) {
         const val STYLE_EQ = 2
 
         private const val MAX_COLS = 20
+
+        /** 高さの曲げ方（1 より大きいほど小さい音が低くなる。v2.11） */
+        private const val CA_CURVE = 1.5f
 
         private val STD_BOTTOM = Color.rgb(0, 90, 200)
         private val STD_TOP = Color.rgb(40, 190, 245)
@@ -102,20 +106,28 @@ class CarAudioPainter(private val bands: Int) {
         private set
 
     /**
-     * 24 の帯を m 本にまとめる（重なる帯の最大。拍がはっきり見えるように）。
-     * gain: 本物の表示はよく振れて上の方まで届くので、少し大きめに
+     * 24 の帯を m 本にまとめる（重なる帯の最大と平均を混ぜる）。
+     * v2.11: 利用者の「少しの音でも半分以上まで上がって、上に張り付く」に合わせて、高さを [CA_CURVE] 乗する
+     * （小さい音は低く、大きい音（拍）はほぼそのまま上まで届く。0.6 → 0.46、0.4 → 0.25、0.9 → 0.85）
      */
     private fun resample(vis: FloatArray, m: Int, gain: Float) {
         for (j in 0 until m) {
             val a = j * bands.toFloat() / m
             val b = (j + 1) * bands.toFloat() / m
-            var v = 0f
+            var mx = 0f
+            var sum = 0f
+            var cnt = 0
             var i = floor(a).toInt()
             while (i < b && i < bands) {
-                if (i >= 0) v = max(v, vis[i])
+                if (i >= 0) {
+                    mx = max(mx, vis[i])
+                    sum += vis[i]
+                    cnt++
+                }
                 i++
             }
-            target[j] = (v * gain).coerceIn(0f, 1f)
+            val v = if (cnt > 0) 0.55f * mx + 0.45f * sum / cnt else 0f
+            target[j] = (v.pow(CA_CURVE) * gain).coerceIn(0f, 1f)
         }
     }
 
@@ -336,16 +348,24 @@ class CarAudioPainter(private val bands: Int) {
         val pitch = fw / m
         val slatW = pitch * 0.62f
         val off = (pitch - slatW) / 2f
-        // 浮かぶピーク: バーに押し上げられ、離れるとゆっくり上へ浮かんで、上まで行くと消える
+        // ピーク: バーに押し上げられ、少し止まってから落ちてくる（v2.11。動画のように上へ浮かんで消える動きは、
+        // 「上がり続けて下がってこない」と言われたのでやめた）
         for (j in 0 until m) {
             val top = disp[j]
             when {
                 dt <= 0f -> peakPos[j] = (top + 0.18f).coerceAtMost(0.98f)
-                peakPos[j] < 0f || top >= peakPos[j] -> peakPos[j] = if (top > 0.06f) top else -1f
-                else -> {
-                    peakPos[j] += 0.35f * dt
-                    if (peakPos[j] > 1.0f) peakPos[j] = -1f
+                top >= peakPos[j] -> {
+                    peakPos[j] = if (top > 0.04f) top else -1f
+                    peakHold[j] = 0.35f
+                }
+                peakHold[j] > 0f -> {
+                    peakHold[j] -= dt
                     animating = true
+                }
+                else -> {
+                    peakPos[j] = max(top, peakPos[j] - 1.3f * dt)
+                    if (peakPos[j] <= 0.04f) peakPos[j] = -1f
+                    if (peakPos[j] > top) animating = true
                 }
             }
         }
