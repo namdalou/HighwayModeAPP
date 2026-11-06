@@ -119,7 +119,20 @@ object MediaTracker {
             // 一時停止したら、他に再生中のセッションがないか選び直す
             if (state?.state != PlaybackState.STATE_PLAYING) pick()
         }
-        override fun onSessionDestroyed() { pick() }
+        override fun onSessionDestroyed() {
+            // 終わったセッションを通知の控えからも外す（v2.11。残っていると、また選んで「再生」が届かなくなる）
+            current?.sessionToken?.let { tk -> notifControllers.entries.removeAll { it.value.sessionToken == tk } }
+            pick()
+        }
+    }
+
+    /** どれかのセッションが再生中か（再生ボタンを押したあとの確かめに使う） */
+    fun anyPlaying(): Boolean {
+        val c = app ?: return false
+        val active = (try { msm?.getActiveSessions(me) } catch (_: Exception) { null } ?: emptyList())
+            .filter { it.packageName != c.packageName }
+        val all = active + notifControllers.values
+        return all.any { x -> (try { x.playbackState?.state } catch (_: Exception) { null }) == PlaybackState.STATE_PLAYING }
     }
 
     /** どこからでも呼べる。すでに開始済みなら選び直すだけ */

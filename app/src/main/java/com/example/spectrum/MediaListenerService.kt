@@ -195,6 +195,37 @@ class MediaListenerService : NotificationListenerService() {
         return null
     }
 
+    /**
+     * 音楽アプリの通知の「再生」ボタンを押す（v2.11。再生ボタンが効かないときの手段）。
+     * ボタンの名前で「再生」を探し、「一時停止」は押さない（押し直しで止まらないように）。押せたら true
+     */
+    fun pressPlayAction(pkg: String): Boolean {
+        if (pkg.isEmpty()) return false
+        val list = try { activeNotifications } catch (_: Exception) { null } ?: return false
+        @Suppress("DEPRECATION")
+        val mine = list.filter { it.packageName == pkg }
+            .sortedWith(compareByDescending<StatusBarNotification> {
+                it.notification?.extras?.getParcelable<MediaSession.Token>(Notification.EXTRA_MEDIA_SESSION) != null
+            }.thenByDescending { it.postTime })
+        for (sbn in mine) {
+            val actions = sbn.notification?.actions ?: continue
+            for (a in actions) {
+                val t = a.title?.toString()?.lowercase().orEmpty()
+                val isPlay = (t.contains("play") || t.contains("再生") || t.contains("再開") || t.contains("resume")) &&
+                    !t.contains("pause") && !t.contains("一時停止") && !t.contains("停止")
+                if (!isPlay) continue
+                val pi = a.actionIntent ?: continue
+                return try {
+                    pi.send()
+                    true
+                } catch (_: Exception) {
+                    false
+                }
+            }
+        }
+        return false
+    }
+
     /** 取得元に一致する最新の通知から曲情報を読み直す(診断画面からも呼ばれる) */
     fun refreshFallback(evenWithSession: Boolean = false) {
         if (MediaTracker.hasCurrent && !evenWithSession) return

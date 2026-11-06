@@ -69,6 +69,13 @@ object SpectrumEngine {
     private const val GATE = 2.5f
     /** 高音域の補正(dB/オクターブ)。音楽は高音ほど小さいので持ち上げる */
     private const val TILT_DB_PER_OCT = 4f
+    /**
+     * 高音の持ち上げの上限(dB。v2.11)。上限が無いと 16kHz で +16 dB になり、8bit の FFT の細かさが足りないために出る
+     * 雑音まで持ち上がって、右端の数本が同じ高さで上に張り付いていた
+     */
+    private const val TILT_MAX_DB = 9f
+    /** FFT の 1 本ごとの強さ(re²+im²)から引く雑音の分(v2.11)。値が ±1 程度しかない本は雑音とみなして数えない */
+    private const val QUANT_NOISE_POW = 2f
 
     // ---- 曲の中の強弱(静かな部分・盛り上がる部分)の出し方 ----
     /**
@@ -514,7 +521,7 @@ object SpectrumEngine {
             }
             tilt = FloatArray(BANDS) { b ->
                 val fc = fMin * (fMax / fMin).pow((b + 0.5f) / BANDS)
-                TILT_DB_PER_OCT * (ln(fc / 1000f) / ln(2f))
+                min(TILT_MAX_DB, TILT_DB_PER_OCT * (ln(fc / 1000f) / ln(2f)))
             }
         }
 
@@ -532,7 +539,7 @@ object SpectrumEngine {
                     val re = fft[2 * k].toFloat()
                     val im = fft[2 * k + 1].toFloat()
                     val p = re * re + im * im
-                    sum += p
+                    sum += max(0f, p - QUANT_NOISE_POW)
                     cnt++
                     val m = sqrt(p)
                     if (m > frameMaxMag) frameMaxMag = m
