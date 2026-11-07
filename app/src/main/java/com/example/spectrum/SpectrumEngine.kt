@@ -38,7 +38,11 @@ import kotlin.math.sqrt
  *  - 重い dumpsys の読み取り(DUMP 権限があるとき)は別スレッドで行い、解析を止めない
  */
 object SpectrumEngine {
-    const val BANDS = 24
+    /**
+     * 解析する帯の数（v2.13 で 24 → 48）。横画面の LED（約 40〜50 本）で、1 本ごとに別の帯の値になるように。
+     * なめらかなバー・ミラー・ライン・ドット・メーターは、SpectrumPainter が 2 本ずつまとめて 24 本で描く（見た目はこれまでどおり）
+     */
+    const val BANDS = 48
 
     enum class Status { STOPPED, NO_PERMISSION, RUNNING, UNSUPPORTED }
 
@@ -76,6 +80,18 @@ object SpectrumEngine {
     private const val TILT_MAX_DB = 9f
     /** FFT の 1 本ごとの強さ(re²+im²)から引く雑音の分(v2.11)。値が ±1 程度しかない本は雑音とみなして数えない */
     private const val QUANT_NOISE_POW = 2f
+    /**
+     * 帯の強さの下限(v2.13。FFT の 1 目盛りの強さ)。v2.12 までは 1e-6(-60 dB)まで下がったので、音の小さい高音の帯は
+     * 「ハイハットが鳴ると +70 dB」のように 0 と天井を行き来して、右端が上に張り付いて見えた(利用者の録画)
+     */
+    private const val FLOOR_POW = 1f
+    /** [FLOOR_POW] の dB(0 dB) */
+    private const val FLOOR_DB = 0f
+    /**
+     * 床からこれだけ上(dB)で、帯の高さを 0 → 1 倍にする(v2.13)。床にいる帯(その音域に音が無い)は、
+     * 床の値のままだと中ほどの高さで止まって見え、隣の帯も同じ高さで並んでしまうので、消す
+     */
+    private const val GATE_DB = 6f
 
     // ---- 曲の中の強弱(静かな部分・盛り上がる部分)の出し方 ----
     /**
@@ -109,20 +125,29 @@ object SpectrumEngine {
     private const val SMOOTH_NEIGHBOR = 0.15f
     /** 帯ごとの「最近の平均」を取る長さ(時定数・秒)。v2.12 で 1.0 → 0.6(鳴り続ける音が早く中ほどへ戻り、動きが速く見える) */
     private const val BAND_AVG_SEC = 0.6f
+    /**
+     * 音が大きくなったときに平均が追いつく速さ(時定数・秒。v2.13)。静かなところから急に大きくなったとき、
+     * 平均が遅れて 1 秒近く天井に張り付いていた(利用者の録画の左端)ので、上がるときだけ速く追いつく
+     */
+    private const val BAND_AVG_UP_SEC = 0.25f
     /** 全体の基準(最近いちばん大きい帯)が下がる速さ(dB/秒)。v2.12 で 6 → 10 */
     private const val TOP_RELEASE_DB_PER_SEC = 10f
-    /** 周波数ごとの形(平均と基準の差)を縮める割合。小さいほど帯ごとの高さの差が小さい */
-    private const val SPEC_K = 0.5f
-    /** 平均からの差(拍・音の立ち上がり)を広げる割合。大きいほどメリハリが強い(v2.12 で 2.0 → 2.4) */
-    private const val DYN_K = 2.4f
-    /** 基準より何 dB 下までを表すか(0)と、基準より何 dB 上で一番上になるか */
-    private const val SHOW_BELOW_DB = 20f
+    /** 周波数ごとの形(平均と基準の差)を縮める割合。小さいほど帯ごとの高さの差が小さい(v2.13 で 0.5 → 0.35) */
+    private const val SPEC_K = 0.35f
+    /**
+     * 平均からの差(拍・音の立ち上がり)を広げる割合。大きいほどメリハリが強い(v2.12 で 2.0 → 2.4、v2.13 で 3.0)。
+     * v2.13 は下の幅([SHOW_BELOW_DB])を広げて 1 dB あたりの高さが 2 割ほど小さくなったので、その分ここを大きくして、
+     * 拍の振れ幅・上がる速さを v2.12 と同じくらいに保った
+     */
+    private const val DYN_K = 3.0f
+    /** 基準より何 dB 下までを表すか(0)と、基準より何 dB 上で一番上になるか(v2.13 で下は 20 → 32) */
+    private const val SHOW_BELOW_DB = 32f
     private const val SHOW_ABOVE_DB = 10f
     /**
      * 写した位置が 1 のときの高さ(v2.12)。1 を超えた分(とても強い拍。基準より [TOP_EXT_DB] 以上)だけで残りの上の 2 割を使う。
      * v2.11 までは画面の伸び(横画面 1.25)で天井に届かせていて、横画面では上に張り付いて見えた。v2.12 から伸びはどの画面も 1.0
      */
-    private const val TOP_LEVEL = 0.8f
+    private const val TOP_LEVEL = 0.88f
     private const val TOP_EXT_DB = 12f
     /** 曲の強弱(loudness)をならす割合(読み取り 1 回あたり。上がる・下がる) */
     private const val LOUD_ATTACK = 0.6f
@@ -523,6 +548,11 @@ object SpectrumEngine {
                 val f = fMin * (fMax / fMin).pow(i.toFloat() / BANDS)
                 (f / binHz).toInt().coerceIn(1, bins - 1)
             }
+            // 低い帯は FFT の 1 本(約 47Hz)より狭いので、いくつもの帯が同じ 1 本を読んで同じ高さで動いていた(左端の数本)。
+            // v2.13 から、どの帯も前の帯より後ろの本から読む(低いところは 1 帯 = 1 本。周波数の目盛りは少し高い方へずれる)
+            for (i in 1..BANDS) {
+                if (edges[i] <= edges[i - 1]) edges[i] = min(edges[i - 1] + 1, bins - 1)
+            }
             tilt = FloatArray(BANDS) { b ->
                 val fc = fMin * (fMax / fMin).pow((b + 0.5f) / BANDS)
                 min(TILT_MAX_DB, TILT_DB_PER_OCT * (ln(fc / 1000f) / ln(2f)))
@@ -549,7 +579,7 @@ object SpectrumEngine {
                     if (m > frameMaxMag) frameMaxMag = m
                 }
                 val meanPow = if (cnt > 0) sum / cnt else 0f
-                db[b] = 10f * log10(meanPow + 1e-6f) + tilt[b]
+                db[b] = 10f * log10(max(meanPow, FLOOR_POW)) + tilt[b]
                 if (db[b] > frameMaxDb) frameMaxDb = db[b]
             }
             val now = SystemClock.uptimeMillis()
@@ -579,6 +609,7 @@ object SpectrumEngine {
                 dbF[b] = db[b] * (1f - 2f * SMOOTH_NEIGHBOR) + (l + r) * SMOOTH_NEIGHBOR
             }
             val avgA = min(1f, dt / BAND_AVG_SEC)
+            val avgUpA = min(1f, dt / BAND_AVG_UP_SEC)
             frameMaxDb = -100f
             for (b in 0 until BANDS) {
                 dbS[b] = when {
@@ -586,7 +617,7 @@ object SpectrumEngine {
                     dbF[b] > dbS[b] -> dbS[b] + (dbF[b] - dbS[b]) * att
                     else -> dbS[b] + (dbF[b] - dbS[b]) * rel
                 }
-                dbAvg[b] = if (!smoothed) dbS[b] else dbAvg[b] + (dbS[b] - dbAvg[b]) * avgA
+                dbAvg[b] = if (!smoothed) dbS[b] else dbAvg[b] + (dbS[b] - dbAvg[b]) * (if (dbS[b] > dbAvg[b]) avgUpA else avgA)
                 if (dbS[b] > frameMaxDb) frameMaxDb = dbS[b]
             }
             smoothed = true
@@ -605,13 +636,15 @@ object SpectrumEngine {
                 loudness = -1f
                 1f
             }
-            // 高さ: 周波数ごとの形(縮めて)＋最近の平均からの差(広げて)を、基準の 20 dB 下〜10 dB 上に写す。
+            // 高さ: 周波数ごとの形(縮めて)＋最近の平均からの差(広げて)を、基準の 32 dB 下〜10 dB 上に写す。
             // 10 dB 上を超えた分は、さらに 12 dB で残りの上の部分(天井まで)を使う(天井に届くのはとても強い拍だけ)
             for (b in 0 until BANDS) {
                 val p = (dbAvg[b] - topRef) * SPEC_K + (dbS[b] - dbAvg[b]) * DYN_K
                 val x = ((p + SHOW_BELOW_DB) / (SHOW_BELOW_DB + SHOW_ABOVE_DB)).coerceIn(0f, 1f)
                 val over = ((p - SHOW_ABOVE_DB) / TOP_EXT_DB).coerceIn(0f, 1f)
-                out[b] = (x * TOP_LEVEL + over * (1f - TOP_LEVEL)) * loudFactor
+                // 床にいる(音の無い)帯は消す。床から GATE_DB 上で元の高さ
+                val gate = ((dbS[b] - tilt[b] - FLOOR_DB) / GATE_DB).coerceIn(0f, 1f)
+                out[b] = (x * TOP_LEVEL + over * (1f - TOP_LEVEL)) * loudFactor * gate
             }
             // 受け取る側(画面)はその場で写すので、配列は使い回す(毎回の確保をしない)
             return out
