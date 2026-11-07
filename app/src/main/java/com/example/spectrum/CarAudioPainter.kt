@@ -20,7 +20,7 @@ import kotlin.math.pow
  * LED（標準）と同じように、音楽の画面の背景の上に点灯している段（ブロック）だけを描く。
  *
  *  - [STYLE_BLUE] ブルー: 奥へすぼまる 20 本の青いバー。細い段（約 30 段。区画が小さいときは減らす）の間に青いもや。
- *    白いピークは少し止まってから落ちてくる（v2.10 までは動画のように上へ浮かんで消えていた）
+ *    白いピークは、投げ上げたボールのように少し浮いてから重力で加速して落ちる（v2.13。v2.11〜v2.12 は止まってから落ちていた）
  *  - [STYLE_STEREO] ステレオ: 9 つの帯（v2.9 で左右 2 本を 1 本にまとめた）× 15 段＋床の段。奥へすぼまる形に、
  *    二重線の段（下が白っぽい水色・中ほどが水色・上が青）と、段の間に青緑のもや。床の段は音が出ている間だけ点灯。
  *    青いピークは少し止まってから落ちる
@@ -42,8 +42,22 @@ class CarAudioPainter(private val bands: Int) {
 
         private const val MAX_COLS = 20
 
-        /** 高さの曲げ方（1 より大きいほど小さい音が低くなる。v2.11） */
-        private const val CA_CURVE = 1.5f
+        /**
+         * 高さの曲げ方（1 より大きいほど小さい音が低くなる。v2.11 は 1.5）と、曲げたあとの伸び（v2.13）。
+         * v2.13 でエンジンを「強い音でも天井に張り付かない」ように直したら、カーオーディオは上の方まで届きにくくなったので、
+         * 2 乗 × 1.2 倍にして、v2.12 と同じくらいの高さ・振れ幅に戻した（試しの曲で、平均・上から 1 割の高さ・
+         * 半分を超える時間を v2.12 に合わせた。上の 1 割にいる時間は v2.12 より 3〜4 割短い）
+         */
+        private const val CA_CURVE = 2.0f
+        private const val CA_GAIN = 1.2f
+
+        /**
+         * ブルーのピークの動き（v2.13）: 重力（高さ/秒²）・押し上げの速さの上限・落ちる速さの上限（高さ/秒）。
+         * 1 段（約 1/30）落ちるまで約 0.1 秒（押し上げの勢いによって 0.08〜0.17 秒。v2.12 は約 0.37 秒）。浮く高さは最大で約半段
+         */
+        private const val PEAK_GRAVITY = 10f
+        private const val PEAK_LAUNCH = 0.6f
+        private const val PEAK_MAX_FALL = 4f
 
         private val STD_BOTTOM = Color.rgb(0, 90, 200)
         private val STD_TOP = Color.rgb(40, 190, 245)
@@ -101,15 +115,18 @@ class CarAudioPainter(private val bands: Int) {
     private val disp = FloatArray(MAX_COLS)
     private val peakPos = FloatArray(MAX_COLS) { -1f }
     private val peakHold = FloatArray(MAX_COLS)
+    /** ブルーのピークの速さ（高さ/秒。上向きが正）と、前のフレームのバーの高さ（v2.13） */
+    private val peakVel = FloatArray(MAX_COLS)
+    private val prevDisp = FloatArray(MAX_COLS)
     private var lastStyle = -1
 
     var animating = false
         private set
 
     /**
-     * 24 の帯を m 本にまとめる（重なる帯の最大と平均を混ぜる）。
+     * 帯（48）を m 本にまとめる（重なる帯の最大と平均を混ぜる）。
      * v2.11: 利用者の「少しの音でも半分以上まで上がって、上に張り付く」に合わせて、高さを [CA_CURVE] 乗する
-     * （小さい音は低く、大きい音（拍）はほぼそのまま上まで届く。0.6 → 0.46、0.4 → 0.25、0.9 → 0.85）
+     * （小さい音は低く、大きい音（拍）は上まで届く。v2.13 の 2 乗 × 1.2: 0.4 → 0.19、0.6 → 0.43、0.8 → 0.77、0.9 → 0.97）
      */
     private fun resample(vis: FloatArray, m: Int, gain: Float) {
         for (j in 0 until m) {
@@ -157,6 +174,8 @@ class CarAudioPainter(private val bands: Int) {
             for (j in 0 until MAX_COLS) {
                 peakPos[j] = -1f
                 peakHold[j] = 0f
+                peakVel[j] = 0f
+                prevDisp[j] = 0f
             }
         }
         val dt = dtSec.coerceIn(0f, 0.1f)
@@ -337,7 +356,7 @@ class CarAudioPainter(private val bands: Int) {
 
     private fun drawBlue(c: Canvas, r: RectF, vis: FloatArray, scale: Float, dt: Float) {
         val m = 20
-        resample(vis, m, 1.0f)
+        resample(vis, m, CA_GAIN)
         ballistics(m, dt, rise = 24f, fall = 3.6f)
         area.set(r)
         val fw = area.width()
@@ -349,26 +368,32 @@ class CarAudioPainter(private val bands: Int) {
         val pitch = fw / m
         val slatW = pitch * 0.62f
         val off = (pitch - slatW) / 2f
-        // ピーク: バーに押し上げられ、少し止まってから落ちてくる（v2.11。動画のように上へ浮かんで消える動きは、
-        // 「上がり続けて下がってこない」と言われたのでやめた）
+        // ピーク（v2.13）: 「投げ上げたボール」のように動かす。バーが上がる間はバーの上に乗り、バーが止まる・下がると、
+        // そのときの上向きの速さ（上限 [PEAK_LAUNCH]）で少しだけ浮いてから、重力 [PEAK_GRAVITY] で加速して落ちる。
+        // 止まっている時間は作らない（v2.11〜v2.12 は 0.35 秒止まってから一定の速さで落ちていて、止まりが気になると言われた）
         for (j in 0 until m) {
             val top = disp[j]
+            val barV = if (dt > 0f) (top - prevDisp[j]) / dt else 0f
             when {
-                dt <= 0f -> peakPos[j] = (top + 0.18f).coerceAtMost(0.98f)
+                dt <= 0f -> {
+                    peakPos[j] = (top + 0.18f).coerceAtMost(0.98f)
+                    peakVel[j] = 0f
+                }
                 top >= peakPos[j] -> {
                     peakPos[j] = if (top > 0.04f) top else -1f
-                    peakHold[j] = 0.35f
-                }
-                peakHold[j] > 0f -> {
-                    peakHold[j] -= dt
-                    animating = true
+                    peakVel[j] = barV.coerceIn(0f, PEAK_LAUNCH)
                 }
                 else -> {
-                    peakPos[j] = max(top, peakPos[j] - 1.3f * dt)
-                    if (peakPos[j] <= 0.04f) peakPos[j] = -1f
-                    if (peakPos[j] > top) animating = true
+                    peakVel[j] = max(peakVel[j] - PEAK_GRAVITY * dt, -PEAK_MAX_FALL)
+                    peakPos[j] += peakVel[j] * dt
+                    if (peakPos[j] <= top) {
+                        peakPos[j] = if (top > 0.04f) top else -1f
+                        peakVel[j] = 0f
+                    }
+                    animating = true
                 }
             }
+            prevDisp[j] = top
         }
         perspective(area, fw, fh, 0.84f)
         val geom = uniformRows(rows, 0.5f, fw, fh, 0.84f)
@@ -404,7 +429,7 @@ class CarAudioPainter(private val bands: Int) {
 
     private fun drawStereo(c: Canvas, r: RectF, vis: FloatArray, scale: Float, dt: Float) {
         val m = 9
-        resample(vis, m, 1.0f)
+        resample(vis, m, CA_GAIN)
         ballistics(m, dt, rise = 24f, fall = 3.6f)
         area.set(r)
         val rows = 16            // 行 0 = 床（音が出ている間は点灯）＋ 15 段
@@ -466,7 +491,7 @@ class CarAudioPainter(private val bands: Int) {
 
     private fun drawEq(c: Canvas, r: RectF, vis: FloatArray, scale: Float, dt: Float) {
         val m = 15
-        resample(vis, m, 1.05f)
+        resample(vis, m, CA_GAIN * 1.05f)
         ballistics(m, dt, rise = 40f, fall = 6f)
         area.set(r)
         // 細い線の集まり（蛍光表示管の 1 本 1 本の線）

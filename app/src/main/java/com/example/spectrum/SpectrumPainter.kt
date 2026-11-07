@@ -67,7 +67,42 @@ class SpectrumPainter(private val n: Int) {
         // ピークは上の色を白に寄せた色（どの色でも、バーより少し明るく見える）
         peakColor = mix(colTop[n / 2], Color.WHITE, 0.55f)
         carAudio.setColors(colBottom, colTop, uniform)
+        coarse?.let { co ->
+            for (j in 0 until COARSE_BANDS) {
+                val i = j * n / COARSE_BANDS
+                cBottom[j] = colBottom[i]
+                cTop[j] = colTop[i]
+            }
+            co.setColors(cBottom, cTop)
+        }
         colorsVersion++
+    }
+
+    // ================================================================== 24 本で描く表示（v2.13）
+
+    /**
+     * なめらかなバー・ミラー・ライン・ドット・メーターは、これまでどおり 24 本で描く。
+     * 解析の帯が 48 のときは、2 本ずつまとめて（高さは平均・ピークは大きい方）24 本用の描き手に渡す
+     */
+    private val coarse: SpectrumPainter? = if (n > COARSE_BANDS) SpectrumPainter(COARSE_BANDS) else null
+    private val cVis = FloatArray(COARSE_BANDS)
+    private val cPeak = FloatArray(COARSE_BANDS)
+    private val cRaw = FloatArray(COARSE_BANDS)
+    private val cBottom = IntArray(COARSE_BANDS)
+    private val cTop = IntArray(COARSE_BANDS)
+
+    private fun toCoarse(src: FloatArray, dst: FloatArray, useMax: Boolean) {
+        for (j in 0 until COARSE_BANDS) {
+            val a = j * n / COARSE_BANDS
+            val b = max(a + 1, (j + 1) * n / COARSE_BANDS)
+            var sum = 0f
+            var mx = 0f
+            for (i in a until min(b, n)) {
+                sum += src[i]
+                if (src[i] > mx) mx = src[i]
+            }
+            dst[j] = if (useMax) mx else sum / (b - a)
+        }
     }
 
     // ================================================================== 描画
@@ -117,7 +152,17 @@ class SpectrumPainter(private val n: Int) {
             animating = carAudio.animating
             return
         }
-        // そのほか: 区画いっぱいに、バー・線・メーターだけを描く（表示窓は描かない）。
+        // そのほか（24 本で描く表示）: 帯が 48 なら 2 本ずつまとめて 24 本用の描き手へ
+        val co = coarse
+        if (co != null) {
+            toCoarse(vis, cVis, useMax = false)
+            toCoarse(peak, cPeak, useMax = true)
+            val cr = if (raw != null) cRaw.also { toCoarse(raw, it, useMax = false) } else null
+            co.draw(c, r, style, cVis, cPeak, scale, segUnit, dtSec, cr)
+            animating = co.animating
+            return
+        }
+        // 区画いっぱいに、バー・線・メーターだけを描く（表示窓は描かない）。
         // 音が無い（再生していない）ときは、バー・線は何も描かない（v2.9。メーターは針を左に置いて描く）
         val meter = style == SpectrumStyle.VISUAL_METER || style == SpectrumStyle.VISUAL_METER_DARK
         if (!meter && silent(vis, peak)) return
@@ -205,7 +250,8 @@ class SpectrumPainter(private val n: Int) {
     /**
      * LED（標準）。ブロックの大きさと並びはどの画面でもスマホの縦画面と同じ（v2.12）:
      * 段の間隔 = segUnit（点灯は 72%）、列の間隔 = 段の間隔 ÷ [LED_ROW_PER_COL]（列の隙間はその 22%）。
-     * 横に広い区画では、ブロックを大きくせず本数を増やす（24〜[LED_MAX_COLS] 本。帯の間の高さはなめらかにつなぐ）。
+     * 横に広い区画では、ブロックを大きくせず本数を増やす（24〜[LED_MAX_COLS] 本。帯の数（48）と本数が違うときは、
+     * 帯の間をなめらかにつなぐ／2 本をまとめる）。
      * v2.11 はバーの幅から段の高さを決めていたので、横画面ではブロックが縦画面の 2 倍近い大きさになっていた
      */
     private fun drawLed(c: Canvas, r: RectF, vis: FloatArray, peak: FloatArray, scale: Float, segUnit: Float) {
@@ -216,7 +262,7 @@ class SpectrumPainter(private val n: Int) {
         val rows = ((r.height() + unit - segH) / unit).toInt()
         if (rows <= 0) return
         val colPitch = unit / LED_ROW_PER_COL
-        val m = (r.width() / colPitch).toInt().coerceIn(n, LED_MAX_COLS)
+        val m = (r.width() / colPitch).toInt().coerceIn(LED_MIN_COLS, LED_MAX_COLS)
         val gap = max(1.5f, r.width() / m * 0.22f)
         val barW = (r.width() - gap * (m - 1)) / m
         ledCache.check(rows, unit, segH, scale)
@@ -901,11 +947,20 @@ class SpectrumPainter(private val n: Int) {
      * @param t 秒（時間とともに動く）。still なら動きを止めた 1 枚
      */
     fun drawDemo(c: Canvas, r: RectF, style: Int, scale: Float, t: Float, dtSec: Float, still: Boolean = false) {
+        // 24 本で描く表示は、24 本用の描き手の見本（これまでと同じ動き）
+        val co = coarse
+        if (co != null && style != SpectrumStyle.VISUAL_LED && !SpectrumStyle.isCarAudio(style)) {
+            co.drawDemo(c, r, style, scale, t, dtSec, still)
+            animating = co.animating
+            return
+        }
         for (i in 0 until n) {
             val x = i.toFloat() / (n - 1)
+            // 帯の位置を 24 本のときの番号に直す（帯が 48 でも見本の動きは同じ）
+            val k = x * (COARSE_BANDS - 1)
             // 低音が強く高音ほど弱い、よくある曲の形に、帯ごとにずれた揺れを足す
             val base = 0.30f + 0.62f * exp(-x * 1.7f) + 0.10f * exp(-((x - 0.55f) * 6f).pow(2))
-            val wobble = 0.62f + 0.38f * sin(t * 2.3f + i * 0.61f) * cos(t * 1.1f - i * 0.27f)
+            val wobble = 0.62f + 0.38f * sin(t * 2.3f + k * 0.61f) * cos(t * 1.1f - k * 0.27f)
             val v = (base * wobble).coerceIn(0f, 1f)
             demoVis[i] = v
             demoPeak[i] = if (still) (v + 0.12f).coerceAtMost(1f) else max(v, demoPeak[i] - dtSec * 0.6f)
@@ -921,9 +976,12 @@ class SpectrumPainter(private val n: Int) {
     }
 
     companion object {
-        /** LED のブロック: 段の間隔 ÷ 列の間隔（スマホの縦画面: 5.5 ÷ 9.2）と、本数の上限 */
+        /** LED のブロック: 段の間隔 ÷ 列の間隔（スマホの縦画面: 5.5 ÷ 9.2）と、本数の下限・上限 */
         private const val LED_ROW_PER_COL = 0.6f
+        private const val LED_MIN_COLS = 24
         private const val LED_MAX_COLS = 64
+        /** なめらかなバー・ミラー・ライン・ドット・メーターの本数（帯が多いときはまとめる） */
+        private const val COARSE_BANDS = 24
 
         /** 針のばねの強さと減衰（約 38 rad/s・減衰比 0.6: 約 0.05 秒で振れ、行き過ぎは 9% ほど） */
         private const val NEEDLE_K = 1444f
