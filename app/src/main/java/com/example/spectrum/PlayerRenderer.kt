@@ -57,6 +57,8 @@ class PlayerRenderer {
 
         /** 再生バー(Android Auto 風の波): 残り部分の色 / 波の高さ / 波の長さ / 流れる速さ(周/秒) */
         private val TRACK = Color.rgb(95, 105, 125)
+        /** 再生位置のバーを指で動かしている間の、時刻の吹き出しの色 */
+        private val BUBBLE = Color.argb(235, 28, 44, 58)
         private const val WAVE_AMP = 2.4f
         private const val WAVE_LENGTH = 14f
         private const val WAVE_SPEED = 0.8f
@@ -702,6 +704,30 @@ class PlayerRenderer {
         c.drawPath(p, shape)
     }
 
+    // ---------------------------------------------------------------- 再生位置のバーを指で動かす（v2.14）
+
+    /** 指で動かしている間の位置（0〜1）。動かしていないときは -1（離すまで曲の位置は変えない） */
+    private var scrubFrac = -1f
+
+    /** 画面の座標 (x, y) が再生位置のバーの上か（曲の長さが分かり、操作できるときだけ） */
+    fun isSeekAt(x: Float, y: Float): Boolean {
+        if (scale <= 0f || NowPlaying.durationMs <= 0L || NowPlaying.controller == null) return false
+        return lay.seekTouch.contains((x - ox) / scale, (y - oy) / scale)
+    }
+
+    /** 指の位置に合わせて、バーの現在位置を動かす */
+    fun scrubTo(x: Float) {
+        if (scale <= 0f) return
+        val vx = (x - ox) / scale
+        scrubFrac = ((vx - lay.seekX0) / (lay.seekX1 - lay.seekX0)).coerceIn(0f, 1f)
+    }
+
+    /** 指を離した（commit なら、その位置へ曲を移す。取り消しなら元の位置のまま） */
+    fun endScrub(commit: Boolean) {
+        if (commit && scrubFrac >= 0f) NowPlaying.seekToFraction(scrubFrac)
+        scrubFrac = -1f
+    }
+
     fun onTap(x: Float, y: Float): Boolean {
         val vx = (x - ox) / scale
         val vy = (y - oy) / scale
@@ -954,7 +980,9 @@ class PlayerRenderer {
 
     private fun drawSeek(c: Canvas) {
         val dur = NowPlaying.durationMs
-        val pos = NowPlaying.positionMs()
+        // 指で動かしている間は、指の位置を表示する（v2.14。それまでは離すまで動かなかった）
+        val scrub = scrubFrac >= 0f && dur > 0L
+        val pos = if (scrub) (dur * scrubFrac).toLong() else NowPlaying.positionMs()
 
         // 時刻の文字は秒が変わったときだけ作る
         val ps = pos / 1000
@@ -1010,10 +1038,27 @@ class PlayerRenderer {
             c.drawPath(wavePath, shape)
         }
 
-        // 現在位置: 縦の短いバー
         shape.style = Paint.Style.FILL
         shape.color = accent
-        c.drawRoundRect(xp - 1.6f, y - 7f, xp + 1.6f, y + 7f, 1.6f, 1.6f, shape)
+        if (scrub) {
+            // 指で動かしている間: 丸いつまみと、上に移る先の時刻（指でバーが隠れても分かるように）
+            c.drawCircle(xp, y, 6.5f, shape)
+            text.textSize = lay.timeSize
+            text.textAlign = Paint.Align.CENTER
+            val tw = text.measureText(posText)
+            val bw = tw + 12f
+            val bh = lay.timeSize + 8f
+            val bx = (xp - bw / 2f).coerceIn(2f, lay.vw - 2f - bw)
+            val by = y - 14f - bh
+            shape.color = BUBBLE
+            c.drawRoundRect(bx, by, bx + bw, by + bh, bh / 2f, bh / 2f, shape)
+            text.color = Color.WHITE
+            c.drawText(posText, bx + bw / 2f, by + bh / 2f + lay.timeSize * 0.36f, text)
+            text.textAlign = Paint.Align.LEFT
+        } else {
+            // 現在位置: 縦の短いバー
+            c.drawRoundRect(xp - 1.6f, y - 7f, xp + 1.6f, y + 7f, 1.6f, 1.6f, shape)
+        }
         shape.strokeCap = Paint.Cap.BUTT
     }
 

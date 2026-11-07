@@ -53,8 +53,27 @@ object NowPlaying {
             return if (s != null) s.state == PlaybackState.STATE_PLAYING else fallbackPlaying == true
         }
 
+    /**
+     * 再生位置の移動を頼んだ位置と時刻（v2.14）。音楽アプリが新しい位置を知らせてくるまで（最大 [SEEK_SHOW_MS]）、
+     * この位置を表示する（知らせが来るまで前の位置に戻って見えないように）
+     */
+    @Volatile private var pendingSeekMs = -1L
+    @Volatile private var pendingSeekAt = 0L
+    private const val SEEK_SHOW_MS = 2000L
+
     fun positionMs(): Long {
-        val s = state ?: return 0L
+        val s = state
+        if (pendingSeekMs >= 0L) {
+            val now = SystemClock.elapsedRealtime()
+            val reported = s != null && s.lastPositionUpdateTime >= pendingSeekAt
+            if (!reported && now - pendingSeekAt < SEEK_SHOW_MS) {
+                var p = pendingSeekMs
+                if (s != null && s.state == PlaybackState.STATE_PLAYING) p += ((now - pendingSeekAt) * s.playbackSpeed).toLong()
+                return if (durationMs > 0) p.coerceIn(0L, durationMs) else p.coerceAtLeast(0L)
+            }
+            pendingSeekMs = -1L
+        }
+        if (s == null) return 0L
         var pos = s.position
         if (s.state == PlaybackState.STATE_PLAYING) {
             val elapsed = SystemClock.elapsedRealtime() - s.lastPositionUpdateTime
@@ -149,7 +168,12 @@ object NowPlaying {
     }
 
     fun seekToFraction(f: Float) {
-        if (durationMs > 0) controller?.transportControls?.seekTo((durationMs * f).toLong())
+        if (durationMs <= 0) return
+        val c = controller ?: return
+        val ms = (durationMs * f.coerceIn(0f, 1f)).toLong()
+        pendingSeekMs = ms
+        pendingSeekAt = SystemClock.elapsedRealtime()
+        c.transportControls?.seekTo(ms)
     }
 
     /**

@@ -404,7 +404,10 @@ class SettingsUi(private val a: Activity) {
         texts.addView(sv)
         body.addView(texts, LinearLayout.LayoutParams(0, WRAP, 1f))
         if (right != null) {
-            body.addView(right, LinearLayout.LayoutParams(WRAP, WRAP).apply { marginStart = dp(12) })
+            // 大きさを決めてある部品（色の見本など）はその大きさで置く。中身の無い View を WRAP で置くと、
+            // 横幅いっぱいに広がって題名の幅が 0 になり、行が縦に長く伸びていた（v2.13 までの「色」の行）
+            val given = right.layoutParams
+            body.addView(right, LinearLayout.LayoutParams(given?.width ?: WRAP, given?.height ?: WRAP).apply { marginStart = dp(12) })
         }
         if (chevron) {
             body.addView(TextView(a).apply {

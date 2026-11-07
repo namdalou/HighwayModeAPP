@@ -127,7 +127,35 @@ class PlayerView(context: Context) : View(context) {
         postOnAnimationDelayed(redraw, delay)
     }
 
+    /** 再生位置のバーを指で動かしている（v2.14。離したときにその位置へ移る） */
+    private var scrubbing = false
+
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        // 再生位置のバー: 触ったところから指に合わせて動かし、離したらその位置へ移る
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> if (renderer.isSeekAt(e.x, e.y)) {
+                scrubbing = true
+                tapCount = 0
+                parent?.requestDisallowInterceptTouchEvent(true)
+                renderer.scrubTo(e.x)
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> if (scrubbing) {
+                renderer.scrubTo(e.x)
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (scrubbing) {
+                scrubbing = false
+                val commit = e.actionMasked == MotionEvent.ACTION_UP
+                if (commit) renderer.scrubTo(e.x)
+                renderer.endScrub(commit)
+                if (commit) performClick()
+                invalidate()
+                return true
+            }
+        }
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = e.x
