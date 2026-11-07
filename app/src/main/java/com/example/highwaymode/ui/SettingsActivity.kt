@@ -27,6 +27,7 @@ import com.example.highwaymode.engine.EngineHost
 import com.example.highwaymode.engine.RunDiagnostics
 import com.example.highwaymode.nav.NavNotifications
 import android.view.View
+import android.view.ViewGroup
 import com.example.spectrum.SessionScanner
 import com.example.spectrum.SpectrumEngine
 import com.example.spectrum.SpectrumStyle
@@ -215,20 +216,43 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
         val preview = SpectrumPreviewView(this)
         spectrumPreview = preview
         ui.viewRow(mu, preview, 108f) { SpectrumPickers.chooseVisual(this) { spectrumChanged() } }
-        val visualRow = ui.actionRow(mu, "表示の種類", "LED・バー・ライン・レトロ・針のメーターなど（見本を見て選べます）") {
+        val visualRow = ui.actionRow(mu, "表示の種類", "LED バー・カーオーディオ・アナログメーターなど 10 種類（見本を見て選べます）") {
             SpectrumPickers.chooseVisual(this) { spectrumChanged() }
         }
+        // 色の見本（大きさを決めて置く。決めないと行の横幅いっぱいに広がる）
         val swatch = View(this).apply {
-            minimumWidth = ui.dp(30)
-            minimumHeight = ui.dp(30)
+            layoutParams = ViewGroup.LayoutParams(ui.dp(34), ui.dp(34))
         }
-        val colorRow = ui.actionRow(mu, "色", "ジャケットの色・12 色と虹色・カラーコード", right = swatch) {
+        val colorRow = ui.actionRow(mu, "色", "ジャケットの色・12 色・虹色・好きな色（カラーコード）", right = swatch) {
             SpectrumPickers.chooseColor(this) { spectrumChanged() }
+        }
+        // アナログメーターの設定（v2.14。メーターを選んでいるときだけ出す）
+        val meterLight = ui.choiceRow(
+            mu, "メーターの照明の色", SpectrumStyle.METER_LIGHT_CHOICES, SpectrumStyle.meterLight,
+            "車の内装の照明の色に合わせると、なじんで見えます"
+        ) {
+            SpectrumStyle.setMeterLight(this, it)
+            spectrumChanged()
+        }
+        val meterCount = ui.choiceRow(
+            mu, "メーターの数", SpectrumStyle.METER_COUNT_LABELS, if (SpectrumStyle.meterSingle) 1 else 0,
+            "1 つにすると、狭い画面（車の 2 画面など）でも大きく見えます"
+        ) {
+            SpectrumStyle.setMeterSingle(this, it == 1)
+            spectrumChanged()
+        }
+        val meterPeak = ui.switchRow(mu, "ピークのランプ", "強い音（+1 VU 以上）で、右下のランプが赤く光ります", SpectrumStyle.meterPeak) {
+            SpectrumStyle.setMeterPeak(this, it)
+            spectrumChanged()
         }
         spectrumRefresh = {
             visualRow.value(SpectrumStyle.VISUAL_LABELS[SpectrumStyle.visual])
             colorRow.value(SpectrumStyle.themeLabel())
             swatch.background = SpectrumPickers.swatchDrawable(this, SpectrumStyle.theme, false)
+            val meter = SpectrumStyle.isMeter(SpectrumStyle.visual)
+            meterLight.shown(meter)
+            meterCount.shown(meter)
+            meterPeak.shown(meter)
             preview.refresh()
         }
         spectrumRefresh?.invoke()

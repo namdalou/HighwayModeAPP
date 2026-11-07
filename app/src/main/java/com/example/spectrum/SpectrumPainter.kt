@@ -158,6 +158,7 @@ class SpectrumPainter(private val n: Int) {
             toCoarse(vis, cVis, useMax = false)
             toCoarse(peak, cPeak, useMax = true)
             val cr = if (raw != null) cRaw.also { toCoarse(raw, it, useMax = false) } else null
+            co.oneMeter = oneMeter
             co.draw(c, r, style, cVis, cPeak, scale, segUnit, dtSec, cr)
             animating = co.animating
             return
@@ -602,7 +603,7 @@ class SpectrumPainter(private val n: Int) {
         }
     }
 
-    // ================================================================== アナログメーター（照明付き）
+    // ================================================================== アナログメーター（v2.14 で見た目を作り直し）
 
     private class Needle {
         var pos = 0f
@@ -615,37 +616,78 @@ class SpectrumPainter(private val n: Int) {
         var age = 0f
     }
 
+    /**
+     * メーターの色（v2.14）。照明の色（[SpectrumStyle.meterLight]）と文字盤（明るい・暗い）から決める。
+     * 目盛り板を作るときと、針・ランプを描くときに使う
+     */
+    private class MeterLook {
+        var dark = false
+        var faceCenter = 0
+        var faceMid = 0
+        var faceEdge = 0
+        var ink = 0
+        var red = 0
+        var needle = 0
+        var needleUnder = 0
+        var lamp = 0
+    }
+
     private val needles = arrayOf(Needle(), Needle())
     private val faceRect = arrayOf(RectF(), RectF())
+    private val look = MeterLook()
     private var faceBmp: Bitmap? = null
     private var fkW = -1
     private var fkH = -1
-    private var fkBlue = false
+    private var fkDark = false
     private var fkCount = -1
     private var fkVer = -1
+    private var fkLight = -1
+    private var fkPeak = false
+    private var fkSingle = false
     private var glassShader: LinearGradient? = null
     private var gkTop = Float.NaN
-    private var gkBottom = Float.NaN
+    private var gkH = Float.NaN
+    private val bridgePath = Path()
+    private val bridgeEdge = Path()
+    private var bridgeShader: LinearGradient? = null
+    private var bkW = Float.NaN
+    private var bkH = Float.NaN
+    private var bkDark = false
     private val bmpPaint = Paint(Paint.FILTER_BITMAP_FLAG)
 
     /** VU メーターの目盛り（dB）と位置（+3 を 1 とした電圧比） */
     private val vuMarks = floatArrayOf(-20f, -10f, -7f, -5f, -3f, -2f, -1f, 0f, 1f, 2f, 3f)
     private fun vuPos(db: Float): Float = 10f.pow((db - 3f) / 20f)
 
-    /** 針の振れ（-44°〜+44°、少しだけ振り切れる） */
-    private fun needleAngle(pos: Float): Float = -44f + 88f * pos.coerceIn(-0.02f, 1.06f)
+    /** 針の振れ（-46°〜+46°、少しだけ振り切れる。v2.14 で ±44° → ±46°：目盛りの数字が詰まらないように） */
+    private fun needleAngle(pos: Float): Float = -46f + 92f * pos.coerceIn(-0.02f, 1.06f)
 
     private var meterCount = 1
     private var meterW = 0f
     private var meterH = 0f
 
+    /** 見本の小さな絵で、メーターを 1 つにする（車の画面の一覧の絵。v2.14） */
+    var oneMeter = false
+
     /**
-     * メーターの並びと大きさを決める（区画の中、左右・上下の中央。横:縦 = 約 1.72:1。両端の目盛りの数字が板に収まるように）。
-     * いつも 2 つ（左・上 = 低音、右・下 = 高音）。横に並べるか縦に積むかは、メーターが大きくなる方（v2.9。v2.8 は 1 つにすることがあった）
+     * メーターの並びと大きさを決める（区画の中、左右・上下の中央。横:縦 = 約 1.72:1）。
+     * 2 つ（左・上 = 低音、右・下 = 高音）のときは、横に並べるか縦に積むかを、メーターが大きくなる方に（v2.9）。
+     * 設定で 1 つ（全体を大きく）にもできる（v2.14）
      */
     private fun meterLayout(r: RectF) {
         val w = r.width()
         val h = r.height()
+        if (SpectrumStyle.meterSingle || oneMeter) {
+            val mh = min(h, w / 1.72f)
+            val mw = mh * 1.72f
+            val x = r.left + (w - mw) / 2f
+            val y = r.top + (h - mh) / 2f
+            faceRect[0].set(x, y, x + mw, y + mh)
+            meterCount = 1
+            meterW = mw
+            meterH = mh
+            return
+        }
         val gapX = w * 0.035f
         val gapY = h * 0.05f
         val side = min(h, (w - gapX) / 2f / 1.72f)
@@ -667,6 +709,43 @@ class SpectrumPainter(private val n: Int) {
         meterH = mh
     }
 
+    /** 照明の色と文字盤から、メーターの色を決める */
+    private fun updateLook(dark: Boolean) {
+        val lamp = when (SpectrumStyle.meterLight) {
+            SpectrumStyle.LIGHT_WARM -> LAMP_WARM
+            SpectrumStyle.LIGHT_WHITE -> LAMP_WHITE
+            SpectrumStyle.LIGHT_BLUE -> LAMP_BLUE
+            SpectrumStyle.LIGHT_GREEN -> LAMP_GREEN
+            SpectrumStyle.LIGHT_THEME -> colTop[n / 2]
+            else -> if (dark) LAMP_BLUE else LAMP_WARM
+        }
+        val l = look
+        l.dark = dark
+        l.lamp = lamp
+        val hsv = FloatArray(3)
+        Color.colorToHSV(lamp, hsv)
+        if (dark) {
+            // 暗い文字盤: 黒い板の下の方がうっすら照明の色に光り、目盛り・針が光る
+            l.faceCenter = mix(Color.BLACK, lamp, 0.24f)
+            l.faceMid = mix(Color.BLACK, lamp, 0.08f)
+            l.faceEdge = Color.rgb(4, 5, 7)
+            l.ink = mix(lamp, Color.WHITE, 0.5f)
+            l.red = Color.rgb(255, 100, 76)
+            l.needle = mix(Color.WHITE, lamp, 0.12f)
+            l.needleUnder = withAlpha(lamp, 75)
+        } else {
+            // 明るい文字盤: 紙の文字盤を裏から照らす（中ほどが明るく、縁は暗く）。目盛りと針は照明の色の暗い色
+            val paper = Color.rgb(255, 252, 240)
+            l.faceCenter = mix(paper, lamp, 0.26f)
+            l.faceMid = mix(paper, lamp, 0.66f)
+            l.faceEdge = mix(lamp, Color.BLACK, 0.55f)
+            l.ink = Color.HSVToColor(floatArrayOf(hsv[0], (hsv[1] * 1.1f).coerceAtMost(1f), 0.2f))
+            l.red = Color.rgb(198, 30, 22)
+            l.needle = mix(l.ink, Color.BLACK, 0.4f)
+            l.needleUnder = Color.argb(44, 0, 0, 0)
+        }
+    }
+
     private fun drawMeters(c: Canvas, r: RectF, vis: FloatArray, scale: Float, blue: Boolean, dtSec: Float) {
         meterLayout(r)
         val count = meterCount
@@ -674,6 +753,7 @@ class SpectrumPainter(private val n: Int) {
         val mw = meterW
         val mh = meterH
         if (mw <= 1f || mh <= 1f) return
+        val dark = blue
 
         // 入力: 低音（左）・高音（右）、1 つのときは全体（v の値は 1 で切る前の強さ。切ると強弱が消えるため）
         for (k in 0 until count) {
@@ -684,10 +764,16 @@ class SpectrumPainter(private val n: Int) {
             if (kotlin.math.abs(nd.vel) > 0.01f || kotlin.math.abs(nd.pos - tgt) > 0.01f || s > 0.004f) animating = true
         }
 
-        // 目盛り板（画像として 1 回だけ描く）
+        // 目盛り板（画像として 1 回だけ描く。区画・色・設定が変わったときだけ作り直す）
         val fw = ceil(mw * scale).toInt().coerceIn(8, 2048)
         val fh = ceil(mh * scale).toInt().coerceIn(8, 2048)
-        if (fw != fkW || fh != fkH || blue != fkBlue || count != fkCount || colorsVersion != fkVer || faceBmp == null) {
+        val light = SpectrumStyle.meterLight
+        val peakOn = SpectrumStyle.meterPeak
+        val single = SpectrumStyle.meterSingle || oneMeter
+        if (fw != fkW || fh != fkH || dark != fkDark || count != fkCount || colorsVersion != fkVer || light != fkLight ||
+            peakOn != fkPeak || single != fkSingle || faceBmp == null
+        ) {
+            updateLook(dark)
             // 前の目盛り板は捨てるだけ（描いたばかりの画面がまだ使っていることがあるので recycle しない）
             faceBmp = try {
                 Bitmap.createBitmap(fw, fh * count, Bitmap.Config.ARGB_8888).also { b ->
@@ -696,7 +782,7 @@ class SpectrumPainter(private val n: Int) {
                         bc.save()
                         bc.translate(0f, (fh * k).toFloat())
                         bc.scale(fw / mw, fh / mh)
-                        drawFace(bc, mw, mh, blue, if (count == 2) (if (k == 0) "BASS" else "TREBLE") else null)
+                        drawFace(bc, mw, mh, fh / mh, if (count == 2) (if (k == 0) "BASS" else "TREBLE") else null, peakOn)
                         bc.restore()
                     }
                 }
@@ -705,9 +791,12 @@ class SpectrumPainter(private val n: Int) {
             }
             fkW = fw
             fkH = fh
-            fkBlue = blue
+            fkDark = dark
             fkCount = count
             fkVer = colorsVersion
+            fkLight = light
+            fkPeak = peakOn
+            fkSingle = single
         }
         val face = faceBmp
         for (k in 0 until count) {
@@ -717,10 +806,10 @@ class SpectrumPainter(private val n: Int) {
                 c.drawBitmap(face, srcRect, fr, bmpPaint)
             } else {
                 fill.shader = null
-                fill.color = if (blue) Color.rgb(12, 26, 64) else Color.rgb(236, 170, 70)
-                c.drawRoundRect(fr, mh * 0.06f, mh * 0.06f, fill)
+                fill.color = look.faceMid
+                c.drawRoundRect(fr, mh * 0.07f, mh * 0.07f, fill)
             }
-            drawNeedle(c, fr, mw, mh, needles[k], blue)
+            drawNeedle(c, fr, mw, mh, needles[k], peakOn)
         }
     }
 
@@ -783,157 +872,247 @@ class SpectrumPainter(private val n: Int) {
         nd.hold = if (nd.pos >= vuPos(1f)) 0.3f else max(0f, nd.hold - dt)
     }
 
-    /** 目盛り板（大きさ w×h の座標で描く）。blue = ブルー照明、そうでなければアンバー照明 */
-    private fun drawFace(c: Canvas, w: Float, h: Float, blue: Boolean, label: String?) {
-        val rr = RectF(0f, 0f, w, h)
+    /**
+     * 目盛り板（大きさ w×h の座標で描く。v2.14 で作り直し）。
+     * 金属の枠の中に、照明で光る文字盤（明るい・暗い）、VU の目盛り（-20〜+3。+1〜+3 は赤）、内側にパーセントの目盛り、
+     * 「VU」、低音・高音の名前、右下にピークのランプ。針の根元を隠す台は、針の上に毎回描く（[drawNeedle]）。
+     * @param pxPerUnit 1 単位あたりの画素（小さいときは細かい文字を省く）
+     */
+    private fun drawFace(c: Canvas, w: Float, h: Float, pxPerUnit: Float, label: String?, peakOn: Boolean) {
+        val l = look
+        val dark = l.dark
         val p = Paint(Paint.ANTI_ALIAS_FLAG)
-        val rad = h * 0.07f
-        // 板と照明（下の中央から照らす）
-        p.shader = if (blue) {
-            RadialGradient(
-                w / 2f, h * 0.96f, w * 0.78f,
-                intArrayOf(Color.rgb(46, 104, 210), Color.rgb(18, 44, 116), Color.rgb(6, 10, 32)), floatArrayOf(0f, 0.5f, 1f),
-                Shader.TileMode.CLAMP
-            )
-        } else {
-            RadialGradient(
-                w / 2f, h * 0.96f, w * 0.78f,
-                intArrayOf(Color.rgb(255, 222, 140), Color.rgb(246, 164, 54), Color.rgb(132, 62, 10)), floatArrayOf(0f, 0.52f, 1f),
-                Shader.TileMode.CLAMP
-            )
-        }
-        c.drawRoundRect(rr, rad, rad, p)
+        val b = h * M_BEZEL
+        val px = h * pxPerUnit            // 文字盤の高さ（画素）
+        // 枠（上が明るく下が暗い金属）
+        p.shader = LinearGradient(
+            0f, 0f, 0f, h,
+            if (dark) Color.rgb(54, 56, 62) else Color.rgb(64, 60, 56), if (dark) Color.rgb(10, 10, 12) else Color.rgb(16, 14, 12),
+            Shader.TileMode.CLAMP
+        )
+        c.drawRoundRect(RectF(0f, 0f, w, h), h * 0.085f, h * 0.085f, p)
+        // 文字盤（下の中央から照らす）
+        val face = RectF(b, b, w - b, h - b)
+        p.shader = RadialGradient(
+            w / 2f, h * 0.98f, w * 0.78f,
+            intArrayOf(l.faceCenter, l.faceMid, l.faceEdge), floatArrayOf(0f, 0.55f, 1f),
+            Shader.TileMode.CLAMP
+        )
+        c.drawRoundRect(face, h * 0.05f, h * 0.05f, p)
+        // 文字盤の上の縁の影（枠の内側に沈んで見えるように）
+        p.shader = LinearGradient(0f, b, 0f, b + h * 0.11f, Color.argb(if (dark) 120 else 80, 0, 0, 0), Color.argb(0, 0, 0, 0), Shader.TileMode.CLAMP)
+        c.drawRoundRect(face, h * 0.05f, h * 0.05f, p)
         p.shader = null
-        // 下のカバー（針の根元を隠す板）
-        val coverTop = h * 0.84f
-        p.color = if (blue) Color.rgb(6, 6, 14) else Color.rgb(28, 18, 10)
-        c.drawRect(h * 0.05f, coverTop, w - h * 0.05f, h - h * 0.05f, p)
-        p.color = if (blue) Color.argb(90, 120, 160, 255) else Color.argb(90, 255, 210, 140)
-        c.drawRect(h * 0.05f, coverTop, w - h * 0.05f, coverTop + h * 0.008f, p)
-        // 枠
+
+        val cx = w / 2f
+        val cy = h * M_PIVOT_Y
+        val arcR = h * M_ARC_R
         val sp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = h * 0.03f
-            color = if (blue) Color.rgb(24, 30, 52) else Color.rgb(70, 40, 16)
+            strokeCap = Paint.Cap.BUTT
         }
-        c.drawRoundRect(RectF(h * 0.015f, h * 0.015f, w - h * 0.015f, h - h * 0.015f), rad, rad, sp)
-
-        // 目盛りの弧（中心は板の下の外側）
-        val cx = w / 2f
-        val cy = h * 1.18f
-        val arcR = h * 0.95f
-        val scaleColor = if (blue) Color.rgb(150, 226, 255) else Color.rgb(58, 28, 6)
-        // +1〜+3 の赤い目盛り（ブルー照明は、青い板の上でよく見える明るい朱色）
-        val redColor = if (blue) Color.rgb(255, 104, 72) else Color.rgb(190, 24, 16)
-        val arc = RectF(cx - arcR, cy - arcR, cx + arcR, cy + arcR)
-        val a0 = needleAngle(vuPos(-20f))
-        val aZero = needleAngle(vuPos(0f))
+        fun arcRect(r: Float) = RectF(cx - r, cy - r, cx + r, cy + r)
+        val a20 = needleAngle(vuPos(-20f))
+        val a0 = needleAngle(vuPos(0f))
         val a3 = needleAngle(vuPos(3f))
-        sp.strokeCap = Paint.Cap.BUTT
-        if (blue) {
-            // 光る目盛り（太く淡い線の上に細い線）
-            sp.color = Color.argb(70, 120, 200, 255)
-            sp.strokeWidth = h * 0.055f
-            c.drawArc(arc, -90f + a0, aZero - a0, false, sp)
+
+        // パーセントの目盛り（内側。0〜100% = 0 VU）。小さいメーターでは省く
+        if (px >= 100f) {
+            val pr = arcR - h * 0.085f
+            sp.color = withAlpha(l.ink, 150)
+            sp.strokeWidth = h * 0.007f
+            c.drawArc(arcRect(pr), -90f + needleAngle(0f), a0 - needleAngle(0f), false, sp)
+            val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                textAlign = Paint.Align.CENTER
+                textSize = h * 0.048f
+                color = withAlpha(l.ink, 170)
+            }
+            for (k in 0..5) {
+                val a = Math.toRadians(needleAngle(vuPos(0f) * k / 5f).toDouble())
+                val s0 = pr
+                val s1 = pr - h * 0.032f
+                c.drawLine(
+                    cx + (sin(a) * s0).toFloat(), cy - (cos(a) * s0).toFloat(),
+                    cx + (sin(a) * s1).toFloat(), cy - (cos(a) * s1).toFloat(), sp
+                )
+                if (px >= 150f && (k == 0 || k == 3 || k == 5)) {
+                    // 0・60・100（%）
+                    val tr = pr - h * 0.075f
+                    val text = when (k) { 0 -> "0"; 3 -> "60"; else -> "100%" }
+                    c.drawText(text, cx + (sin(a) * tr).toFloat(), cy - (cos(a) * tr).toFloat() + tp.textSize * 0.36f, tp)
+                }
+            }
         }
-        sp.color = scaleColor
-        sp.strokeWidth = h * 0.018f
-        c.drawArc(arc, -90f + a0, aZero - a0, false, sp)
-        if (blue) {
-            sp.color = withAlpha(redColor, 90)
-            sp.strokeWidth = h * 0.1f
-            c.drawArc(RectF(cx - arcR - h * 0.03f, cy - arcR - h * 0.03f, cx + arcR + h * 0.03f, cy + arcR + h * 0.03f), -90f + aZero, a3 - aZero, false, sp)
+
+        // 目盛りの弧: -20〜0 は細い線、0〜+3 は太い赤（暗い文字盤は下に淡い光）
+        if (dark) {
+            sp.color = withAlpha(l.lamp, 60)
+            sp.strokeWidth = h * 0.04f
+            c.drawArc(arcRect(arcR), -90f + a20, a0 - a20, false, sp)
+            sp.color = withAlpha(l.red, 70)
+            sp.strokeWidth = h * 0.07f
+            c.drawArc(arcRect(arcR + h * 0.012f), -90f + a0, a3 - a0, false, sp)
         }
-        sp.color = redColor
-        sp.strokeWidth = h * 0.06f
-        c.drawArc(RectF(cx - arcR - h * 0.03f, cy - arcR - h * 0.03f, cx + arcR + h * 0.03f, cy + arcR + h * 0.03f), -90f + aZero, a3 - aZero, false, sp)
-        // 目盛りの線と数字
+        sp.color = l.ink
+        sp.strokeWidth = h * 0.012f
+        c.drawArc(arcRect(arcR), -90f + a20, a0 - a20, false, sp)
+        sp.color = l.red
+        sp.strokeWidth = h * 0.034f
+        c.drawArc(arcRect(arcR + h * 0.011f), -90f + a0, a3 - a0, false, sp)
+
+        // 目盛りの線と数字（数字は細めの字で、詰まらないように）
         val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textAlign = Paint.Align.CENTER
-            textSize = h * 0.085f
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            textSize = h * 0.074f
         }
+        val numR = arcR + h * 0.135f
         for (db in vuMarks) {
             val a = Math.toRadians(needleAngle(vuPos(db)).toDouble())
             val major = db == -20f || db == -10f || db == -5f || db == 0f || db == 3f
-            val len = if (major) h * 0.09f else h * 0.055f
-            val sx = cx + (sin(a) * arcR).toFloat()
-            val sy = cy - (cos(a) * arcR).toFloat()
-            val ex = cx + (sin(a) * (arcR + len)).toFloat()
-            val ey = cy - (cos(a) * (arcR + len)).toFloat()
-            sp.strokeWidth = h * (if (major) 0.022f else 0.016f)
-            sp.color = if (db > 0f) redColor else scaleColor
-            c.drawLine(sx, sy, ex, ey, sp)
-            val tx = cx + (sin(a) * (arcR + h * 0.14f)).toFloat()
-            val ty = cy - (cos(a) * (arcR + h * 0.14f)).toFloat() + tp.textSize * 0.35f
-            tp.color = if (db > 0f) redColor else scaleColor
-            val s = if (db > 0f) "+${db.toInt()}" else if (db == 0f) "0" else "${db.toInt()}"
-            c.drawText(s, tx, ty, tp)
+            val len = if (major) h * 0.072f else h * 0.048f
+            val r0 = arcR - h * 0.006f
+            sp.strokeWidth = h * (if (major) 0.016f else 0.011f)
+            sp.color = if (db > 0f) l.red else l.ink
+            c.drawLine(
+                cx + (sin(a) * r0).toFloat(), cy - (cos(a) * r0).toFloat(),
+                cx + (sin(a) * (r0 + len)).toFloat(), cy - (cos(a) * (r0 + len)).toFloat(), sp
+            )
+            tp.color = if (db > 0f) l.red else l.ink
+            tp.typeface = if (db == 0f) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            val text = if (db > 0f) "+${db.toInt()}" else if (db == 0f) "0" else "${db.toInt()}"
+            c.drawText(text, cx + (sin(a) * numR).toFloat(), cy - (cos(a) * numR).toFloat() + tp.textSize * 0.36f, tp)
         }
-        // 「VU」と、低音・高音の名前
-        tp.textSize = h * 0.17f
-        tp.color = if (blue) Color.rgb(170, 232, 255) else Color.rgb(64, 32, 8)
-        c.drawText("VU", cx, h * 0.70f, tp)
+        // -20〜-10 の間の小さな目盛り（-15）
+        run {
+            val a = Math.toRadians(needleAngle(vuPos(-15f)).toDouble())
+            val r0 = arcR - h * 0.006f
+            sp.strokeWidth = h * 0.009f
+            sp.color = l.ink
+            c.drawLine(
+                cx + (sin(a) * r0).toFloat(), cy - (cos(a) * r0).toFloat(),
+                cx + (sin(a) * (r0 + h * 0.034f)).toFloat(), cy - (cos(a) * (r0 + h * 0.034f)).toFloat(), sp
+            )
+        }
+
+        // 「VU」
+        tp.typeface = Typeface.DEFAULT_BOLD
+        tp.textSize = h * 0.16f
+        tp.color = l.ink
+        c.drawText("VU", cx, h * 0.665f, tp)
+        // 低音・高音の名前（左下）
         if (label != null) {
-            tp.textSize = h * 0.075f
-            tp.typeface = Typeface.DEFAULT_BOLD
             tp.textAlign = Paint.Align.LEFT
-            tp.color = if (blue) Color.argb(210, 150, 210, 255) else Color.rgb(96, 52, 14)
-            c.drawText(label, h * 0.12f, h * 0.78f, tp)
+            tp.textSize = h * 0.064f
+            tp.color = withAlpha(l.ink, 215)
+            c.drawText(label, b + h * 0.07f, h * 0.875f, tp)
         }
-        // ピークのランプの台（「VU」の右）
-        p.color = if (blue) Color.rgb(40, 10, 30) else Color.rgb(90, 30, 10)
-        c.drawCircle(w / 2f + h * 0.36f, h * 0.645f, h * 0.045f, p)
+        // ピークのランプ（右下。消えているとき）
+        if (peakOn) {
+            val lx = w - b - h * 0.13f
+            val ly = h * 0.79f
+            p.color = if (dark) Color.rgb(26, 26, 30) else Color.rgb(40, 34, 28)
+            c.drawCircle(lx, ly, h * 0.047f, p)
+            p.color = if (dark) Color.rgb(72, 16, 14) else Color.rgb(104, 26, 18)
+            c.drawCircle(lx, ly, h * 0.033f, p)
+            p.color = Color.argb(70, 255, 255, 255)
+            c.drawCircle(lx - h * 0.01f, ly - h * 0.011f, h * 0.009f, p)
+            if (px >= 110f) {
+                tp.textAlign = Paint.Align.CENTER
+                tp.textSize = h * 0.046f
+                tp.color = withAlpha(l.ink, 200)
+                c.drawText("PEAK", lx, ly + h * 0.105f, tp)
+            }
+        }
     }
 
-    private fun drawNeedle(c: Canvas, fr: RectF, w: Float, h: Float, nd: Needle, blue: Boolean) {
+    private fun drawNeedle(c: Canvas, fr: RectF, w: Float, h: Float, nd: Needle, peakOn: Boolean) {
+        val l = look
+        val b = h * M_BEZEL
         val cx = fr.left + w / 2f
-        val cy = fr.top + h * 1.18f
+        val cy = fr.top + h * M_PIVOT_Y
         val a = Math.toRadians(needleAngle(nd.pos).toDouble())
-        val len = h * 1.0f
+        val len = h * (M_ARC_R + 0.1f)
         val tx = cx + (sin(a) * len).toFloat()
         val ty = cy - (cos(a) * len).toFloat()
         c.save()
-        c.clipRect(fr.left + h * 0.04f, fr.top + h * 0.04f, fr.right - h * 0.04f, fr.top + h * 0.84f)
+        c.clipRect(fr.left + b, fr.top + b, fr.right - b, fr.bottom - b)
         stroke.shader = null
         stroke.strokeCap = Paint.Cap.ROUND
-        if (blue) {
-            // 光る白い針（青い板の上でいちばん見やすい）
-            stroke.color = Color.argb(80, 170, 220, 255)
-            stroke.strokeWidth = h * 0.05f
+        if (l.dark) {
+            // 光る針（下に照明の色の光）
+            stroke.color = l.needleUnder
+            stroke.strokeWidth = h * 0.03f
             c.drawLine(cx, cy, tx, ty, stroke)
-            stroke.color = Color.rgb(246, 250, 255)
-            stroke.strokeWidth = h * 0.02f
+            stroke.color = l.needle
+            stroke.strokeWidth = h * 0.014f
             c.drawLine(cx, cy, tx, ty, stroke)
         } else {
-            // 影と黒い針
-            stroke.color = Color.argb(70, 60, 20, 0)
-            stroke.strokeWidth = h * 0.022f
-            c.drawLine(cx + h * 0.014f, cy + h * 0.014f, tx + h * 0.014f, ty + h * 0.014f, stroke)
-            stroke.color = Color.rgb(24, 14, 8)
-            stroke.strokeWidth = h * 0.017f
+            // 文字盤に落ちる薄い影と、細い針
+            val o = h * 0.01f
+            stroke.color = l.needleUnder
+            stroke.strokeWidth = h * 0.014f
+            c.drawLine(cx + o, cy + o * 1.3f, tx + o, ty + o * 1.3f, stroke)
+            stroke.color = l.needle
+            stroke.strokeWidth = h * 0.012f
             c.drawLine(cx, cy, tx, ty, stroke)
         }
-        c.restore()
-        // ピークのランプ
-        if (nd.hold > 0f) {
-            fill.shader = null
-            val lx = fr.left + w / 2f + h * 0.36f
-            val ly = fr.top + h * 0.645f
-            fill.color = Color.argb(110, 255, 40, 40)
-            c.drawCircle(lx, ly, h * 0.075f, fill)
-            fill.color = Color.rgb(255, 70, 50)
-            c.drawCircle(lx, ly, h * 0.04f, fill)
+        // 針の根元を隠す台（下の中央の、なだらかな丸い山）
+        val fw = w
+        if (fw != bkW || h != bkH || l.dark != bkDark || bridgeShader == null) {
+            val yt = h * BRIDGE_TOP
+            val yb = h - b
+            val bw = h * 0.36f
+            val x0 = fw / 2f
+            bridgePath.reset()
+            bridgePath.moveTo(x0 - bw, yb)
+            bridgePath.cubicTo(x0 - bw * 0.62f, yt, x0 - bw * 0.3f, yt, x0, yt)
+            bridgePath.cubicTo(x0 + bw * 0.3f, yt, x0 + bw * 0.62f, yt, x0 + bw, yb)
+            bridgePath.close()
+            bridgeEdge.reset()
+            bridgeEdge.moveTo(x0 - bw, yb)
+            bridgeEdge.cubicTo(x0 - bw * 0.62f, yt, x0 - bw * 0.3f, yt, x0, yt)
+            bridgeEdge.cubicTo(x0 + bw * 0.3f, yt, x0 + bw * 0.62f, yt, x0 + bw, yb)
+            bridgeShader = LinearGradient(
+                0f, yt, 0f, yb,
+                if (l.dark) Color.rgb(46, 48, 54) else Color.rgb(74, 68, 62), if (l.dark) Color.rgb(10, 10, 12) else Color.rgb(20, 18, 16),
+                Shader.TileMode.CLAMP
+            )
+            bkW = fw
+            bkH = h
+            bkDark = l.dark
         }
-        // ガラスの映り込み
-        if (fr.top != gkTop || fr.bottom != gkBottom || glassShader == null) {
-            glassShader = LinearGradient(0f, fr.top, 0f, fr.top + h * 0.5f, Color.argb(54, 255, 255, 255), Color.argb(0, 255, 255, 255), Shader.TileMode.CLAMP)
+        c.translate(fr.left, fr.top)
+        fill.shader = bridgeShader
+        c.drawPath(bridgePath, fill)
+        fill.shader = null
+        // 台の上の縁の光
+        stroke.style = Paint.Style.STROKE
+        stroke.color = Color.argb(if (l.dark) 60 else 80, 255, 255, 255)
+        stroke.strokeWidth = h * 0.007f
+        c.drawPath(bridgeEdge, stroke)
+        c.translate(-fr.left, -fr.top)
+        c.restore()
+        // ピークのランプ（+1 VU を超えたら 0.3 秒光る）
+        if (peakOn && nd.hold > 0f) {
+            val lx = fr.right - b - h * 0.13f
+            val ly = fr.top + h * 0.79f
+            fill.shader = null
+            fill.color = Color.argb(90, 255, 60, 40)
+            c.drawCircle(lx, ly, h * 0.085f, fill)
+            fill.color = Color.rgb(255, 74, 52)
+            c.drawCircle(lx, ly, h * 0.033f, fill)
+            fill.color = Color.argb(200, 255, 220, 200)
+            c.drawCircle(lx - h * 0.01f, ly - h * 0.011f, h * 0.01f, fill)
+        }
+        // ガラスの映り込み（上の方がうっすら明るい）
+        if (fr.top != gkTop || h != gkH || glassShader == null) {
+            glassShader = LinearGradient(0f, fr.top + b, 0f, fr.top + h * 0.48f, Color.argb(46, 255, 255, 255), Color.argb(0, 255, 255, 255), Shader.TileMode.CLAMP)
             gkTop = fr.top
-            gkBottom = fr.bottom
+            gkH = h
         }
         fill.shader = glassShader
-        tmp.set(fr.left + h * 0.03f, fr.top + h * 0.03f, fr.right - h * 0.03f, fr.top + h * 0.5f)
-        c.drawRoundRect(tmp, h * 0.06f, h * 0.06f, fill)
+        tmp.set(fr.left + b, fr.top + b, fr.right - b, fr.top + h * 0.48f)
+        c.drawRoundRect(tmp, h * 0.05f, h * 0.05f, fill)
         fill.shader = null
     }
 
@@ -950,6 +1129,7 @@ class SpectrumPainter(private val n: Int) {
         // 24 本で描く表示は、24 本用の描き手の見本（これまでと同じ動き）
         val co = coarse
         if (co != null && style != SpectrumStyle.VISUAL_LED && !SpectrumStyle.isCarAudio(style)) {
+            co.oneMeter = oneMeter
             co.drawDemo(c, r, style, scale, t, dtSec, still)
             animating = co.animating
             return
@@ -982,6 +1162,18 @@ class SpectrumPainter(private val n: Int) {
         private const val LED_MAX_COLS = 64
         /** なめらかなバー・ミラー・ライン・ドット・メーターの本数（帯が多いときはまとめる） */
         private const val COARSE_BANDS = 24
+
+        /** メーターの形（文字盤の高さに対する割合）: 枠の太さ・針の回る中心（文字盤の下の外側）・目盛りの弧の半径 */
+        private const val M_BEZEL = 0.05f
+        private const val M_PIVOT_Y = 1.1f
+        private const val M_ARC_R = 0.83f
+        /** 針の根元を隠す台の上端（文字盤の高さに対する割合） */
+        private const val BRIDGE_TOP = 0.79f
+        /** メーターの照明の色（v2.14）: 電球色・白・青・緑 */
+        private val LAMP_WARM = Color.rgb(255, 172, 64)
+        private val LAMP_WHITE = Color.rgb(236, 238, 232)
+        private val LAMP_BLUE = Color.rgb(84, 160, 255)
+        private val LAMP_GREEN = Color.rgb(96, 222, 120)
 
         /** 針のばねの強さと減衰（約 38 rad/s・減衰比 0.6: 約 0.05 秒で振れ、行き過ぎは 9% ほど） */
         private const val NEEDLE_K = 1444f

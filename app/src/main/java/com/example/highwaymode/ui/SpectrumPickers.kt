@@ -244,7 +244,7 @@ object SpectrumPickers {
         val rest = (columns - order.size % columns) % columns
         repeat(rest) { row?.addView(View(a), LinearLayout.LayoutParams(0, 1, 1f)) }
         grid.addView(TextView(a).apply {
-            text = "どの色も、下を少し濃く・上を少し明るくしたグラデーションで表示します。「ジャケットの色」は曲ごとにジャケットの色に変わります。"
+            text = "どの色も、下を少し濃く・上を少し明るくしたグラデーションで表示します。「ジャケットの色」は曲ごとにジャケットの色に、「虹色」は低音の赤から高音の紫へ変わります。「好きな色」はカラーコード（#RRGGBB）で指定します。"
             textSize = 12f
             setTextColor(SettingsUi.C_SUB)
             setPadding(a.dp(4f), a.dp(10f), a.dp(4f), 0)
@@ -271,8 +271,9 @@ object SpectrumPickers {
         tile.addView(sw, LinearLayout.LayoutParams(a.dp(52f), a.dp(52f)))
         tile.addView(TextView(a).apply {
             text = when (t) {
-                SpectrumStyle.THEME_CUSTOM -> "カラー\nコード"
+                SpectrumStyle.THEME_CUSTOM -> "好きな色\n（コード）"
                 SpectrumStyle.THEME_ART -> "ジャケット\nの色"
+                SpectrumStyle.THEME_RAINBOW -> "虹色"
                 else -> SpectrumStyle.THEME_LABELS[t].replace("（標準）", "\n（標準）")
             }
             textSize = 11.5f
@@ -352,7 +353,7 @@ object SpectrumPickers {
             }
         })
         val dialog = AlertDialog.Builder(a, SettingsUi.DIALOG_THEME)
-            .setTitle("カラーコードで色を指定")
+            .setTitle("好きな色（カラーコードで指定）")
             .setView(col)
             .setPositiveButton("この色にする", null)
             .setNegativeButton("キャンセル", null)

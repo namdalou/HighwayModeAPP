@@ -31,10 +31,10 @@ object SpectrumStyle {
 
     private const val THEME_COUNT = 15
 
-    /** 色の名前（番号順） */
+    /** 色の名前（番号順。v2.14 で「カラーコード」→「好きな色（カラーコード）」「虹色」→「虹色（低音→高音）」） */
     val THEME_LABELS = arrayOf(
         "青（標準）", "ジャケットの色", "緑", "オレンジ", "ピンク", "白", "水色", "黄緑", "黄色", "赤", "紫",
-        "青緑", "ゴールド", "虹色", "カラーコード"
+        "青緑", "ゴールド", "虹色（低音→高音）", "好きな色（カラーコード）"
     )
 
     /** 選ぶ画面に並べる順 */
@@ -60,11 +60,15 @@ object SpectrumStyle {
     /** カーオーディオ（本物の表示の再現。[CarAudioPainter] で描く） */
     fun isCarAudio(v: Int): Boolean = v == VISUAL_RETRO || v == VISUAL_CA_STEREO || v == VISUAL_CA_EQ
 
-    /** 表示の種類の名前（番号順） */
+    /**
+     * 表示の種類の名前（番号順）。v2.14 で、見た目がそのまま伝わる名前に見直した
+     * （「ミラー」→「上下対称バー」、「ライン（波形）」→「曲線」、カーオーディオは色・本数を、メーターは文字盤を名前に。
+     * ステレオは v2.9 で左右をまとめたので「ワイド」に）
+     */
     val VISUAL_LABELS = arrayOf(
-        "LED（標準）", "なめらかなバー", "ミラー（上下対称）", "ライン（波形）", "ドット（LED マトリクス）",
-        "カーオーディオ（ブルー）", "アナログメーター（アンバー照明）", "アナログメーター（ブルー照明）",
-        "カーオーディオ（ステレオ）", "カーオーディオ（イコライザー）"
+        "LED バー（標準）", "なめらかなバー", "上下対称バー", "曲線（ライン）", "丸い LED（ドット）",
+        "カーオーディオ・ブルー（細い 20 本）", "アナログメーター（明るい文字盤）", "アナログメーター（暗い文字盤）",
+        "カーオーディオ・ワイド（太い 9 本）", "カーオーディオ・イコライザー（15 本）"
     )
 
     /** 選ぶ画面・長押しで切り替える順（カーオーディオを LED の次にまとめる） */
@@ -81,17 +85,43 @@ object SpectrumStyle {
 
     /** 表示の種類の説明（番号順） */
     val VISUAL_NOTES = arrayOf(
-        "段に分かれた LED のバー。これまでの表示",
-        "光るなめらかなバー。白いピークと、下にうっすら映り込み",
-        "中央から上下に広がる光るバー",
-        "周波数の山を光る線で描く",
-        "丸い LED を並べた液晶のような表示",
-        "昔の 2DIN デッキの表示。奥へすぼまる 20 本の青いバー（細い段）。白いピークはふわっと浮かんで消える",
-        "暖かい色の照明のメーター。拍に合わせて針が大きく、俊敏に振れる",
-        "青い照明に白い針のメーター。夜の車内向け",
-        "昔の 2DIN デッキの表示。奥へすぼまる 9 本の幅の広いバーに、二重線の水色の段。青いピークは止まってから落ちる",
-        "昔のグラフィックイコライザーの蛍光表示管。幅の広い 15 本のバー（下が白・上が水色）が素早く動く"
+        "段に分かれた LED のバー。いちばん見やすい、これまでの表示",
+        "光沢のあるなめらかなバー。白いピークと、下にうっすら映り込み",
+        "中央から上と下へ同時に伸びるバー",
+        "低音から高音までの山を、光る 1 本の線で描く",
+        "丸い LED を並べた表示",
+        "昔の 2DIN デッキの表示。奥へすぼまる 20 本の青いバー（細い段）。白いピークは少し浮いてから落ちる",
+        "照明で光る文字盤に黒い針の VU メーター（低音・高音）。照明の色・メーターの数を選べます",
+        "黒い文字盤に光る目盛りと針の VU メーター。夜の車内向け。照明の色・メーターの数を選べます",
+        "昔の 2DIN デッキの表示。奥へすぼまる太い 9 本のバーに、二重線の水色の段。青いピークは止まってから落ちる",
+        "昔のグラフィックイコライザーの蛍光管。太い 15 本（下が白・上が水色）が素早く動く"
     )
+
+    /** 表示の種類の短い名前（車の画面の一覧など、狭いところ用） */
+    val VISUAL_SHORT = arrayOf(
+        "LED バー（標準）", "なめらかなバー", "上下対称バー", "曲線", "丸い LED",
+        "ブルー（細い 20 本）", "明るい文字盤", "暗い文字盤", "ワイド（太い 9 本）", "イコライザー（15 本）"
+    )
+
+    /** アナログメーターか */
+    fun isMeter(v: Int): Boolean = v == VISUAL_METER || v == VISUAL_METER_DARK
+
+    // ---- アナログメーターの設定（v2.14）
+    const val LIGHT_STANDARD = 0
+    const val LIGHT_WARM = 1
+    const val LIGHT_WHITE = 2
+    const val LIGHT_BLUE = 3
+    const val LIGHT_GREEN = 4
+    const val LIGHT_THEME = 5
+
+    /** 照明の色（番号順）。標準 = 明るい文字盤は電球色、暗い文字盤は青 */
+    val METER_LIGHT_LABELS = arrayOf("標準", "電球色", "白", "青", "緑", "スペアナの色に合わせる")
+    /** 照明の色の選択肢（設定画面の一覧用の説明つき） */
+    val METER_LIGHT_CHOICES = arrayOf(
+        "標準（明るい文字盤は電球色・暗い文字盤は青）", "電球色（暖かい色）", "白", "青", "緑", "スペアナの色に合わせる"
+    )
+    /** メーターの数 */
+    val METER_COUNT_LABELS = arrayOf("2 つ（低音・高音）", "1 つ（全体を大きく）")
 
     /** 高さ（感度）の選択肢と倍率 */
     val GAIN_LABELS = arrayOf("控えめ", "標準", "高め")
@@ -102,6 +132,9 @@ object SpectrumStyle {
     private const val KEY_GAIN = "bar_gain"
     private const val KEY_CUSTOM = "bar_custom_color"
     private const val KEY_VISUAL = "bar_visual"
+    private const val KEY_METER_LIGHT = "meter_light"
+    private const val KEY_METER_SINGLE = "meter_single"
+    private const val KEY_METER_PEAK = "meter_peak"
 
     /** バーの色（THEME_*） */
     @Volatile
@@ -123,6 +156,21 @@ object SpectrumStyle {
     var gainIndex = 1
         private set
 
+    /** アナログメーターの照明の色（LIGHT_*） */
+    @Volatile
+    var meterLight = LIGHT_STANDARD
+        private set
+
+    /** アナログメーターを 1 つだけ（全体を大きく）にする */
+    @Volatile
+    var meterSingle = false
+        private set
+
+    /** アナログメーターのピークのランプ（強い音で赤く光る） */
+    @Volatile
+    var meterPeak = true
+        private set
+
     /** 設定が変わるたびに増える（描画側が色・模様を作り直すかを判断する） */
     @Volatile
     var version = 0
@@ -137,7 +185,25 @@ object SpectrumStyle {
         gainIndex = p.getInt(KEY_GAIN, 1).coerceIn(0, GAINS.size - 1)
         customColor = p.getInt(KEY_CUSTOM, Color.rgb(0, 160, 255)) or 0xFF000000.toInt()
         visual = p.getInt(KEY_VISUAL, VISUAL_LED).coerceIn(0, VISUAL_LABELS.size - 1)
+        meterLight = p.getInt(KEY_METER_LIGHT, LIGHT_STANDARD).coerceIn(0, METER_LIGHT_LABELS.size - 1)
+        meterSingle = p.getBoolean(KEY_METER_SINGLE, false)
+        meterPeak = p.getBoolean(KEY_METER_PEAK, true)
         version++
+    }
+
+    fun setMeterLight(ctx: Context, v: Int) {
+        meterLight = v.coerceIn(0, METER_LIGHT_LABELS.size - 1)
+        save(ctx) { putInt(KEY_METER_LIGHT, meterLight) }
+    }
+
+    fun setMeterSingle(ctx: Context, single: Boolean) {
+        meterSingle = single
+        save(ctx) { putBoolean(KEY_METER_SINGLE, single) }
+    }
+
+    fun setMeterPeak(ctx: Context, on: Boolean) {
+        meterPeak = on
+        save(ctx) { putBoolean(KEY_METER_PEAK, on) }
     }
 
     fun setTheme(ctx: Context, t: Int) {
@@ -174,7 +240,7 @@ object SpectrumStyle {
 
     /** 色の名前（カラーコードのときはコードも） */
     fun themeLabel(t: Int = theme): String =
-        if (t == THEME_CUSTOM) "カラーコード（${colorCode(customColor)}）" else THEME_LABELS.getOrElse(t) { THEME_LABELS[0] }
+        if (t == THEME_CUSTOM) "好きな色（${colorCode(customColor)}）" else THEME_LABELS.getOrElse(t) { THEME_LABELS[0] }
 
     // ================================================================== 色
 

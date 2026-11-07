@@ -5,19 +5,24 @@ import androidx.car.app.CarToast
 import androidx.car.app.Screen
 import androidx.car.app.model.Action
 import androidx.car.app.model.ActionStrip
+import androidx.car.app.model.CarIcon
 import androidx.car.app.model.ItemList
 import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.Row
 import androidx.car.app.model.Template
+import androidx.core.graphics.drawable.IconCompat
+import com.example.highwaymode.R
 import com.example.highwaymode.core.dual.DualLayout
 import com.example.highwaymode.core.engine.EngineStatus
 import com.example.highwaymode.data.Prefs
 import com.example.highwaymode.dual.DualMode
 import com.example.highwaymode.engine.EngineHost
+import com.example.spectrum.SpectrumStyle
 
 /**
  * 車の画面のメニュー（6 項目まで。走行中も表示できる件数に収める）。
- * 画面切替・表示の切替・再探索・一般道モード・自動切替・終了。
+ * 画面切替・ハイウェイの表示の切替・スペアナの表示（v2.14）・再探索・一般道モード・自動切替。
+ * 「終了」は、v2.14 から右上の電源のボタン（6 項目に収めるため）。
  */
 class CarMenuScreen(carContext: CarContext) : Screen(carContext) {
 
@@ -53,6 +58,15 @@ class CarMenuScreen(carContext: CarContext) : Screen(carContext) {
                     finish()
                 }.build()
         )
+        // スペアナの表示の種類（v2.14。見本の絵つきの一覧を開く）
+        list.addItem(
+            Row.Builder()
+                .setTitle("スペアナの表示")
+                .addText("いま: ${SpectrumStyle.VISUAL_LABELS[SpectrumStyle.visual]}")
+                .setBrowsable(true)
+                .setOnClickListener { screenManager.push(CarSpectrumScreen(carContext)) }
+                .build()
+        )
         list.addItem(
             Row.Builder()
                 .setTitle("現在地の道路を再探索")
@@ -87,24 +101,24 @@ class CarMenuScreen(carContext: CarContext) : Screen(carContext) {
                     invalidate()
                 }.build()
         )
-        list.addItem(
-            Row.Builder()
-                .setTitle("終了")
-                .addText("車の画面のアプリを閉じます")
-                .setOnClickListener { carContext.finishCarApp() }
-                .build()
-        )
         @Suppress("DEPRECATION")
         return ListTemplate.Builder()
             .setTitle("メニュー")
             .setHeaderAction(Action.BACK)
             .setSingleList(list.build())
-            // スマホでアプリを開かずに使えているかの確認（GPS・通信・常駐・曲情報）
+            // スマホでアプリを開かずに使えているかの確認（GPS・通信・常駐・曲情報）と、終了（電源のボタン。
+            // この画面の右上のボタンは 2 つまで・文字を出せるのは 1 つまでなので、終了はアイコンだけ）
             .setActionStrip(
                 ActionStrip.Builder()
                     .addAction(Action.Builder().setTitle("動作状態").setOnClickListener {
                         screenManager.push(RunStatusScreen(carContext))
                     }.build())
+                    .addAction(
+                        Action.Builder()
+                            .setIcon(CarIcon.Builder(IconCompat.createWithResource(carContext, R.drawable.ic_car_exit)).build())
+                            .setOnClickListener { carContext.finishCarApp() }
+                            .build()
+                    )
                     .build()
             )
             .build()
