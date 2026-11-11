@@ -320,6 +320,12 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
             prefs.stripExtra = it
             AppSettings.changed(this)
         }
+        ui.choiceRow(
+            aa, "Android Auto の接続が切れたあと",
+            arrayOf("3 分後に終了（標準）", "10 分後に終了", "終了しない"), prefs.carStopAfter,
+            "スマホでこのアプリを開いていないとき、車との接続が切れてからこの時間たつと、位置情報の取得と通知を止めます" +
+                "（つなぎ直すと続けます。高速道路を走っている間は止めません）。車のメニューの電源のボタンで終了したときは、すぐ止めます。"
+        ) { prefs.carStopAfter = it }
         ui.switchRow(
             aa, "電池の節約",
             "高速道路から離れているときや停車中は、位置情報の取得を控えます（高速道路の近くでは毎秒）。オフにすると、いつも毎秒取得します。",

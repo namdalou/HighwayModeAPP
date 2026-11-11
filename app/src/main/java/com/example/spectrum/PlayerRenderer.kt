@@ -146,7 +146,8 @@ class PlayerRenderer {
         fun darkOf(c: Int): Int {
             val hsv = FloatArray(3)
             Color.colorToHSV(c, hsv)
-            return Color.HSVToColor(floatArrayOf(hsv[0], 0.55f, 0.25f))
+            // 色味のほとんど無い色（白黒のジャケットの銀色）は、濃い灰色にする（色合いが決まらず、関係のない色になるため）
+            return Color.HSVToColor(floatArrayOf(hsv[0], if (hsv[1] < 0.12f) hsv[1] else 0.55f, 0.25f))
         }
     }
 
@@ -397,6 +398,11 @@ class PlayerRenderer {
     @Volatile private var accentReady = DEFAULT_ACCENT
     /** ジャケットから選んだバーの色（[ArtPalette]。0 = ジャケットなし） */
     @Volatile private var artBarReady = 0
+    /** 色の設定が「ジャケットの色」のときのアクセント色（[artBarReady] から作ったバーの上の色）と、その元の色 */
+    private var artAccent = DEFAULT_ACCENT
+    private var artAccentFor = 0
+    private var artAccentValid = false
+    private val accentPair = IntArray(2)
 
     /**
      * ジャケットが変わったら、縮小した画像と代表色を別スレッドで作り、できたら差し替える。
@@ -426,7 +432,21 @@ class PlayerRenderer {
                 }
             }
         }
-        accentTarget = accentReady
+        // 色の設定が「ジャケットの色」のときは、再生ボタン・再生位置のバーも、スペアナのバーと同じ色（バーの上の色）にする（v2.15）。
+        // それまでは、ボタンの色だけ別の方法でジャケットから選んでいて、スペアナと違う色になることがあった
+        accentTarget = if (SpectrumStyle.theme == SpectrumStyle.THEME_ART) {
+            val art = artBarReady
+            if (art != artAccentFor || !artAccentValid) {
+                artAccentFor = art
+                artAccentValid = true
+                // スペアナのバーと同じ作り方（ジャケットの色が無いときは、バーと同じ標準の青）
+                if (art != 0) SpectrumStyle.gradientFor(art, accentPair) else SpectrumStyle.fixedColors(SpectrumStyle.THEME_BLUE, accentPair)
+                artAccent = accentPair[1]
+            }
+            artAccent
+        } else {
+            accentReady
+        }
         val k = 1f - (1f - ACCENT_FADE).pow(dtFrames)
         accR += (Color.red(accentTarget) - accR) * k
         accG += (Color.green(accentTarget) - accG) * k

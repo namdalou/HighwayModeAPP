@@ -8,6 +8,7 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.os.SystemClock
 import com.example.highwaymode.core.dual.DualLayout
 import com.example.highwaymode.core.engine.EngineStatus
 import com.example.highwaymode.core.engine.HighwaySnapshot
@@ -30,6 +31,17 @@ import kotlin.math.roundToInt
  */
 class ModeBarRenderer(var density: Float) {
 
+    companion object {
+        // 曲名・アーティスト名が収まらないときの流し表示（音楽の画面と同じ動き:
+        // 先頭で止める → 右から左へ流して末尾まで見せる → 末尾で少し止める → 先頭に戻る）
+        private const val MARQUEE_HOLD_START_MS = 3000L
+        private const val MARQUEE_HOLD_END_MS = 1500L
+        /** 流す速さ（曲名の文字の大きさの何倍/秒） */
+        private const val MARQUEE_EM_PER_SEC = 2.0f
+        /** これより長く描かれなかったら（別の表示に切り替えていた）、先頭からやり直す */
+        private const val MARQUEE_RESET_GAP_MS = 700L
+    }
+
     enum class Target { MUSIC, SPLIT, HIGHWAY, MENU, PLAY_PAUSE, OPEN_SPLIT }
 
     class Hit(val rect: RectF, val target: Target)
@@ -46,6 +58,29 @@ class ModeBarRenderer(var density: Float) {
     @Volatile
     private var published: List<Hit> = emptyList()
     private val hits = ArrayList<Hit>()
+
+    /** 流し表示 1 行分の状態（文字の幅は、文字・大きさが変わったときだけ測る） */
+    private class Marquee {
+        var text = ""
+        var size = 0f
+        var width = 0f
+        var start = 0L
+    }
+    private val marquees = Array(2) { Marquee() }
+    private var marqueeDrawnAt = 0L
+
+    /**
+     * 流し表示が動いている最中か（[draw] のたびに更新）。動いている間は、呼ぶ側が続けて描き直す
+     * （車の画面は 30fps、スマホは画面の更新ごと）。止まっている間は [marqueeWaitMs] 後に描き直せばよい
+     */
+    @Volatile
+    var marqueeMoving = false
+        private set
+
+    /** 流し表示が次に動き出すまでの時間 [ms]（流すものが無ければ Long.MAX_VALUE） */
+    @Volatile
+    var marqueeWaitMs = Long.MAX_VALUE
+        private set
 
     private fun dp(v: Float) = v * density
 
@@ -75,6 +110,8 @@ class ModeBarRenderer(var density: Float) {
 
     fun draw(c: Canvas, l: Float, t: Float, r: Float, b: Float, layout: DualLayout, snap: HighwaySnapshot?) {
         hits.clear()
+        marqueeMoving = false
+        marqueeWaitMs = Long.MAX_VALUE
         fill.color = cBg
         c.drawRect(l, t, r, b, fill)
         stroke.color = cEdge
@@ -405,27 +442,102 @@ class ModeBarRenderer(var density: Float) {
         if (maxW < dp(40f)) return
         val title = NowPlaying.title.ifEmpty { "曲情報なし" }
         val artist = NowPlaying.artist
+        // 収まらない曲名・アーティスト名は、音楽の画面と同じように右から左へ流して全体を見せる（v2.15）
+        val now = SystemClock.uptimeMillis()
+        if (now - marqueeDrawnAt > MARQUEE_RESET_GAP_MS) for (m in marquees) m.text = ""
+        marqueeDrawnAt = now
         if (artist.isNotEmpty() && h >= dp(46f)) {
             text.color = Color.WHITE
             text.textSize = min(h * 0.36f, dp(17f))
-            drawTextCentered(c, ellipsize(text, title, maxW), x, t + h * 0.32f, text, Paint.Align.LEFT)
+            val speed = text.textSize * MARQUEE_EM_PER_SEC
+            drawMarquee(c, 0, title, x, t + h * 0.32f, maxW, text, speed, now)
             textN.color = cSub
             textN.textSize = min(h * 0.30f, dp(14f))
-            drawTextCentered(c, ellipsize(textN, artist, maxW), x, t + h * 0.74f, textN, Paint.Align.LEFT)
+            drawMarquee(c, 1, artist, x, t + h * 0.74f, maxW, textN, speed, now)
         } else {
             text.color = Color.WHITE
             text.textSize = min(h * 0.40f, dp(18f))
-            val line = if (artist.isNotEmpty()) "$title — $artist" else title
-            drawTextCentered(c, ellipsize(text, line, maxW), x, (t + b) / 2, text, Paint.Align.LEFT)
+            // 「曲名 — アーティスト名」を 1 行で（2 行目は使わない）
+            oneLine.setLength(0)
+            oneLine.append(title)
+            if (artist.isNotEmpty()) oneLine.append(" — ").append(artist)
+            val m = marquees[0]
+            val line = if (sameText(m.text, oneLine)) m.text else oneLine.toString()
+            marquees[1].text = ""
+            drawMarquee(c, 0, line, x, (t + b) / 2, maxW, text, text.textSize * MARQUEE_EM_PER_SEC, now)
         }
         hits.add(Hit(RectF(l, t, bx - h * 0.15f, b), Target.OPEN_SPLIT))
     }
 
+    private val oneLine = StringBuilder(96)
+
+    private fun sameText(a: String, b: StringBuilder): Boolean {
+        if (a.length != b.length) return false
+        for (i in a.indices) if (a[i] != b[i]) return false
+        return true
+    }
+
+    /**
+     * 1 行の文字を、上下の中央を cy にして描く。幅 maxW に収まらないときは
+     * 「先頭で 3 秒止める → 右から左へ流して末尾まで表示 → 末尾で少し止める → 先頭に戻る」を繰り返す。
+     * @param speed 流す速さ [px/秒]
+     */
+    private fun drawMarquee(c: Canvas, index: Int, s: String, x: Float, cy: Float, maxW: Float, p: Paint, speed: Float, now: Long) {
+        val m = marquees[index]
+        val size = p.textSize
+        if (m.text != s || m.size != size) {
+            if (m.text != s) m.start = now          // 曲が変わったら先頭からやり直す
+            m.text = s
+            m.size = size
+            m.width = p.measureText(s)
+        }
+        if (s.isEmpty()) return
+        val overflow = m.width - maxW
+        if (overflow <= 0f) {
+            drawTextCentered(c, s, x, cy, p, Paint.Align.LEFT)
+            return
+        }
+        val scrollMs = (overflow / speed * 1000f).toLong().coerceAtLeast(1L)
+        val cycle = MARQUEE_HOLD_START_MS + scrollMs + MARQUEE_HOLD_END_MS
+        val tt = (now - m.start) % cycle
+        val offset: Float
+        when {
+            tt < MARQUEE_HOLD_START_MS -> {
+                offset = 0f
+                marqueeWaitMs = min(marqueeWaitMs, MARQUEE_HOLD_START_MS - tt)
+            }
+            tt < MARQUEE_HOLD_START_MS + scrollMs -> {
+                offset = overflow * (tt - MARQUEE_HOLD_START_MS) / scrollMs
+                marqueeMoving = true
+                marqueeWaitMs = 0L
+            }
+            else -> {
+                offset = overflow
+                // 末尾で止まったあと先頭に戻る（戻った瞬間を描く）
+                marqueeWaitMs = min(marqueeWaitMs, cycle - tt)
+            }
+        }
+        // 表示枠の外（ジャケット・再生ボタンの側）にはみ出さないよう切り抜いて描く。
+        // 1 画素より細かい位置で描いて、ゆっくり流してもがたつかないようにする
+        p.getFontMetrics(fm)
+        val base = cy - (fm.ascent + fm.descent) / 2
+        val wasSub = p.isSubpixelText
+        p.isSubpixelText = true
+        c.save()
+        c.clipRect(x, base + fm.top, x + maxW, base + fm.bottom)
+        c.drawText(s, x - offset, base, p)
+        c.restore()
+        p.isSubpixelText = wasSub
+    }
+
     // ================================================================== 文字
+
+    /** 文字の高さを読むための入れ物（毎回作らない） */
+    private val fm = Paint.FontMetrics()
 
     private fun drawTextCentered(c: Canvas, s: String, x: Float, cy: Float, p: Paint, align: Paint.Align) {
         p.textAlign = align
-        val fm = p.fontMetrics
+        p.getFontMetrics(fm)
         c.drawText(s, x, cy - (fm.ascent + fm.descent) / 2, p)
         p.textAlign = Paint.Align.LEFT
     }

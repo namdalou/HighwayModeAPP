@@ -12,6 +12,7 @@ import androidx.car.app.model.Row
 import androidx.car.app.model.Template
 import androidx.car.app.model.Toggle
 import androidx.core.graphics.drawable.IconCompat
+import com.example.highwaymode.CarAutoStop
 import com.example.highwaymode.R
 import com.example.highwaymode.core.dual.DualLayout
 import com.example.highwaymode.core.engine.EngineStatus
@@ -139,7 +140,11 @@ class CarMenuScreen(carContext: CarContext) : Screen(carContext) {
                     .addAction(
                         Action.Builder()
                             .setIcon(CarIcon.Builder(IconCompat.createWithResource(carContext, R.drawable.ic_car_exit)).build())
-                            .setOnClickListener(CarTemplates.click { carContext.finishCarApp() })
+                            .setOnClickListener(CarTemplates.click {
+                                // 終了: このあとの切断では、判定時間を置かずにスマホ側の常駐も止める
+                                CarAutoStop.exitRequested = true
+                                carContext.finishCarApp()
+                            })
                             .build()
                     )
                     .build()

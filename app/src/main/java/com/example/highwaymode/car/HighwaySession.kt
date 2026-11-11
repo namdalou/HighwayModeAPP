@@ -14,6 +14,8 @@ import androidx.car.app.Session
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
+import com.example.highwaymode.AppPresence
+import com.example.highwaymode.CarAutoStop
 import com.example.highwaymode.TrackingService
 import com.example.highwaymode.data.Prefs
 import com.example.highwaymode.engine.EngineHost
@@ -32,6 +34,7 @@ import com.example.spectrum.SpectrumEngine
 class HighwaySession : Session() {
 
     private var vehicle: CarVehicleInput? = null
+    private var appContext: Context? = null
     private val main = Handler(Looper.getMainLooper())
     private var attempts = 0
 
@@ -70,15 +73,28 @@ class HighwaySession : Session() {
                 main.removeCallbacks(ensure)
                 vehicle?.stop()
                 vehicle = null
+                val ctx = appContext ?: return
+                appContext = null
+                // つなぎ直しで新しい接続が先にできていることがあるので、最後の接続が終わったときだけ「切断」とする
+                if (activeSessions > 0) activeSessions--
+                if (activeSessions > 0) return
                 EngineHost.setCarConnected(false)
                 // 常駐サービスが動いていなければ（起動できなかった・スマホ側で停止済み）エンジンも止める
                 if (!TrackingService.running) EngineHost.stop()
+                // 接続が切れた: 判定時間（設定。標準 3 分）たってもつながり直さず、スマホの画面でも開いていなければ、
+                // 常駐（位置情報の取得・通知）を止める。車のメニューで「終了」を押したときは、すぐ止める
+                CarAutoStop.onCarDisconnected(ctx)
             }
         })
     }
 
     override fun onCreateScreen(intent: Intent): Screen {
         val ctx = carContext
+        if (appContext == null) activeSessions++
+        appContext = ctx.applicationContext
+        AppPresence.install(ctx)
+        // つながり直した: 接続が切れたあとの「止める予定」を取り消す
+        CarAutoStop.onCarConnected()
         Prefs(ctx).carUsedOnce = true
         // エンジン（測位・地図・渋滞情報）を起動。常駐サービスは画面を切り替えても・スマホで開いていなくても測位を続けるため
         EngineHost.start(ctx)
@@ -113,6 +129,9 @@ class HighwaySession : Session() {
 
     companion object {
         private var askedOnce = false
+
+        /** つながっている接続の数（メインスレッド） */
+        private var activeSessions = 0
 
         /** 再試行の間隔 [ms]（以後は最後の値の間隔で続ける） */
         private val RETRY_MS = longArrayOf(2_000, 5_000, 10_000, 30_000, 60_000, 120_000)

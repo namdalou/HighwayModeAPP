@@ -249,6 +249,21 @@ class DevSettingsActivity : Activity() {
                 .show()
         }
 
+        ui.actionRow(aa, "接続が切れたあとの終了（確認用）", "Android Auto の切断後に常駐を止める仕組みが、最後に何をしたか") {
+            val stop = com.example.highwaymode.CarAutoStop
+            val left = stop.remainingMs()
+            val msg = "最後の動き: " + stop.lastEvent.ifEmpty { "（まだありません）" } + "\n" +
+                "止める予定: " + (if (stop.pending) (if (left > 0) "あり（あと約 ${(left + 59_999) / 60_000} 分）" else "あり（高速道路を走行中のため待っています）") else "なし") + "\n" +
+                "設定: " + arrayOf("3 分後に終了", "10 分後に終了", "終了しない")[prefs.carStopAfter] + "\n" +
+                "スマホの画面: " + (if (com.example.highwaymode.AppPresence.phoneVisible) "開いている" else "開いていない") +
+                "・車の画面: " + (if (EngineHost.carConnected) "接続中" else "未接続")
+            AlertDialog.Builder(this, SettingsUi.DIALOG_THEME)
+                .setTitle("接続が切れたあとの終了")
+                .setMessage(msg)
+                .setPositiveButton("閉じる", null)
+                .show()
+        }
+
         ui.note(c, "戻ると閉じます。次に開くときは、音楽の画面の何もない場所を 20 回続けてタップして、パスワードを入力してください。")
     }
 

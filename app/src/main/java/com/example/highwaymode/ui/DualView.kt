@@ -159,8 +159,12 @@ class ModeBarView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         renderer.draw(canvas, 0f, 0f, width.toFloat(), height.toFloat(), layoutMode, snap)
-        // 曲名・再生状態を追いかける（ハイウェイだけの表示中）
-        if (layoutMode == DualLayout.HIGHWAY) postInvalidateDelayed(1000L)
+        // 曲名・再生状態を追いかける（ハイウェイだけの表示中）。
+        // 収まらない曲名を流している間は画面の更新ごとに、止まっている間は動き出す時刻に描き直す
+        if (layoutMode == DualLayout.HIGHWAY) {
+            if (renderer.marqueeMoving) postInvalidateOnAnimation()
+            else postInvalidateDelayed(minOf(1000L, renderer.marqueeWaitMs).coerceAtLeast(16L))
+        }
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
