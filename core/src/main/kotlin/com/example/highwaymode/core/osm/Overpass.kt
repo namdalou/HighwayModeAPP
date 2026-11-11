@@ -50,6 +50,9 @@ object OverpassQuery {
         sb.append(".r out body geom qt;\n")
         sb.append("node(w.r)[\"highway\"=\"motorway_junction\"];\nout body qt;\n")
         sb.append("node(w.r)[\"barrier\"=\"toll_booth\"];\nout body qt;\n")
+        // 道路の上の信号・横断歩道・踏切（信号のある一般道を主要バイパスの判定から外すため。v2.15）
+        sb.append("node(w.r)[\"highway\"~\"^(traffic_signals|crossing)$\"];\nout body qt;\n")
+        sb.append("node(w.r)[\"railway\"=\"level_crossing\"];\nout body qt;\n")
         sb.append("node[\"highway\"=\"speed_camera\"]").append(areaFilter).append(";\nout body qt;\n")
         sb.append("nwr[\"highway\"~\"^(services|rest_area)$\"]").append(areaFilter).append("->.s;\n")
         sb.append(".s out body geom qt;\n")
@@ -90,6 +93,7 @@ object OverpassParser {
         val areas = ArrayList<OsmArea>()
         val pois = ArrayList<OsmPoi>()
         val cameras = ArrayList<OsmNode>()
+        val barriers = ArrayList<Long>()
         var remark: String? = null
         var sawElements = false
 
@@ -100,7 +104,7 @@ object OverpassParser {
                     sawElements = true
                     r.beginArray()
                     while (r.hasNext()) {
-                        readElement(r, roads, junctions, tolls, areas, pois, cameras)
+                        readElement(r, roads, junctions, tolls, areas, pois, cameras, barriers)
                     }
                     r.endArray()
                 }
@@ -120,7 +124,7 @@ object OverpassParser {
             }
         }
         if (!sawElements) throw OverpassException("elements がありません")
-        return OsmTileData(roads, junctions, tolls, areas, pois, cameras)
+        return OsmTileData(roads, junctions, tolls, areas, pois, cameras, barriers.toLongArray())
     }
 
     private class Member(val type: String, val role: String, val lat: DoubleArray, val lon: DoubleArray)
@@ -132,7 +136,8 @@ object OverpassParser {
         tolls: MutableList<OsmNode>,
         areas: MutableList<OsmArea>,
         pois: MutableList<OsmPoi>,
-        cameras: MutableList<OsmNode>
+        cameras: MutableList<OsmNode>,
+        barriers: MutableList<Long>
     ) {
         var type = ""
         var id = 0L
@@ -222,6 +227,7 @@ object OverpassParser {
                 if (!lat.isNaN()) cameras.add(OsmNode(id, lat, lon, tags))
             type == "node" && tags["barrier"] == "toll_booth" ->
                 if (!lat.isNaN()) tolls.add(OsmNode(id, lat, lon, tags))
+            type == "node" && isBarrierNode(tags) -> barriers.add(id)
             isPoi(tags) -> {
                 val pLat = if (!lat.isNaN()) lat else cLat
                 val pLon = if (!lon.isNaN()) lon else cLon
@@ -229,6 +235,21 @@ object OverpassParser {
             }
         }
     }
+
+    /**
+     * 道路が平面で交わる場所のノードか（信号・横断歩道・踏切）。主要バイパスの判定で、信号のある一般道を除くために使う。
+     * トンネルの入口の信号・消防署の前の信号など、交差点ではない信号は数えない
+     */
+    fun isBarrierNode(tags: Map<String, String>): Boolean {
+        if (tags["railway"] == "level_crossing") return true
+        return when (tags["highway"]) {
+            "traffic_signals" -> tags["traffic_signals"] !in NON_JUNCTION_SIGNALS
+            "crossing" -> tags["crossing"] != "no"
+            else -> false
+        }
+    }
+
+    private val NON_JUNCTION_SIGNALS = setOf("emergency", "tunnel", "ramp_meter", "fire_station", "bridge", "lane_control")
 
     private fun isPoi(tags: Map<String, String>): Boolean {
         val a = tags["amenity"]

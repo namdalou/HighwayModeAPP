@@ -12,39 +12,50 @@ import androidx.car.app.model.Template
 import com.example.highwaymode.engine.RunDiagnostics
 
 /**
- * 動作状態（スマホでアプリを開かずに使えているか）。問題のある項目を先に並べる。
+ * 動作状態（スマホでアプリを開かずに使えているか）。開いたときに問題のある項目を先に並べる。
  * 設定の変更はスマホで行う（運転中は操作しないでください）。
+ *
+ * v2.15: 開いたときの項目の並び（行の数・題名）は、この画面が出ている間は変えない（[CarTemplates] の決まり 2）。
+ * 「更新」では、各行の説明（○・× と内容）だけをいまの状態にする。v2.14 までは、題名に ○・× を入れて並べ替えていたので、
+ * 状態が変わったあとの「更新」で画面の段が増え、何度か押すと上限で落ちることがあった。
  */
 class RunStatusScreen(carContext: CarContext) : Screen(carContext) {
 
-    override fun onGetTemplate(): Template {
+    /** 開いたときの項目の題名（この順のまま） */
+    private var titles: List<String>? = null
+
+    override fun onGetTemplate(): Template = CarTemplates.safe("動作状態") {
         // 表示のたびに、止まっていれば常駐サービスの起動を試みる
         CarRuntime.ensure(carContext)
-        val items = RunDiagnostics.collect(carContext).sortedBy { it.ok }
+        val items = RunDiagnostics.collect(carContext)
+        val order = titles ?: items.sortedBy { it.ok }.map { CarTemplates.title(it.title) }.distinct().take(MAX_ROWS).also { titles = it }
         val list = ItemList.Builder()
-        for (i in items.take(MAX_ROWS)) {
-            val row = Row.Builder()
-                .setTitle((if (i.ok) "○ " else "× ") + i.title)
-                .addText(i.value.take(120))
-            if (!i.ok) {
-                row.setOnClickListener {
-                    CarToast.makeText(
-                        carContext,
-                        if (i.fix != null) "停車中にスマホで「設定 → スマホを開かずに Android Auto で使う」を開いてください" else i.value,
-                        CarToast.LENGTH_LONG
-                    ).show()
+        for (t in order) {
+            val i = items.firstOrNull { CarTemplates.title(it.title) == t }
+            val row = Row.Builder().setTitle(t)
+            if (i == null) {
+                // 開いたあとに無くなった項目（省電力モードがオフになった など）
+                row.addText("○ いまは該当しません")
+            } else {
+                row.addText((if (i.ok) "○ " else "× ") + i.value.take(120))
+                if (!i.ok) {
+                    val msg = if (i.fix != null) "停車中にスマホで「設定 → スマホを開かずに Android Auto で使う」を開いてください" else i.value
+                    row.setOnClickListener(CarTemplates.click {
+                        CarToast.makeText(carContext, msg, CarToast.LENGTH_LONG).show()
+                    })
                 }
             }
             list.addItem(row.build())
         }
         @Suppress("DEPRECATION")
-        return ListTemplate.Builder()
-            .setTitle(if (items.all { it.ok }) "動作状態: 正常" else "動作状態")
+        ListTemplate.Builder()
+            .setTitle("動作状態")
             .setHeaderAction(Action.BACK)
             .setSingleList(list.build())
             .setActionStrip(
                 ActionStrip.Builder()
-                    .addAction(Action.Builder().setTitle("更新").setOnClickListener { invalidate() }.build())
+                    // 行の数・題名は変えないので、何度押しても「更新」扱い（段は増えない）
+                    .addAction(Action.Builder().setTitle("更新").setOnClickListener(CarTemplates.click { invalidate() }).build())
                     .build()
             )
             .build()

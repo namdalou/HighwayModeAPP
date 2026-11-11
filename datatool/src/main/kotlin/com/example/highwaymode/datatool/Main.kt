@@ -16,8 +16,9 @@ import kotlin.system.exitProcess
 /**
  * 地図データ（HWDB）作成ツール。
  *
- *  osm      --in located.osm.gz --out japan-highways.hwdb
- *           osmium で絞り込んだ OSM 抽出（Geofabrik の japan-latest.osm.pbf 等）から全国データを作る（推奨・最速）
+ *  osm      --in located.osm.gz --out japan-highways.hwdb [--report 一覧.txt] [--report-area 南,西,北,東] [--check-only true]
+ *           osmium で絞り込んだ OSM 抽出（Geofabrik の japan-latest.osm.pbf 等）から全国データを作る（推奨・最速）。
+ *           主要バイパスの判定の一覧（採用・不採用の区間）を出す。--check-only true なら一覧だけ（データは書かない）
  *  overpass --regions all|kanto,chubu|JP-23,... --out japan-highways.hwdb [--endpoint URL]...
  *           Overpass API から都道府県単位で取得して作る（osmium 不要。全国で 30〜90 分程度）
  *  manifest --base-url URL --out hwdb-manifest.json file.hwdb...
@@ -90,13 +91,22 @@ private class Opts(args: List<String>) {
 
 private fun buildFromOsm(o: Opts) {
     val input = File(o.req("in"))
-    val out = File(o.req("out"))
-    out.absoluteFile.parentFile?.mkdirs()
+    val out = File(o.get("out") ?: if (o.get("check-only") == "true") "unused.hwdb" else o.req("out"))
+    if (o.get("check-only") != "true") out.absoluteFile.parentFile?.mkdirs()
     val t0 = System.currentTimeMillis()
     val raw = OsmXmlLoader(input).load()
-    val ds = BypassClassifier.filter(OsmDataSet.merge(listOf(raw)), markBypass = true)
+    val (ds, result) = BypassClassifier.filterWithResult(OsmDataSet.merge(listOf(raw)), markBypass = true)
     val bypass = ds.roads.values.count { it.tags[BypassClassifier.TAG] == BypassClassifier.TAG_BYPASS }
     println("主要バイパス判定: 道路 ${raw.roads.size} → ${ds.roads.size}（うち一般国道のバイパス区間 $bypass）")
+    // 確認用: 採用した区間・不採用にした区間の一覧（記録に残す。--report でファイルにも書ける）
+    val area = o.get("report-area")?.split(',')?.mapNotNull { it.trim().toDoubleOrNull() }?.takeIf { it.size == 4 }?.toDoubleArray()
+    val report = BypassClassifier.report(result, (o.get("report-lines") ?: "400").toInt(), area)
+    report.forEach { println(it) }
+    o.get("report")?.let { File(it).writeText(report.joinToString("\n") + "\n", Charsets.UTF_8) }
+    if (o.get("check-only") == "true") {
+        println("確認だけ（--check-only true）: 地図データは書き出しません")
+        return
+    }
     val b = DatasetBuilder()
     b.add(OsmTileData(ds.roads.values.toList(), ds.junctions.values.toList(), ds.tollBooths.values.toList(), ds.restAreas.values.toList(), ds.pois.values.toList(), ds.cameras.values.toList()))
     val regions = Prefectures.resolve(o.get("regions") ?: "all")
