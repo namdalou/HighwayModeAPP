@@ -98,11 +98,14 @@ private fun buildFromOsm(o: Opts) {
     val (ds, result) = BypassClassifier.filterWithResult(OsmDataSet.merge(listOf(raw)), markBypass = true)
     val bypass = ds.roads.values.count { it.tags[BypassClassifier.TAG] == BypassClassifier.TAG_BYPASS }
     println("主要バイパス判定: 道路 ${raw.roads.size} → ${ds.roads.size}（うち一般国道のバイパス区間 $bypass）")
-    // 確認用: 採用した区間・不採用にした区間の一覧（記録に残す。--report でファイルにも書ける）
+    // 確認用: 採用した区間・不採用にした区間のまとめ（記録に残す）。区間ごとの細かい一覧は --report のファイルに書く
     val area = o.get("report-area")?.split(',')?.mapNotNull { it.trim().toDoubleOrNull() }?.takeIf { it.size == 4 }?.toDoubleArray()
-    val report = BypassClassifier.report(result, (o.get("report-lines") ?: "400").toInt(), area)
-    report.forEach { println(it) }
-    o.get("report")?.let { File(it).writeText(report.joinToString("\n") + "\n", Charsets.UTF_8) }
+    val summary = BypassClassifier.summary(result, area = area, taggedBarriers = raw.barrierNodes.size)
+    summary.forEach { println(it) }
+    o.get("report")?.let {
+        val full = BypassClassifier.report(result, (o.get("report-lines") ?: "400").toInt(), area)
+        File(it).writeText((summary + listOf("", "==== 区間ごとの一覧") + full).joinToString("\n") + "\n", Charsets.UTF_8)
+    }
     if (o.get("check-only") == "true") {
         println("確認だけ（--check-only true）: 地図データは書き出しません")
         return

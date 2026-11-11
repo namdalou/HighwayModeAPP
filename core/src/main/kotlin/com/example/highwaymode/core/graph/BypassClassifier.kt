@@ -677,6 +677,82 @@ object BypassClassifier {
         return out
     }
 
+    /**
+     * 確認用のまとめ（データ作成の記録に出す）。同じ名前の区間をまとめ、1 行に数件ずつ詰める（記録を短くするため）。
+     *
+     * 件の書き方:
+     *  - 採用: `名前〔国道の番号〕合計km/区間の数 IC最小-最大 @緯度,経度`（後ろの「間」「続」は、自動車専用・有料の区間の間／続き）
+     *  - ぎりぎりの採用（IC が 2 か所だけ、または 5km 未満）: 区間ごとに `名前〔番号〕km IC数 @緯度,経度`
+     *  - 不採用（いちばん長い区間が 2km 以上か、IC が 2 か所以上のもの）: `名前〔番号〕最長km(合計km/数) IC最大 理由 @緯度,経度`
+     *
+     * @param area 詳しく見る範囲（南・西・北・東）。この中の区間は、短いものも西から順にすべて出す
+     * @param taggedBarriers 地図データにあった信号・横断歩道・踏切のノードの数（分からなければ負）
+     */
+    fun summary(r: Result, maxKept: Int = 500, maxDropped: Int = 150, area: DoubleArray? = null, taggedBarriers: Int = -1): List<String> {
+        val out = ArrayList<String>()
+        val kept = r.components.filter { it.kept }
+        val dropped = r.components.filter { !it.kept }
+        out.add(
+            "主要バイパスの判定: 候補の国道 ${r.candidateWays} 本・%.0f km、区切り（信号・横断歩道・踏切・平面交差）${r.barrierCount} か所".format(r.candidateLengthM / 1000) +
+                (if (taggedBarriers >= 0) "（地図データの信号・横断歩道・踏切のノード $taggedBarriers）" else "")
+        )
+        out.add("  採用 ${kept.size} 区間・%.0f km ／ 不採用 ${dropped.size} 区間・%.0f km（長さは上下線を別々に数えた合計）".format(kept.sumOf { it.lengthM } / 1000, dropped.sumOf { it.lengthM } / 1000))
+        fun count(prefix: String) = kept.count { it.reason == prefix }
+        out.add("  採用の内訳: IC が並ぶ区間 ${count("採用")}、自動車専用・有料の区間の間 ${kept.count { it.reason.contains("の間") }}、続き ${kept.count { it.reason.contains("の続き") }}")
+
+        fun label(c: Component): String = (c.name ?: "-") + "〔" + (c.ref ?: "?") + "〕"
+        fun pack(items: List<String>) {
+            val sb = StringBuilder()
+            for (it in items) {
+                if (sb.isNotEmpty() && sb.length + it.length > 210) {
+                    out.add(sb.toString())
+                    sb.setLength(0)
+                }
+                if (sb.isNotEmpty()) sb.append(" ｜ ")
+                sb.append(it)
+            }
+            if (sb.isNotEmpty()) out.add(sb.toString())
+        }
+
+        // ---- 採用（名前ごと）
+        val keptGroups = kept.groupBy { label(it) }.entries.sortedByDescending { e -> e.value.sumOf { it.lengthM } }
+        out.add("---- 採用（名前ごと ${keptGroups.size} 件。長い順）")
+        pack(keptGroups.take(maxKept).map { (name, list) ->
+            val big = list.maxByOrNull { it.lengthM }!!
+            val lo = list.minOf { it.icSites }
+            val hi = list.maxOf { it.icSites }
+            val flags = (if (list.any { it.reason.contains("の間") }) "間" else "") + (if (list.any { it.reason.contains("の続き") }) "続" else "")
+            "%s%.1f/%d IC%s @%.2f,%.2f%s".format(name, list.sumOf { it.lengthM } / 1000, list.size, if (lo == hi) "$lo" else "$lo-$hi", big.lat, big.lon, if (flags.isEmpty()) "" else " $flags")
+        })
+        if (keptGroups.size > maxKept) out.add("  …ほか ${keptGroups.size - maxKept} 件")
+
+        // ---- ぎりぎりの採用（見直すときに、まずここを見る）
+        val marginal = kept.filter { it.reason == "採用" && (it.icSites <= 2 || it.lengthM < 5_000.0) }.sortedBy { it.lengthM }
+        out.add("---- 採用のうち、IC が 2 か所だけ・または 5km 未満の区間（${marginal.size} 区間。短い順）")
+        pack(marginal.take(maxDropped * 2).map { "%s%.1f IC%d @%.3f,%.3f".format(label(it), it.lengthM / 1000, it.icSites, it.lat, it.lon) })
+        val attached = kept.filter { it.reason != "採用" }.sortedByDescending { it.lengthM }
+        out.add("---- 採用のうち、自動車専用・有料の区間の間・続き（${attached.size} 区間。長い順）")
+        pack(attached.take(maxDropped).map { "%s%.1f IC%d%s @%.3f,%.3f".format(label(it), it.lengthM / 1000, it.icSites, if (it.reason.contains("の間")) "間" else "続", it.lat, it.lon) })
+
+        // ---- 不採用（長いもの・IC が 2 か所以上あるもの）
+        val droppedGroups = dropped.groupBy { label(it) }.entries
+            .filter { e -> e.value.any { it.lengthM >= 2_000.0 || it.icSites >= 2 } }
+            .sortedByDescending { e -> e.value.maxOf { it.lengthM } }
+        out.add("---- 不採用（名前ごと。いちばん長い区間が 2km 以上か、IC が 2 か所以上のもの ${droppedGroups.size} 件。長い順）")
+        pack(droppedGroups.take(maxDropped).map { (name, list) ->
+            val big = list.maxByOrNull { it.lengthM }!!
+            "%s%.1f(%.1f/%d) IC%d %s @%.2f,%.2f".format(name, big.lengthM / 1000, list.sumOf { it.lengthM } / 1000, list.size, list.maxOf { it.icSites }, if (big.reason == "短い") "短" else "IC不足", big.lat, big.lon)
+        })
+        if (droppedGroups.size > maxDropped) out.add("  …ほか ${droppedGroups.size - maxDropped} 件")
+
+        if (area != null && area.size == 4) {
+            val inside = r.components.filter { it.lat >= area[0] && it.lat <= area[2] && it.lon >= area[1] && it.lon <= area[3] }.sortedBy { it.lon }
+            out.add("---- 範囲 (%.2f, %.2f)〜(%.2f, %.2f) の区間（西から。採用 ${inside.count { it.kept }}・不採用 ${inside.count { !it.kept }}）".format(area[0], area[1], area[2], area[3]))
+            pack(inside.map { "%s%s%.1f IC%d @%.3f,%.3f".format(if (it.kept) "○" else "×", label(it), it.lengthM / 1000, it.icSites, it.lat, it.lon) })
+        }
+        return out
+    }
+
     /** pts（緯度・経度の並び）の中に、(lat, lon) から dist 以内の点があるか */
     private fun hasNear(pts: List<Double>, lat: Double, lon: Double, dist: Double): Boolean {
         val mLat = Geo.metersPerDegLat(lat)
