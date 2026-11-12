@@ -246,10 +246,18 @@ class SpectrumAnalysisTest {
         val rh = Run(an)
         rh.play(hats)
         val seen = FloatArray(48)
-        for (h in rh.history.takeLast(80)) for (b in 0 until 48) if (h[b] > seen[b]) seen[b] = h[b]
+        val mean = FloatArray(48)
+        val tail = rh.history.takeLast(80)
+        for (h in tail) for (b in 0 until 48) {
+            if (h[b] > seen[b]) seen[b] = h[b]
+            mean[b] += h[b] / tail.size
+        }
         assertTrue("ハイハットの帯が光る", seen[bandOf(an, 10000f)] > 0.3f)
-        // 音の出だしの一瞬だけ、ごく小さな値が出ることがある（LED の 1 段 = 1/18 に満たなければ、光らない）
-        for (b in 0 until 30) assertTrue("ハイハットだけのとき、帯 $b は光らない（${seen[b]}）", seen[b] < 1f / 18f)
+        // 急に鳴り始める瞬間は、どんな音でも一瞬だけ広い音域に成分が出る（パチッという音）。その一瞬のごく小さな値を除けば、左側は光らない
+        for (b in 0 until 30) {
+            assertTrue("ハイハットだけのとき、帯 $b は光らない（平均 ${mean[b]}）", mean[b] < 0.01f)
+            if (b < 24) assertTrue("ハイハットだけのとき、画面の左半分の帯 $b は光らない（最大 ${seen[b]}）", seen[b] < 0.2f)
+        }
     }
 
     /** 400Hz〜8kHz に広がる、鳴りっぱなしの音（たくさんの正弦波の和。決まった乱数） */

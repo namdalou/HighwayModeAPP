@@ -52,10 +52,13 @@ class SpectrumMapper(private val an: BandAnalyzer) {
         /** そこからこれだけ上 [dB] で元の高さ */
         const val GATE_DB = 6f
         /**
-         * 全体の基準（最近いちばん強い帯）よりこれ以上弱い帯 [dB] も消す（そこから [GATE_DB] 上で元の高さ）。
-         * ほかの音にかき消されて聞こえない大きさ。ここまで弱い帯は、わずかな揺れが「平均からの差」として広げられて、ちらつくことがある
+         * 全体の基準（最近いちばん強い帯）よりこれ以上弱い帯 [dB] は消す。ほかの音にかき消されて聞こえない大きさ。
+         * 基準の [CAP_FROM_DB] 下からここまでは、上がれる高さに上限を付ける（[CAP_FROM_DB] 下で 1、ここで 0）。
+         * ふだん音の無い帯は、急に鳴り始めた音の一瞬の広がり（パチッという成分）だけで「平均からの差」が大きくなり、
+         * 上限が無いと、聞こえないほど小さいのに高く上がってしまう
          */
         const val GATE_BELOW_TOP_DB = 46f
+        const val CAP_FROM_DB = 25f
 
         // ---- ならし（読み取り 25ms あたりの割合。読み取りの間隔が変わっても同じ速さになるよう換算する）
         const val SMOOTH_ATTACK = 0.9f
@@ -233,8 +236,9 @@ class SpectrumMapper(private val an: BandAnalyzer) {
             val p = shape + d * DYN_K
             val x = ((p + SHOW_BELOW_DB) / (SHOW_BELOW_DB + SHOW_ABOVE_DB)).coerceIn(0f, 1f)
             val over = ((p - SHOW_ABOVE_DB) / TOP_EXT_DB).coerceIn(0f, 1f)
-            val audible = ((dbS[b] - (topRef - GATE_BELOW_TOP_DB)) / GATE_DB).coerceIn(0f, 1f)
-            out[b] = (x * TOP_LEVEL + over * (1f - TOP_LEVEL)) * loudFactor * gate[b] * audible
+            // 基準よりずっと弱い帯は、高く上がれない
+            val cap = ((dbS[b] - (topRef - GATE_BELOW_TOP_DB)) / (GATE_BELOW_TOP_DB - CAP_FROM_DB)).coerceIn(0f, 1f)
+            out[b] = min((x * TOP_LEVEL + over * (1f - TOP_LEVEL)) * gate[b], cap) * loudFactor
         }
         return out
     }
