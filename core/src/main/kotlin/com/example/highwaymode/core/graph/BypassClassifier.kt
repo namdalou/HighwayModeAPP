@@ -35,6 +35,7 @@ import kotlin.math.sqrt
  *     立体交差が 1 つあるだけの国道は対象にしない。
  *     ただし、自動車専用・有料の区間（いつも採用）どうしの間にある区間と、そこから区切り無しで続く IC のある区間は採用する
  *     （自動車専用の印が一部のウェイにしか付いていない道路が、途中で切れないように）。
+ *     「間」は、道のりが両端の間の距離とほぼ同じときだけ（有料トンネルの両側をつなぐ峠の旧道は「間」ではない）。
  *
  * データ作成時に判定済みのウェイには `hwm:class=bypass` が付いており、そのまま採用する。
  */
@@ -74,7 +75,13 @@ object BypassClassifier {
         /** IC の手掛かりを反対車線にも写す距離 */
         val mirrorDist: Double = 80.0,
         /** 区切り（信号など）を反対車線にも写す距離 */
-        val barrierMirrorDist: Double = 45.0
+        val barrierMirrorDist: Double = 45.0,
+        /**
+         * 自動車専用・有料の区間どうしの「間」とみなす道のりの上限: つながる 2 点の間の直線距離 × [betweenDetour] ＋ [betweenSlack]。
+         * これより遠回りの道（有料トンネルの旧道など）は「間」ではない
+         */
+        val betweenDetour: Double = 1.3,
+        val betweenSlack: Double = 300.0
     )
 
     /** ひと続きの区間の判定結果（確認用の一覧に使う） */
@@ -547,8 +554,11 @@ object BypassClassifier {
             val attach = ArrayList<Double>()
             val refs = HashMap<String, Double>()
             val names = HashMap<String, Double>()
+            /** 道のりの目安（上下線が分かれた道路は、片側ぶんだけ数える） */
+            var routeLen = 0.0
             for (i in list) {
                 total += len[i]
+                routeLen += if (oneway[i]) len[i] * 0.5 else len[i]
                 val w = mains[i]
                 for (k in w.lat.indices) {
                     if (w.lat[k] < minLa) minLa = w.lat[k]
@@ -582,9 +592,23 @@ object BypassClassifier {
             val extent = Geo.distance(minLa, minLo, maxLa, maxLo)
             val ic = sites.size / 2
             val joins = attach.size / 2
+            // 自動車専用・有料の区間とつながる場所どうしの、いちばん離れた 2 点の距離
+            var attachSpan = 0.0
+            var p1 = 0
+            while (p1 < attach.size) {
+                var p2 = p1 + 2
+                while (p2 < attach.size) {
+                    val dd = Geo.distance(attach[p1], attach[p1 + 1], attach[p2], attach[p2 + 1])
+                    if (dd > attachSpan) attachSpan = dd
+                    p2 += 2
+                }
+                p1 += 2
+            }
             val reason = when {
-                // 自動車専用・有料の区間どうしをつなぐ（印の付いていないウェイが間にあるだけ）
-                joins >= 2 -> "採用（自動車専用・有料の区間の間）"
+                // 自動車専用・有料の区間どうしをつなぐ（印の付いていないウェイが間にあるだけ）。
+                // 道のりが、つながる 2 点の間の距離とほぼ同じときだけ（有料トンネルの両側をつなぐ峠の旧道のような、
+                // 遠回りの道は「間」ではない。全国のデータで、国道385号・263号の峠道が入っていた）
+                joins >= 2 && routeLen <= attachSpan * params.betweenDetour + params.betweenSlack -> "採用（自動車専用・有料の区間の間）"
                 // 自動車専用・有料の区間から、区切り無しで続く IC のある区間
                 joins >= 1 && ic >= 1 -> "採用（自動車専用・有料の区間の続き）"
                 ic < params.minIcSites -> "出口の IC が $ic か所"

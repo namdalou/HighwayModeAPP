@@ -220,6 +220,27 @@ class BypassRulesTest {
     }
 
     @Test
+    fun oldPassRoadAroundATollTunnelIsNotTheGapBetweenTollSections() {
+        // 有料トンネル（5km）と、その両端をつなぐ峠の旧道（同じ国道の番号。遠回りで 15km、信号も IC も無い）。
+        // 全国のデータで、国道385号（東脊振トンネル）・263号（三瀬トンネル）の旧道が「有料の区間の間」として採用されていた
+        val base = mapOf("highway" to "trunk", "ref" to "385", "name" to "国道385号")
+        val west = (0..20).map { node(pt(it * 50.0, 0.0)) }                  // 手前の有料区間 1km
+        val tunnel = (1..100).map { node(pt(1_000.0 + it * 50.0, 0.0)) }     // トンネル 5km
+        val east = (1..20).map { node(pt(6_000.0 + it * 50.0, 0.0)) }        // 先の有料区間 1km
+        way(west, base + ("toll" to "yes"))
+        way(listOf(west.last()) + tunnel, base + ("toll" to "yes"))
+        way(listOf(tunnel.last()) + east, base + ("toll" to "yes"))
+        // 旧道: トンネルの西の入口から北へ 5km 上がり、東へ 5km、南へ 5km 下りて東の出口へ
+        val up = (1..100).map { node(pt(1_000.0, it * 50.0)) }
+        val across = (1..100).map { node(pt(1_000.0 + it * 50.0, 5_000.0)) }
+        val down = (1..99).map { node(pt(6_000.0, 5_000.0 - it * 50.0)) }
+        val old = way(listOf(west.last()) + up + across + down + listOf(tunnel.last()), base)
+
+        val ds = BypassClassifier.filter(dataSet())
+        assertFalse("トンネルの両端をつなぐ峠の旧道は対象外", old in ds.roads.keys)
+    }
+
+    @Test
     fun tileCodecKeepsBarrierNodesAndStaysReadable() {
         val road = Dual(2, "23", "名豊道路")
         val barriers = longArrayOf(road.sbNodeAt(1.0), road.nbNodeAt(0.5))
