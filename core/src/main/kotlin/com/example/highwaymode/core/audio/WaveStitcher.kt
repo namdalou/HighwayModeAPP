@@ -6,7 +6,11 @@ package com.example.highwaymode.core.audio
  * 1024 サンプルでは周波数の細かさが約 47Hz しか無く、低音（40〜200Hz）を音程ごとに分けられない。
  * Visualizer の中には約 1.4 秒ぶんの波形がしまってあり、読むたびに「いま鳴っているあたり」の 1024 サンプルを返す。
  * 短い間隔（約 12ms）で読むと、続けて読んだ 2 回は半分ほど重なる。重なった部分は同じ値（しまってある値をそのまま返すため）なので、
- * ぴったり重なる位置を探して、新しい部分だけを足していく。つながらなかったとき（読むのが遅れた・音声の経路が変わった）は、
+ * ぴったり重なる位置を探して、新しい部分だけを足していく。
+ *
+ * 端末（Android の版・音声の経路）によっては、読む位置が「処理 1 回分ずつ」進み、続けて読んだ 2 回がほとんど重ならないことがある。
+ * 重なりが見つからなくても、時間の見積もりが 1 回ぶんの長さに近く、前回の最後と今回の最初がなめらかにつながるなら、
+ * すぐ続きの波形とみなしてつなぐ。それでもつながらなかったとき（読むのが遅れた・音声の経路が変わった）は、
  * その 1 回ぶんから作り直す（長い窓の解析は、履歴がたまるまで短い窓で代用する）。
  *
  * Android に依存しない（JVM でテストできる）。値は符号つき 8bit（Visualizer の値を xor 0x80 したもの）。
@@ -15,7 +19,10 @@ class WaveStitcher(val capacity: Int = 8192) {
 
     companion object {
         /** これより重なりが短いときは、つながったとみなさない（たまたま一致することがあるため） */
-        const val MIN_OVERLAP = 128
+        const val MIN_OVERLAP = 48
+
+        /** 「すぐ続きの波形」とみなすときに、つなぎ目の前後で見るサンプルの数 */
+        private const val JOIN_LOOK = 32
 
         /** 読む位置が少し戻ることがある（Visualizer の中の時刻合わせのゆらぎ）。ここまでの戻りは「新しい部分なし」として受け入れる */
         const val MAX_BACK = 256
@@ -33,6 +40,10 @@ class WaveStitcher(val capacity: Int = 8192) {
 
     /** つながらずに作り直した回数（確認用） */
     var resets = 0
+        private set
+
+    /** 重なりが無く、「すぐ続きの波形」としてつないだ回数（確認用） */
+    var joins = 0
         private set
 
     /** 履歴を捨てる */
@@ -78,6 +89,13 @@ class WaveStitcher(val capacity: Int = 8192) {
                 if (overlapsBack(capture, n, back)) return 0
                 back++
             }
+            // 重なりが無い: すぐ続きの波形か（読む位置が、ちょうど 1 回ぶん進んだ）
+            if (expected <= n * 8 / 5 && joinsSmoothly(capture, n)) {
+                append(capture, 0, n)
+                System.arraycopy(capture, 0, last, 0, n)
+                joins++
+                return n
+            }
             return restart(capture, n)
         }
         if (found > 0) {
@@ -114,6 +132,23 @@ class WaveStitcher(val capacity: Int = 8192) {
             i++
         }
         return true
+    }
+
+    /**
+     * 前回の波形の最後と、今回の波形の最初が、なめらかにつながるか。
+     * つなぎ目の差が、その前後の「隣どうしの差」の平均の 3 倍＋2 以内なら、続きとみなす
+     * （間が抜けていれば、つなぎ目は関係のない 2 つの値の差になり、低い音が中心の音楽ではずっと大きくなる）
+     */
+    private fun joinsSmoothly(capture: ByteArray, n: Int): Boolean {
+        if (n < JOIN_LOOK * 2) return false
+        var typical = 0
+        for (i in 1 until JOIN_LOOK) {
+            typical += kotlin.math.abs(last[n - i] - last[n - i - 1])
+            typical += kotlin.math.abs(capture[i] - capture[i - 1])
+        }
+        val count = 2 * (JOIN_LOOK - 1)
+        val step = kotlin.math.abs(capture[0] - last[n - 1])
+        return step * count <= typical * 3 + 2 * count
     }
 
     private fun restart(capture: ByteArray, n: Int): Int {

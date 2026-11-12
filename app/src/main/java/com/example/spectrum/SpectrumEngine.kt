@@ -469,7 +469,7 @@ object SpectrumEngine {
 
         /** 確認用: 波形のつなぎ具合 */
         fun info(reads: Int, ms: Long): String =
-            "履歴 ${stitcher.length} サンプル・つなぎ直し ${stitcher.resets} 回・読み取り ${if (ms > 0) reads * 1000L / ms else 0} 回/秒" +
+            "履歴 ${stitcher.length} サンプル・つなぎ直し ${stitcher.resets} 回・続きとしてつないだ ${stitcher.joins} 回・読み取り ${if (ms > 0) reads * 1000L / ms else 0} 回/秒" +
                 "・${(sampleRate / 1000f).let { "%.1f".format(it) }}kHz"
 
         /** 再生中の音の大きさ(dBFS)。測れない端末では null */

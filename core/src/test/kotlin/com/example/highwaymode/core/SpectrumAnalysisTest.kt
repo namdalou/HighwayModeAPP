@@ -76,7 +76,7 @@ class SpectrumAnalysisTest {
         assertEquals(1524, st.length)
         // 読むのが遅れて、重なりが無くなった → その 1 回ぶんから作り直す
         System.arraycopy(stream, 5000, cap, 0, 1024)
-        assertEquals(-1024, st.push(cap, 1024, 600))
+        assertEquals(-1024, st.push(cap, 1024, 3500))
         assertEquals(1024, st.length)
         assertEquals(1, st.resets)
         // 履歴より長く読むと、古い側は 0 で埋まる
@@ -90,6 +90,43 @@ class SpectrumAnalysisTest {
         quiet.push(zeros, 1024, 0)
         assertEquals(600, quiet.push(zeros, 1024, 600))
         assertEquals(1624, quiet.length)
+    }
+
+    @Test
+    fun stitcherJoinsBackToBackCapturesWhenTheyContinueSmoothly() {
+        // 端末によっては、読む位置がちょうど 1 回ぶん（1024 サンプル）ずつ進み、重なりが無い。
+        // 音楽らしい波形（低い音が中心）なら、前回の最後と今回の最初がなめらかにつながるので、続きとしてつなぐ
+        val n = 12_000
+        val wave = ByteArray(n) {
+            val t = it / sr
+            (60 * sin(2 * PI * 70.0 * t) + 30 * sin(2 * PI * 440.0 * t) + 8 * sin(2 * PI * 3000.0 * t)).roundToInt().toByte()
+        }
+        val st = WaveStitcher()
+        val cap = ByteArray(1024)
+        for (k in 0 until 8) {
+            System.arraycopy(wave, k * 1024, cap, 0, 1024)
+            val added = st.push(cap, 1024, if (k % 2 == 0) 600 else 1200)   // 見積もりは、読む間隔の都合でずれる
+            assertEquals(if (k == 0) -1024 else 1024, added)
+        }
+        assertEquals(8192, st.length)
+        assertEquals(0, st.resets)
+        assertEquals(7, st.joins)
+        val buf = FloatArray(4096)
+        st.read(buf, 4096)
+        for (i in 0 until 4096) assertEquals(wave[8192 - 4096 + i].toFloat(), buf[i], 0f)
+
+        // 間が大きく抜けたとき（時間の見積もりが 1 回ぶんよりずっと長い）・つなぎ目が飛んでいるときは、つながない
+        val gap = WaveStitcher()
+        System.arraycopy(wave, 0, cap, 0, 1024)
+        gap.push(cap, 1024, 0)
+        System.arraycopy(wave, 3000, cap, 0, 1024)
+        assertEquals(-1024, gap.push(cap, 1024, 2400))
+        val jump = WaveStitcher()
+        System.arraycopy(wave, 0, cap, 0, 1024)
+        jump.push(cap, 1024, 0)
+        System.arraycopy(wave, 1024 + 343, cap, 0, 1024)      // 70Hz の波の半周期ぶん先（つなぎ目で値が大きく飛ぶ）
+        assertEquals(-1024, jump.push(cap, 1024, 1200))
+        assertEquals(1, jump.resets)
     }
 
     // ------------------------------------------------------------------ 周波数の目盛り
