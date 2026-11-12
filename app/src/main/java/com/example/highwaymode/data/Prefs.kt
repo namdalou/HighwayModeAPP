@@ -163,6 +163,22 @@ class Prefs(context: Context) {
         get() = sp.getInt(KEY_STRIP_EXTRA, 0).coerceIn(0, 2)
         set(v) = sp.edit().putInt(KEY_STRIP_EXTRA, v.coerceIn(0, 2)).apply()
 
+    /**
+     * Android Auto との接続が切れたあと、常駐（位置情報・通知）を止めるまでの時間の選択（v2.15）。
+     * 0 = 3 分（標準）、1 = 10 分、2 = 止めない
+     */
+    var carStopAfter: Int
+        get() = sp.getInt(KEY_CAR_STOP_AFTER, 0).coerceIn(0, 2)
+        set(v) = sp.edit().putInt(KEY_CAR_STOP_AFTER, v.coerceIn(0, 2)).apply()
+
+    /** [carStopAfter] の時間 [ms]（止めない設定なら負） */
+    val carStopGraceMs: Long
+        get() = when (carStopAfter) {
+            1 -> 600_000L
+            2 -> -1L
+            else -> 180_000L
+        }
+
     /** 電池の節約（高速道路から離れている・停車中は GPS の間隔をあける）。オフならいつも毎秒測位 */
     var batterySaver: Boolean
         get() = sp.getBoolean(KEY_BATTERY_SAVER, true)
@@ -224,6 +240,7 @@ class Prefs(context: Context) {
         private const val KEY_ORIENTATION = "screen_orientation"
         private const val KEY_KEEP_SCREEN = "keep_screen_on"
         private const val KEY_BATTERY_SAVER = "battery_saver"
+        private const val KEY_CAR_STOP_AFTER = "car_stop_after"
         private const val KEY_NAV_SYNC = "nav_sync_google_maps"
         private const val KEY_NAV_BANNER = "nav_banner_music"
         private const val KEY_STRIP_EXTRA = "car_strip_extra"

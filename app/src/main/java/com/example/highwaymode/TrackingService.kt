@@ -6,8 +6,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -29,6 +31,9 @@ import com.example.highwaymode.ui.Formats
  * 「アプリの使用中のみ」のまま裏から起動すると location の種類にできないため、そのときは
  * データ同期の種類（dataSync）で前景にして、通信とアプリの動作を保つ（位置は車の GPS・車速と推測航法で補う）。
  * 以後 30 秒ごとと、車の画面が表示・操作されたときに location への切り替えを試みる。
+ *
+ * Android Auto との接続が切れたあとは、判定時間（設定。標準 3 分）たってもつながり直さず、スマホの画面でも
+ * 開いていなければ止める（[CarAutoStop]。v2.15）。それまでの間、通知には「まもなく終了します」と出す。
  */
 class TrackingService : Service() {
 
@@ -41,7 +46,19 @@ class TrackingService : Service() {
     private var current: Notification? = null
     private var engineStarted = false
 
-    private val listener = EngineHost.SnapshotListener { s -> updateNotification(s) }
+    private val listener = EngineHost.SnapshotListener { s ->
+        // 接続が切れたあとの「止める時刻」を確かめる（位置情報が届くたびにスマホが起きるので、ここでも見る）
+        CarAutoStop.onSnapshot()
+        updateNotification(s)
+    }
+
+    /** 接続が切れたあとの「止める時刻」のアラーム（スマホが眠っていても届く） */
+    private val autoStopReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            CarAutoStop.evaluate()
+        }
+    }
+    private var receiverRegistered = false
 
     /** 位置情報の種類で前景にできていないとき、定期的に切り替えを試みる */
     private val upgrade = object : Runnable {
@@ -56,6 +73,15 @@ class TrackingService : Service() {
         super.onCreate()
         instance = this
         running = true
+        AppPresence.install(this)
+        try {
+            val f = IntentFilter(CarAutoStop.ACTION_CHECK)
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(autoStopReceiver, f, Context.RECEIVER_NOT_EXPORTED)
+            else registerReceiver(autoStopReceiver, f)
+            receiverRegistered = true
+        } catch (e: Exception) {
+            Log.w(TAG, "receiver failed: ${e.message}")
+        }
         createChannel()
         promote(buildNotification("ハイウェイモード", "起動中…"))
         if (mode != Mode.NONE) startEngine()
@@ -166,6 +192,14 @@ class TrackingService : Service() {
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
+        if (receiverRegistered) {
+            receiverRegistered = false
+            try {
+                unregisterReceiver(autoStopReceiver)
+            } catch (e: Exception) {
+                // 登録されていない
+            }
+        }
         running = false
         instance = null
         setMode(Mode.NONE, lastError)
@@ -211,7 +245,22 @@ class TrackingService : Service() {
         return b.build()
     }
 
+    /** 接続が切れたあとの通知（止める予定があることを知らせる） */
+    private fun notifyPendingStop(graceMs: Long) {
+        val minutes = ((graceMs + 59_999L) / 60_000L).coerceAtLeast(1L)
+        val n = buildNotification("Android Auto との接続が切れました", "約 $minutes 分後に終了します（つなぎ直す・アプリを開くと続けます）")
+        current = n
+        lastText = null
+        try {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(NOTIFICATION_ID, n)
+        } catch (e: Exception) {
+            Log.w(TAG, "notify failed: ${e.message}")
+        }
+    }
+
     private fun updateNotification(s: HighwaySnapshot) {
+        // 止める予定がある間は「まもなく終了します」のままにする（高速道路を走行中で待っているときは、いつもの表示）
+        if (CarAutoStop.remainingMs() > 0L) return
         val now = SystemClock.elapsedRealtime()
         if (now - lastNotifyMs < 5000) return
         val (title, text) = when (s.status) {
@@ -305,6 +354,19 @@ class TrackingService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, TrackingService::class.java))
+        }
+
+        /** 接続が切れた: 通知に「約 N 分後に終了します」と出す（メインスレッド） */
+        fun showPendingStop(graceMs: Long) {
+            instance?.notifyPendingStop(graceMs)
+        }
+
+        /** 止める予定を取り消した: 次の状態の知らせで、いつもの通知に戻す（メインスレッド） */
+        fun clearPendingStop() {
+            val svc = instance ?: return
+            svc.lastText = null
+            svc.lastNotifyMs = 0L
+            EngineHost.latest?.let { svc.updateNotification(it) }
         }
 
         fun hasLocationPermission(ctx: Context): Boolean =

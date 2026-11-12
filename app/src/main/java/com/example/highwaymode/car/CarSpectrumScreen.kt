@@ -26,13 +26,16 @@ import com.example.spectrum.SpectrumStyle
  *
  * 走行中に出せる一覧の数（6 件）に収まるよう、種類をまとめて 2 段にする:
  *  - 1 段目: LED バー（標準）・カーオーディオ（3 種類）・アナログメーター（2 種類）・バー・曲線・ドット（4 種類）
- *  - 2 段目: まとめの中の種類（アナログメーターは、照明の色（色の一覧へ）・メーターを 1 つにする（スイッチ）も）
+ *  - 2 段目: まとめの中の種類（アナログメーターは、照明の色・メーターを 1 つにするスイッチも）
  * 選ぶとすぐに反映して、車の画面（音楽）に戻る。行には見本の小さな絵（止まった 1 枚）を付ける。
- * 文字を読ませすぎないよう、行の説明は「いま選んでいる」ことと、まとめの中身だけにする。
+ *
+ * 画面の段の数（[CarTemplates] の決まり 1）: 音楽の画面(1) → メニュー(2) → この画面の 1 段目(3) → 2 段目(4)。
+ * **これより深い画面は作らない**（5 段目は一覧にできず、アプリが落とされる。v2.14 は照明の色を 5 段目の一覧にしていて落ちた）。
+ * 照明の色は、2 段目の行を押すたびに次の色へ替える（行の題名は変えず、説明と見本の絵だけが変わる＝「更新」扱いで段は増えない）。
  */
 class CarSpectrumScreen(carContext: CarContext, private val group: Int = GROUP_TOP) : Screen(carContext) {
 
-    override fun onGetTemplate(): Template {
+    override fun onGetTemplate(): Template = CarTemplates.safe("スペアナの表示") {
         val list = ItemList.Builder()
         val title = when (group) {
             GROUP_CAR_AUDIO -> {
@@ -41,15 +44,19 @@ class CarSpectrumScreen(carContext: CarContext, private val group: Int = GROUP_T
             }
             GROUP_METER -> {
                 for (v in METERS) list.addItem(visualRow(v))
-                // 照明の色（色の一覧へ）と、メーターの数（スイッチ）。
-                // 行の題名を書き換えると Android Auto では「新しい画面」と数えられる（続けて操作できる画面の数に限りがある）ので、
-                // 題名は変えず、スイッチの状態だけを変える
+                // 照明の色: 押すたびに次の色へ（行の題名は変えない。見本の絵と説明が変わる）
+                val light = SpectrumStyle.meterLight
+                val nextLight = (light + 1) % SpectrumStyle.METER_LIGHT_LABELS.size
                 list.addItem(
                     Row.Builder()
-                        .setTitle("照明の色を選ぶ")
-                        .addText("いま: ${SpectrumStyle.METER_LIGHT_LABELS[SpectrumStyle.meterLight]}")
-                        .setBrowsable(true)
-                        .setOnClickListener { screenManager.push(CarSpectrumScreen(carContext, GROUP_LIGHT)) }
+                        .setTitle("照明の色（押すたびに切り替え）")
+                        .addText("いま: ${SpectrumStyle.METER_LIGHT_LABELS[light]} → 次: ${SpectrumStyle.METER_LIGHT_LABELS[nextLight]}")
+                        .setOnClickListener(CarTemplates.click {
+                            SpectrumStyle.setMeterLight(carContext, (SpectrumStyle.meterLight + 1) % SpectrumStyle.METER_LIGHT_LABELS.size)
+                            AppSettings.changed(carContext)
+                            // 行の数・題名は同じなので「更新」になる（段は増えない）
+                            invalidate()
+                        })
                         .build()
                 )
                 list.addItem(
@@ -58,30 +65,17 @@ class CarSpectrumScreen(carContext: CarContext, private val group: Int = GROUP_T
                         .addText("オフ: 2 つ（低音・高音）／ オン: 1 つ（全体を大きく）")
                         .setToggle(
                             Toggle.Builder { on ->
-                                SpectrumStyle.setMeterSingle(carContext, on)
-                                AppSettings.changed(carContext)
+                                try {
+                                    SpectrumStyle.setMeterSingle(carContext, on)
+                                    AppSettings.changed(carContext)
+                                } catch (e: Exception) {
+                                    // 設定を保存できなかった
+                                }
                             }.setChecked(SpectrumStyle.meterSingle).build()
                         )
                         .build()
                 )
                 "アナログメーター"
-            }
-            GROUP_LIGHT -> {
-                // 照明の色（6 色。選ぶと車の画面に戻る）
-                for ((i, label) in SpectrumStyle.METER_LIGHT_LABELS.withIndex()) {
-                    val b = Row.Builder()
-                        .setTitle(label)
-                        .setOnClickListener {
-                            SpectrumStyle.setMeterLight(carContext, i)
-                            AppSettings.changed(carContext)
-                            CarToast.makeText(carContext, "メーターの照明: $label", CarToast.LENGTH_SHORT).show()
-                            screenManager.popToRoot()
-                        }
-                    if (i == SpectrumStyle.meterLight) b.addText("✓ いまの色")
-                    else if (i == SpectrumStyle.LIGHT_STANDARD) b.addText("明るい文字盤は電球色・暗い文字盤は青")
-                    list.addItem(b.build())
-                }
-                "メーターの照明の色"
             }
             GROUP_OTHER -> {
                 for (v in OTHERS) list.addItem(visualRow(v))
@@ -96,7 +90,7 @@ class CarSpectrumScreen(carContext: CarContext, private val group: Int = GROUP_T
             }
         }
         @Suppress("DEPRECATION")
-        return ListTemplate.Builder()
+        ListTemplate.Builder()
             .setTitle(title)
             .setHeaderAction(Action.BACK)
             .setSingleList(list.build())
@@ -107,41 +101,45 @@ class CarSpectrumScreen(carContext: CarContext, private val group: Int = GROUP_T
     private fun visualRow(v: Int): Row {
         val b = Row.Builder()
             .setTitle(SpectrumStyle.VISUAL_LABELS[v])
-            .setImage(icon(v), Row.IMAGE_TYPE_LARGE)
-            .setOnClickListener {
+            .setOnClickListener(CarTemplates.click {
                 SpectrumStyle.setVisual(carContext, v)
                 AppSettings.changed(carContext)
                 CarToast.makeText(carContext, "スペアナ: ${SpectrumStyle.VISUAL_LABELS[v]}", CarToast.LENGTH_SHORT).show()
                 screenManager.popToRoot()
-            }
+            })
+        icon(v)?.let { b.setImage(it, Row.IMAGE_TYPE_LARGE) }
         if (SpectrumStyle.visual == v) b.addText("✓ いまの表示")
         return b.build()
     }
 
-    /** まとめ（押すと中の種類の一覧へ） */
+    /** まとめ（押すと中の種類の一覧へ。ここから先は 1 段だけ） */
     private fun groupRow(title: String, g: Int, members: IntArray): Row {
         val cur = SpectrumStyle.visual
         val inGroup = members.contains(cur)
-        return Row.Builder()
+        val b = Row.Builder()
             .setTitle(title)
             .addText(
                 if (inGroup) "✓ いま: ${SpectrumStyle.VISUAL_SHORT[cur]}"
                 else members.joinToString("・") { SpectrumStyle.VISUAL_SHORT[it] }
             )
-            .setImage(icon(if (inGroup) cur else members[0]), Row.IMAGE_TYPE_LARGE)
             .setBrowsable(true)
-            .setOnClickListener { screenManager.push(CarSpectrumScreen(carContext, g)) }
-            .build()
+            .setOnClickListener(CarTemplates.click { screenManager.push(CarSpectrumScreen(carContext, g)) })
+        icon(if (inGroup) cur else members[0])?.let { b.setImage(it, Row.IMAGE_TYPE_LARGE) }
+        return b.build()
     }
 
-    private fun icon(v: Int): CarIcon = CarIcon.Builder(IconCompat.createWithBitmap(sample(v))).build()
+    /** 見本の絵（描けなかったら絵なしで行だけ出す） */
+    private fun icon(v: Int): CarIcon? = try {
+        CarIcon.Builder(IconCompat.createWithBitmap(sample(v))).build()
+    } catch (e: Exception) {
+        null
+    }
 
     companion object {
         const val GROUP_TOP = 0
         const val GROUP_CAR_AUDIO = 1
         const val GROUP_METER = 2
         const val GROUP_OTHER = 3
-        const val GROUP_LIGHT = 4
 
         private val CAR_AUDIO = intArrayOf(SpectrumStyle.VISUAL_RETRO, SpectrumStyle.VISUAL_CA_STEREO, SpectrumStyle.VISUAL_CA_EQ)
         private val METERS = intArrayOf(SpectrumStyle.VISUAL_METER, SpectrumStyle.VISUAL_METER_DARK)

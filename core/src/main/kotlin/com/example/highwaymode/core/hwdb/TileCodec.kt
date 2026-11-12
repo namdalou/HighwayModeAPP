@@ -162,6 +162,19 @@ object TileCodec {
             pLon = lo
             tags(p.tags, POI_KEYS)
         }
+
+        // ---- 信号・横断歩道・踏切のノード（あるときだけ末尾に足す。v2.15）。
+        // これまでの読み取りは末尾の余りを読まないので、形式の番号は変えない（古いアプリでも読める）。
+        // 判定済みのデータ（HWDB）には無い。アプリがオンラインで取ったタイルを保存するときに使う
+        if (t.barrierNodes.isNotEmpty()) {
+            val ids = t.barrierNodes.sortedArray()
+            out.varInt(ids.size)
+            var pb = 0L
+            for (id in ids) {
+                out.zigzag(id - pb)
+                pb = id
+            }
+        }
         return out.toByteArray()
     }
 
@@ -263,6 +276,18 @@ object TileCodec {
             pLon = coord(pLon)
             pois.add(OsmPoi(key, pLat / SCALE, pLon / SCALE, tags()))
         }
-        return OsmTileData(roads, nodeLists[0], nodeLists[1], areas, pois, nodeLists[2])
+        // 末尾に信号などのノードがあれば読む（無ければ空）
+        var barriers = LongArray(0)
+        if (src.remaining > 0) {
+            val nb = src.varInt()
+            if (nb > src.remaining) throw ByteSource.FormatException("bad barrier count")
+            barriers = LongArray(nb)
+            var pb = 0L
+            for (i in 0 until nb) {
+                pb += src.zigzag()
+                barriers[i] = pb
+            }
+        }
+        return OsmTileData(roads, nodeLists[0], nodeLists[1], areas, pois, nodeLists[2], barriers)
     }
 }

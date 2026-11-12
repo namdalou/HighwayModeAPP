@@ -69,6 +69,8 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, ModeBarView.Callbac
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // スマホの画面で開いているかを数える（Android Auto の切断後に常駐を止めるかどうかの判定に使う）
+        AppPresence.install(this)
         NowPlaying.init(this)
         prefs = Prefs(this)
         AppSettings.apply(this)

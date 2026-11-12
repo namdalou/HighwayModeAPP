@@ -10,7 +10,9 @@ import androidx.car.app.model.ItemList
 import androidx.car.app.model.ListTemplate
 import androidx.car.app.model.Row
 import androidx.car.app.model.Template
+import androidx.car.app.model.Toggle
 import androidx.core.graphics.drawable.IconCompat
+import com.example.highwaymode.CarAutoStop
 import com.example.highwaymode.R
 import com.example.highwaymode.core.dual.DualLayout
 import com.example.highwaymode.core.engine.EngineStatus
@@ -23,12 +25,17 @@ import com.example.spectrum.SpectrumStyle
  * 車の画面のメニュー（6 項目まで。走行中も表示できる件数に収める）。
  * 画面切替・ハイウェイの表示の切替・スペアナの表示（v2.14）・再探索・一般道モード・自動切替。
  * 「終了」は、v2.14 から右上の電源のボタン（6 項目に収めるため）。
+ *
+ * v2.15: 行の題名はどれも変えない（[CarTemplates] の決まり 2。v2.14 までは「自動切替: オン／オフ」のように
+ * 題名を書き換えていて、3 回切り替えると画面の段の上限に達して落ちた）。オン・オフはスイッチ、いまの状態は行の説明で見せる。
  */
 class CarMenuScreen(carContext: CarContext) : Screen(carContext) {
 
     private val prefs = Prefs(carContext)
+    /** 一般道モードのスイッチを押した直後の状態（エンジンに反映されるまでの間、スイッチの表示に使う） */
+    private var generalPending: Boolean? = null
 
-    override fun onGetTemplate(): Template {
+    override fun onGetTemplate(): Template = CarTemplates.safe("メニュー") {
         val list = ItemList.Builder()
         val next = when (DualMode.layout) {
             DualLayout.SPLIT -> DualLayout.HIGHWAY
@@ -37,12 +44,18 @@ class CarMenuScreen(carContext: CarContext) : Screen(carContext) {
         }
         list.addItem(
             Row.Builder()
-                .setTitle("画面を「${DualMode.label(next)}」にする")
-                .addText("いま: ${DualMode.label(DualMode.layout)}")
-                .setOnClickListener {
-                    DualMode.select(next)
+                .setTitle("画面を切り替える")
+                .addText("いま: ${DualMode.label(DualMode.layout)} → 押すと「${DualMode.label(next)}」")
+                .setOnClickListener(CarTemplates.click {
+                    // 開いている間に画面が変わっていても、押したときの「次」へ
+                    val n = when (DualMode.layout) {
+                        DualLayout.SPLIT -> DualLayout.HIGHWAY
+                        DualLayout.HIGHWAY -> DualLayout.MUSIC
+                        DualLayout.MUSIC -> DualLayout.SPLIT
+                    }
+                    DualMode.select(n)
                     finish()
-                }.build()
+                }).build()
         )
         val modeLabel = when (prefs.displayMode) {
             1 -> "一覧"
@@ -53,10 +66,10 @@ class CarMenuScreen(carContext: CarContext) : Screen(carContext) {
             Row.Builder()
                 .setTitle("ハイウェイの表示を切替")
                 .addText("いま: $modeLabel（大きく → 一覧 → SA/PA のみ）")
-                .setOnClickListener {
+                .setOnClickListener(CarTemplates.click {
                     prefs.displayMode = (prefs.displayMode + 1) % 3
                     finish()
-                }.build()
+                }).build()
         )
         // スペアナの表示の種類（v2.14。見本の絵つきの一覧を開く）
         list.addItem(
@@ -64,45 +77,54 @@ class CarMenuScreen(carContext: CarContext) : Screen(carContext) {
                 .setTitle("スペアナの表示")
                 .addText("いま: ${SpectrumStyle.VISUAL_LABELS[SpectrumStyle.visual]}")
                 .setBrowsable(true)
-                .setOnClickListener { screenManager.push(CarSpectrumScreen(carContext)) }
+                .setOnClickListener(CarTemplates.click { screenManager.push(CarSpectrumScreen(carContext)) })
                 .build()
         )
         list.addItem(
             Row.Builder()
                 .setTitle("現在地の道路を再探索")
                 .addText("上下線・並走する道路を取り違えたとき")
-                .setOnClickListener {
+                .setOnClickListener(CarTemplates.click {
                     EngineHost.post { it.forceRematch() }
                     CarToast.makeText(carContext, "現在地の道路を再探索します", CarToast.LENGTH_SHORT).show()
                     finish()
-                }.build()
+                }).build()
         )
-        val general = EngineHost.latest?.status == EngineStatus.GENERAL_ROAD_MODE
+        val general = generalPending ?: (EngineHost.latest?.status == EngineStatus.GENERAL_ROAD_MODE)
         list.addItem(
             Row.Builder()
-                .setTitle(if (general) "一般道モードを解除" else "一般道モード")
-                .addText(if (general) "高速道路の判定を再開します" else "高速道路の判定を止めて、音楽の画面のままにします")
-                .setOnClickListener {
-                    EngineHost.post { it.generalRoadMode = !general }
-                    finish()
-                }.build()
-        )
-        val auto = prefs.autoSwitch
-        list.addItem(
-            Row.Builder()
-                .setTitle(if (auto) "自動切替: オン" else "自動切替: オフ")
-                .addText(
-                    if (auto) "高速道路に入ると「${DualMode.label(DualMode.highwayDefault())}」、出ると「音楽」に切り替えます"
-                    else "画面は手動で切り替えます（タップでオン）"
+                .setTitle("一般道モード")
+                .addText("オンの間は高速道路の判定を止めて、音楽の画面のままにします")
+                .setToggle(
+                    Toggle.Builder { on ->
+                        try {
+                            generalPending = on
+                            EngineHost.post { it.generalRoadMode = on }
+                        } catch (e: Exception) {
+                            // エンジンが止まっている
+                        }
+                    }.setChecked(general).build()
                 )
-                .setOnClickListener {
-                    prefs.autoSwitch = !auto
-                    DualMode.settingsChanged()
-                    invalidate()
-                }.build()
+                .build()
+        )
+        list.addItem(
+            Row.Builder()
+                .setTitle("自動切替")
+                .addText("高速道路に入ると「${DualMode.label(DualMode.highwayDefault())}」、出ると「音楽」に切り替えます")
+                .setToggle(
+                    Toggle.Builder { on ->
+                        try {
+                            prefs.autoSwitch = on
+                            DualMode.settingsChanged()
+                        } catch (e: Exception) {
+                            // 設定を保存できなかった
+                        }
+                    }.setChecked(prefs.autoSwitch).build()
+                )
+                .build()
         )
         @Suppress("DEPRECATION")
-        return ListTemplate.Builder()
+        ListTemplate.Builder()
             .setTitle("メニュー")
             .setHeaderAction(Action.BACK)
             .setSingleList(list.build())
@@ -110,13 +132,19 @@ class CarMenuScreen(carContext: CarContext) : Screen(carContext) {
             // この画面の右上のボタンは 2 つまで・文字を出せるのは 1 つまでなので、終了はアイコンだけ）
             .setActionStrip(
                 ActionStrip.Builder()
-                    .addAction(Action.Builder().setTitle("動作状態").setOnClickListener {
-                        screenManager.push(RunStatusScreen(carContext))
-                    }.build())
+                    .addAction(
+                        Action.Builder().setTitle("動作状態")
+                            .setOnClickListener(CarTemplates.click { screenManager.push(RunStatusScreen(carContext)) })
+                            .build()
+                    )
                     .addAction(
                         Action.Builder()
                             .setIcon(CarIcon.Builder(IconCompat.createWithResource(carContext, R.drawable.ic_car_exit)).build())
-                            .setOnClickListener { carContext.finishCarApp() }
+                            .setOnClickListener(CarTemplates.click {
+                                // 終了: このあとの切断では、判定時間を置かずにスマホ側の常駐も止める
+                                CarAutoStop.exitRequested = true
+                                carContext.finishCarApp()
+                            })
                             .build()
                     )
                     .build()

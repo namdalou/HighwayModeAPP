@@ -73,7 +73,13 @@ class OsmTileData(
     val restAreas: List<OsmArea>,
     val pois: List<OsmPoi>,
     /** 速度取締機（オービス）highway=speed_camera */
-    val cameras: List<OsmNode> = emptyList()
+    val cameras: List<OsmNode> = emptyList(),
+    /**
+     * 道路の上にある「平面で交わる場所」のノード ID（信号 highway=traffic_signals・横断歩道 highway=crossing・踏切 railway=level_crossing）。
+     * 一般国道のうち主要バイパスだけを選ぶ判定（BypassClassifier）で、信号のある一般道を除くために使う（v2.15）。
+     * 判定済みのデータ（HWDB）には入れない
+     */
+    val barrierNodes: LongArray = LongArray(0)
 ) {
     val isEmpty: Boolean get() = roads.isEmpty()
 }
@@ -85,7 +91,9 @@ class OsmDataSet(
     val tollBooths: Map<Long, OsmNode>,
     val restAreas: Map<String, OsmArea>,
     val pois: Map<String, OsmPoi>,
-    val cameras: Map<Long, OsmNode> = emptyMap()
+    val cameras: Map<Long, OsmNode> = emptyMap(),
+    /** 信号・横断歩道・踏切のノード ID（[OsmTileData.barrierNodes]） */
+    val barrierNodes: Set<Long> = emptySet()
 ) {
     companion object {
         /**
@@ -98,7 +106,12 @@ class OsmDataSet(
             val areas = LinkedHashMap<String, OsmArea>()
             val pois = LinkedHashMap<String, OsmPoi>()
             val cams = LinkedHashMap<Long, OsmNode>()
+            var barriers: HashSet<Long>? = null
             for (t in tiles) {
+                if (t.barrierNodes.isNotEmpty()) {
+                    val b = barriers ?: HashSet<Long>().also { barriers = it }
+                    for (id in t.barrierNodes) b.add(id)
+                }
                 for (w in t.roads) roads.putIfAbsent(w.id, w)
                 for (n in t.junctions) junctions.putIfAbsent(n.id, n)
                 for (n in t.tollBooths) tolls.putIfAbsent(n.id, n)
@@ -107,7 +120,7 @@ class OsmDataSet(
                 for (c in t.cameras) cams.putIfAbsent(c.id, c)
             }
             for (c in extraCameras) cams.putIfAbsent(c.id, c)
-            return OsmDataSet(roads, junctions, tolls, areas, pois, cams)
+            return OsmDataSet(roads, junctions, tolls, areas, pois, cams, barriers ?: emptySet())
         }
     }
 }

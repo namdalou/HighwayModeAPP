@@ -6,6 +6,7 @@ import android.service.notification.NotificationListenerService
 import androidx.car.app.CarAppService
 import androidx.car.app.Session
 import androidx.car.app.validation.HostValidator
+import com.example.highwaymode.AppPresence
 import com.example.highwaymode.data.AppSettings
 import com.example.highwaymode.nav.NavNotifications
 import com.example.spectrum.MediaListenerService
@@ -22,6 +23,7 @@ class HighwayCarAppService : CarAppService() {
 
     override fun onCreate() {
         super.onCreate()
+        AppPresence.install(this)
         // 表示の設定（スペアナの色・到着予定の表示など）
         AppSettings.apply(this)
         // Spectrum: 通知リスナーの接続を待たずに、再生中の曲をすぐ読み込む

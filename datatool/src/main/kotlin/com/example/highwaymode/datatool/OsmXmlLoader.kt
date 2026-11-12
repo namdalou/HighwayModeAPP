@@ -1,5 +1,6 @@
 package com.example.highwaymode.datatool
 
+import com.example.highwaymode.core.graph.LongIntMap
 import com.example.highwaymode.core.hwdb.TileCodec
 import com.example.highwaymode.core.osm.OsmArea
 import com.example.highwaymode.core.osm.OsmNode
@@ -23,6 +24,10 @@ import javax.xml.stream.XMLStreamReader
  *   osmium add-locations-to-ways filtered.osm.pbf -o located.osm.gz -f osm,locations_on_ways=true
  *
  * 1 回目の走査で SA/PA のマルチポリゴン（リレーション）の外周ウェイを調べ、2 回目で全体を読む。
+ *
+ * v2.15: 信号（highway=traffic_signals）・横断歩道（highway=crossing）・踏切（railway=level_crossing）のノードも読み、
+ * 道路のウェイの上にあるものを [OsmTileData.barrierNodes] に入れる（主要バイパスの判定で、信号のある一般道を除くため）。
+ * osmium の絞り込みに n/highway=traffic_signals,crossing n/railway=level_crossing を足しておくこと（無ければ空のまま）。
  */
 class OsmXmlLoader(private val file: File, private val log: (String) -> Unit = { println(it) }) {
 
@@ -92,6 +97,9 @@ class OsmXmlLoader(private val file: File, private val log: (String) -> Unit = {
         val areas = ArrayList<OsmArea>()
         val pois = ArrayList<OsmPoi>()
         val memberGeom = HashMap<Long, Pair<DoubleArray, DoubleArray>>()
+        // 信号・横断歩道・踏切のノード（ノードはウェイより先に並んでいるので、ウェイを読むときには揃っている）
+        val barrierAll = LongIntMap(1 shl 16)
+        val barrierOnRoads = HashSet<Long>()
         var nodes = 0L
         var ways = 0L
         open().use { input ->
@@ -135,6 +143,7 @@ class OsmXmlLoader(private val file: File, private val log: (String) -> Unit = {
                     when (r.localName) {
                         "node" -> {
                             nodes++
+                            if (tags.isNotEmpty() && OverpassParser.isBarrierNode(tags)) barrierAll.put(id, 1)
                             if (tags.isNotEmpty() && !lat.isNaN()) handleNode(id, lat, lon, tags, junctions, tolls, cameras, areas, pois)
                             kind = ""
                         }
@@ -145,7 +154,13 @@ class OsmXmlLoader(private val file: File, private val log: (String) -> Unit = {
                             val complete = laA.none { it.isNaN() } && loA.none { it.isNaN() }
                             if (complete) {
                                 if (memberOf.containsKey(id)) memberGeom[id] = laA to loA
-                                handleWay(id, ids.toArray(), laA, loA, tags, roads, areas, pois)
+                                val idA = ids.toArray()
+                                val before = roads.size
+                                handleWay(id, idA, laA, loA, tags, roads, areas, pois)
+                                // 道路として採ったウェイの上にある信号・横断歩道・踏切
+                                if (roads.size > before && barrierAll.size > 0) {
+                                    for (nid in idA) if (barrierAll.get(nid) != 0) barrierOnRoads.add(nid)
+                                }
                             }
                             kind = ""
                         }
@@ -157,6 +172,7 @@ class OsmXmlLoader(private val file: File, private val log: (String) -> Unit = {
             r.close()
         }
         log("読み込み: ノード $nodes, ウェイ $ways → 道路 ${roads.size}, 出口分岐 ${junctions.size}, 料金所 ${tolls.size}, オービス ${cameras.size}, SA/PA ${areas.size}, POI 候補 ${pois.size}")
+        log("信号・横断歩道・踏切: ${barrierAll.size}（うち道路の上 ${barrierOnRoads.size}）" + if (barrierAll.size == 0) "  ※ 0 件です。osmium の絞り込みに n/highway=traffic_signals,crossing n/railway=level_crossing があるか確認してください" else "")
 
         // ---- SA/PA リレーションを組み立てる
         val relMembers = HashMap<Long, MutableList<Pair<DoubleArray, DoubleArray>>>()
@@ -168,7 +184,7 @@ class OsmXmlLoader(private val file: File, private val log: (String) -> Unit = {
             val allLo = rings.flatMap { it.lon.asList() }
             areas.add(OsmArea("r$rid", rid, allLa.average(), allLo.average(), rings, relTags[rid] ?: emptyMap()))
         }
-        return OsmTileData(roads, junctions, tolls, areas, pois, cameras)
+        return OsmTileData(roads, junctions, tolls, areas, pois, cameras, barrierOnRoads.toLongArray())
     }
 
     private fun handleNode(

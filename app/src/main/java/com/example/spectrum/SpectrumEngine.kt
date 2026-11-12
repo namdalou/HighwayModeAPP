@@ -6,17 +6,17 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.media.AudioManager
 import android.media.audiofx.Visualizer
+import android.os.Process
 import android.os.SystemClock
+import com.example.highwaymode.core.audio.BandAnalyzer
+import com.example.highwaymode.core.audio.SpectrumMapper
+import com.example.highwaymode.core.audio.WaveStitcher
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.ln
-import kotlin.math.log10
+import java.util.concurrent.locks.LockSupport
 import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.pow
-import kotlin.math.sqrt
 
 /**
  * Visualizer で再生音を解析してバンド値(0..1)を配信する。
@@ -30,12 +30,19 @@ import kotlin.math.sqrt
  *  4. どれも無いときは端末全体の出力音(セッション 0)
  * 必要な権限は RECORD_AUDIO のみ。
  *
+ * 解析のしかた（v2.15）: Visualizer からは波形（1 回に 1024 サンプル）を約 12.5ms ごとに読み、つないで長い履歴にしてから、
+ * 周波数に応じた長さの窓で自前の FFT にかける（[WaveStitcher]・[BandAnalyzer]・[SpectrumMapper]。計算は :core にあり、テストできる）。
+ * v2.14 までは Visualizer の FFT（1024 サンプル・窓なし・結果は 1 バイト）を 25ms ごとに読んでいて、低音の細かさが足りず、
+ * 強い音が画面の広い範囲ににじんでいた（聞こえている音と、光る場所が合わない）。
+ *
  * 止まらない・カクつかないための工夫:
  *  - 解析を止めて再開するとき、前の解析スレッドが Visualizer を放してから新しく付ける
  *    (同じ音声に 2 つ付くと、後から付けた方はデータを読めない)。画面のスレッドは待たせない
  *  - データを読めない状態(他のアプリに解析を取られた・音声の経路が変わった)が続いたら、付け直す。
  *    読めない間はバーを下げる(止まったように見せない)
  *  - 重い dumpsys の読み取り(DUMP 権限があるとき)は別スレッドで行い、解析を止めない
+ *  - 解析スレッドは表示用の優先度で、決まった間隔([READ_PERIOD_NS])の時刻に合わせて読む(v2.15)。
+ *    読む間隔がぶれると、画面を描くたびに届いている値の数が変わって、動きがカクついて見える
  */
 object SpectrumEngine {
     /**
@@ -68,95 +75,23 @@ object SpectrumEngine {
     private const val SILENT_PROBE_MS = 2500L
     @Volatile private var lastOpenedPkg: String? = null
 
-    // ---- 感度調整用の値 ----
-    /** これ未満の振幅は無音とみなす(8bit量子化ノイズ対策) */
-    private const val GATE = 2.5f
-    /** 高音域の補正(dB/オクターブ)。音楽は高音ほど小さいので持ち上げる */
-    private const val TILT_DB_PER_OCT = 4f
-    /**
-     * 高音の持ち上げの上限(dB。v2.11)。上限が無いと 16kHz で +16 dB になり、8bit の FFT の細かさが足りないために出る
-     * 雑音まで持ち上がって、右端の数本が同じ高さで上に張り付いていた
-     */
-    private const val TILT_MAX_DB = 9f
-    /** FFT の 1 本ごとの強さ(re²+im²)から引く雑音の分(v2.11)。値が ±1 程度しかない本は雑音とみなして数えない */
-    private const val QUANT_NOISE_POW = 2f
-    /**
-     * 帯の強さの下限(v2.13。FFT の 1 目盛りの強さ)。v2.12 までは 1e-6(-60 dB)まで下がったので、音の小さい高音の帯は
-     * 「ハイハットが鳴ると +70 dB」のように 0 と天井を行き来して、右端が上に張り付いて見えた(利用者の録画)
-     */
-    private const val FLOOR_POW = 1f
-    /** [FLOOR_POW] の dB(0 dB) */
-    private const val FLOOR_DB = 0f
-    /**
-     * 床からこれだけ上(dB)で、帯の高さを 0 → 1 倍にする(v2.13)。床にいる帯(その音域に音が無い)は、
-     * 床の値のままだと中ほどの高さで止まって見え、隣の帯も同じ高さで並んでしまうので、消す
-     */
-    private const val GATE_DB = 6f
+    // 高さの付け方の数字（ならし・強弱・無音の判定など）は、:core の SpectrumMapper にある（v2.15 で移した）
 
-    // ---- 曲の中の強弱(静かな部分・盛り上がる部分)の出し方 ----
     /**
-     * 曲の音量の基準(直近の大きい音)から何 dB 下までを強弱として表すか。
-     * 小さくすると静かな部分がより低く、メリハリが強くなる。
+     * 波形を読む間隔 [ns]（12.5ms = 1 秒に 80 回。v2.14 までは 25ms）。
+     * 1 回に読める波形は約 21ms ぶんなので、半分ほど重ねて読んで、つなぐ。解析もこの間隔で行う
+     * （車の画面の 30fps・スマホの 60fps のどちらでも、描くたびに新しい値が届いているように）
      */
-    private const val LOUD_RANGE_DB = 18f
-    /**
-     * 基準が下がる速さ(dB/秒)。小さいほど、静かな部分が長く続いても低いまま(強弱が残る)。
-     * 端末やカーナビの音量を変えたときは、この速さで自動的に合わせ直す。
-     */
-    private const val LOUD_RELEASE_DB_PER_SEC = 1.0f
-    /** いちばん静かな部分でのバーの高さの割合(0..1)。0 に近いほど静かな部分でほぼ動かない */
-    private const val LOUD_MIN = 0.35f
-    /**
-     * 曲の音量の基準からこれ以上小さい音は無音とみなす(dB)。
-     * スマホの音量によらず「音が出ていれば動く」よう、絶対値ではなく基準からの差で判定する。
-     */
-    private const val SILENCE_BELOW_REF_DB = 60f
-    /** これより小さい音(dBFS)は完全な無音(音声データが 0) */
-    private const val DIGITAL_SILENCE_DB = -95f
-
-    // ---- 高さと動き(v2.10) ----
-    // v2.9 は、なめらかにするために帯の強さを時間でならしすぎて、バーが上の方に張り付いたまま、ほとんど動かなかった。
-    // v2.10 は、ならしは FFT のばらつきを抑える程度にして、高さを「その帯の最近の平均からどれだけ大きいか」で付ける
-    // (拍で上へ、拍の合間で下へ。ずっと鳴っている音は中ほどに落ち着く)。下がる速さは画面(PlayerRenderer)で一定にする
-    /** 帯ごとの強さ(dB)を時間でならす割合(25ms ごとの読み取り 1 回あたり。上がる・下がる) */
-    private const val SMOOTH_ATTACK = 0.8f
-    private const val SMOOTH_RELEASE = 0.6f
-    /** 隣の帯とならす割合(両隣それぞれ)。周波数の山の形がつながる */
-    private const val SMOOTH_NEIGHBOR = 0.15f
-    /** 帯ごとの「最近の平均」を取る長さ(時定数・秒)。v2.12 で 1.0 → 0.6(鳴り続ける音が早く中ほどへ戻り、動きが速く見える) */
-    private const val BAND_AVG_SEC = 0.6f
-    /**
-     * 音が大きくなったときに平均が追いつく速さ(時定数・秒。v2.13)。静かなところから急に大きくなったとき、
-     * 平均が遅れて 1 秒近く天井に張り付いていた(利用者の録画の左端)ので、上がるときだけ速く追いつく
-     */
-    private const val BAND_AVG_UP_SEC = 0.25f
-    /** 全体の基準(最近いちばん大きい帯)が下がる速さ(dB/秒)。v2.12 で 6 → 10 */
-    private const val TOP_RELEASE_DB_PER_SEC = 10f
-    /** 周波数ごとの形(平均と基準の差)を縮める割合。小さいほど帯ごとの高さの差が小さい(v2.13 で 0.5 → 0.35) */
-    private const val SPEC_K = 0.35f
-    /**
-     * 平均からの差(拍・音の立ち上がり)を広げる割合。大きいほどメリハリが強い(v2.12 で 2.0 → 2.4、v2.13 で 3.0)。
-     * v2.13 は下の幅([SHOW_BELOW_DB])を広げて 1 dB あたりの高さが 2 割ほど小さくなったので、その分ここを大きくして、
-     * 拍の振れ幅・上がる速さを v2.12 と同じくらいに保った
-     */
-    private const val DYN_K = 3.0f
-    /** 基準より何 dB 下までを表すか(0)と、基準より何 dB 上で一番上になるか(v2.13 で下は 20 → 32) */
-    private const val SHOW_BELOW_DB = 32f
-    private const val SHOW_ABOVE_DB = 10f
-    /**
-     * 写した位置が 1 のときの高さ(v2.12)。1 を超えた分(とても強い拍。基準より [TOP_EXT_DB] 以上)だけで残りの上の 2 割を使う。
-     * v2.11 までは画面の伸び(横画面 1.25)で天井に届かせていて、横画面では上に張り付いて見えた。v2.12 から伸びはどの画面も 1.0
-     */
-    private const val TOP_LEVEL = 0.88f
-    private const val TOP_EXT_DB = 12f
-    /** 曲の強弱(loudness)をならす割合(読み取り 1 回あたり。上がる・下がる) */
-    private const val LOUD_ATTACK = 0.6f
-    private const val LOUD_RELEASE = 0.25f
+    private const val READ_PERIOD_NS = 12_500_000L
     /** スマホの音量の変化を確認する間隔(ms) */
     private const val VOLUME_CHECK_MS = 300L
 
     /** いまの曲の相対的な音量(0..1、測れない端末は -1)。診断画面で確認用 */
     @Volatile var loudness = 0f
+        private set
+
+    /** 確認用(診断画面): 波形のつなぎ具合(履歴の長さ・つなぎ直した回数・読めた回数) */
+    @Volatile var captureInfo = ""
         private set
 
     private var users = 0
@@ -419,6 +354,11 @@ object SpectrumEngine {
         var lastReopen = 0L
         val zero = FloatArray(BANDS)
         val am = appContext?.getSystemService(AudioManager::class.java)
+        // 表示用の優先度(エンジンの計算などに待たされて、読む間隔がぶれないように。解析そのものは軽い)
+        try { Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY) } catch (_: Exception) { }
+        var nextNs = System.nanoTime()
+        var infoAt = 0L
+        var reads = 0
         try {
             while (alive(gen)) {
                 val now = SystemClock.uptimeMillis()
@@ -468,13 +408,14 @@ object SpectrumEngine {
                 val out = a?.read()
                 if (out != null) {
                     failures = 0
+                    reads++
                     for (l in listeners) l(out)
                 } else if (a != null) {
                     failures++
                     // 読めない状態が続く(他のアプリに解析を取られた・音声の経路が変わった など):
                     // バーを下げ(止まって見えないように)、付け直す(2 秒に 1 回まで)
-                    if (failures == 8) for (l in listeners) l(zero)
-                    if (failures >= 16 && now - lastReopen >= 2000L) {
+                    if (failures == 16) for (l in listeners) l(zero)
+                    if (failures >= 32 && now - lastReopen >= 2000L) {
                         lastReopen = now
                         val session = a.session
                         a.release()
@@ -483,45 +424,53 @@ object SpectrumEngine {
                         lastCheck = 0L
                     }
                 }
-                try { Thread.sleep(25) } catch (_: InterruptedException) { break }
+                if (now - infoAt >= 1000L) {
+                    captureInfo = a?.info(reads, now - infoAt) ?: ""
+                    infoAt = now
+                    reads = 0
+                }
+                // 決まった時刻に合わせて待つ(かかった時間を差し引く。大きく遅れたら、そこから数え直す)
+                nextNs += READ_PERIOD_NS
+                val t = System.nanoTime()
+                if (t - nextNs > 4 * READ_PERIOD_NS) nextNs = t
+                val wait = nextNs - t
+                if (wait > 0L) LockSupport.parkNanos(wait)
+                if (Thread.interrupted()) break
             }
         } finally {
             a?.release()
         }
     }
 
-    /** 1 つの Visualizer とその解析用バッファ */
+    /** 1 つの Visualizer と、その解析（波形 → つないだ履歴 → 帯の強さ → 高さ） */
     private class Analyzer(val v: Visualizer, val session: Int) {
         /** 開いた時刻と、最後に音が出ていた時刻(SystemClock.uptimeMillis) */
         val openedAt = SystemClock.uptimeMillis()
         var lastAudibleAt = 0L
             private set
         private val size = v.captureSize
-        private val fft = ByteArray(size)
-        private val bins = size / 2
-        private val edges: IntArray
-        private val tilt: FloatArray
-        private val db = FloatArray(BANDS)
-        /** 隣の帯とならした値(作業用)と、時間でならした値(v2.9) */
-        private val dbF = FloatArray(BANDS)
-        private val dbS = FloatArray(BANDS)
-        /** 帯ごとの最近の平均(dB) */
-        private val dbAvg = FloatArray(BANDS)
-        private var smoothed = false
-        /** 全体の基準(ならした値の最大。すぐ上がり、ゆっくり下がる) */
-        private var topRef = -100f
-        /** ならした強弱(0..1)。-1 = まだ無い */
-        private var loudS = -1f
-        private val out = FloatArray(BANDS)
-        private var loudRef = -100f   // 曲の音量の基準(直近の大きい音)
-
-        /** 強弱の基準を捨てて、次に届く音を新しい基準にする(音量変更時) */
-        fun resetLoudness() {
-            loudRef = -100f
-        }
-        private var lastTime = SystemClock.uptimeMillis()
+        private val wave = ByteArray(size)
+        private val sampleRate = (v.samplingRate / 1000f).let { if (it >= 8000f) it else 44100f }   // mHz → Hz
+        private val stitcher = WaveStitcher()
+        private val bands = BandAnalyzer(sampleRate, BANDS)
+        private val mapper = SpectrumMapper(bands)
+        private val power = FloatArray(BANDS)
+        private val zeros = FloatArray(BANDS)
+        /** 最後に波形が進んだ(新しい部分をつないだ)時刻と、最後に解析した時刻 [ns] */
+        private var advancedAtNs = 0L
+        private var mappedAtNs = 0L
         private val peakRms = Visualizer.MeasurementPeakRms()
         private var rmsSupported = true
+        private var rmsDb: Float? = null
+        private var tick = 0
+
+        /** 強弱の基準を捨てて、次に届く音を新しい基準にする(音量変更時) */
+        fun resetLoudness() = mapper.resetLoudness()
+
+        /** 確認用: 波形のつなぎ具合 */
+        fun info(reads: Int, ms: Long): String =
+            "履歴 ${stitcher.length} サンプル・つなぎ直し ${stitcher.resets} 回・続きとしてつないだ ${stitcher.joins} 回・読み取り ${if (ms > 0) reads * 1000L / ms else 0} 回/秒" +
+                "・${(sampleRate / 1000f).let { "%.1f".format(it) }}kHz"
 
         /** 再生中の音の大きさ(dBFS)。測れない端末では null */
         private fun readRmsDb(): Float? {
@@ -539,113 +488,30 @@ object SpectrumEngine {
             }
         }
 
-        init {
-            val sampleRate = v.samplingRate / 1000f          // mHz → Hz
-            val binHz = sampleRate / size
-            val fMin = 40f
-            val fMax = min(16000f, sampleRate / 2f)
-            edges = IntArray(BANDS + 1) { i ->
-                val f = fMin * (fMax / fMin).pow(i.toFloat() / BANDS)
-                (f / binHz).toInt().coerceIn(1, bins - 1)
-            }
-            // 低い帯は FFT の 1 本(約 47Hz)より狭いので、いくつもの帯が同じ 1 本を読んで同じ高さで動いていた(左端の数本)。
-            // v2.13 から、どの帯も前の帯より後ろの本から読む(低いところは 1 帯 = 1 本。周波数の目盛りは少し高い方へずれる)
-            for (i in 1..BANDS) {
-                if (edges[i] <= edges[i - 1]) edges[i] = min(edges[i - 1] + 1, bins - 1)
-            }
-            tilt = FloatArray(BANDS) { b ->
-                val fc = fMin * (fMax / fMin).pow((b + 0.5f) / BANDS)
-                min(TILT_MAX_DB, TILT_DB_PER_OCT * (ln(fc / 1000f) / ln(2f)))
-            }
-        }
-
+        /** 波形を読んで履歴につなぎ、帯の値(0..1)を返す。読めなければ null */
         fun read(): FloatArray? {
-            val ok = try { v.getFft(fft) == Visualizer.SUCCESS } catch (_: Exception) { false }
+            val ok = try { v.getWaveForm(wave) == Visualizer.SUCCESS } catch (_: Exception) { false }
             if (!ok) return null
-            var frameMaxMag = 0f
-            var frameMaxDb = -100f
-            for (b in 0 until BANDS) {
-                val lo = edges[b]
-                val hi = max(edges[b + 1], lo + 1)
-                var sum = 0f
-                var cnt = 0
-                for (k in lo until min(hi, bins)) {
-                    val re = fft[2 * k].toFloat()
-                    val im = fft[2 * k + 1].toFloat()
-                    val p = re * re + im * im
-                    sum += max(0f, p - QUANT_NOISE_POW)
-                    cnt++
-                    val m = sqrt(p)
-                    if (m > frameMaxMag) frameMaxMag = m
-                }
-                val meanPow = if (cnt > 0) sum / cnt else 0f
-                db[b] = 10f * log10(max(meanPow, FLOOR_POW)) + tilt[b]
-                if (db[b] > frameMaxDb) frameMaxDb = db[b]
+            val nowNs = System.nanoTime()
+            // 符号つきの値にする(Visualizer の波形は 0〜255。128 が 0)。ついでに最大値を見る
+            var peak = 0
+            for (i in 0 until size) {
+                val sample = (wave[i].toInt() and 0xFF) - 128
+                wave[i] = sample.toByte()
+                val abs = if (sample < 0) -sample else sample
+                if (abs > peak) peak = abs
             }
-            val now = SystemClock.uptimeMillis()
-            val dt = ((now - lastTime) / 1000f).coerceIn(0f, 0.5f)
-            lastTime = now
-
-            val rmsDb = readRmsDb()
-            val silent = frameMaxMag < GATE || (rmsDb != null &&
-                (rmsDb < DIGITAL_SILENCE_DB || rmsDb < loudRef - SILENCE_BELOW_REF_DB))
-            if (!silent) lastAudibleAt = now
-            if (silent) {
-                out.fill(0f)                       // ほぼ無音
-                loudness = 0f
-                // ならした値は捨てる(次に鳴り始めたら、その音から始める)
-                smoothed = false
-                topRef = -100f
-                loudS = -1f
-                return out
-            }
-            // 帯の強さをならす(隣の帯・時間)。frameMaxDb はならした値の最大
-            val k = (dt / 0.025f).coerceIn(0.2f, 4f)
-            val att = 1f - (1f - SMOOTH_ATTACK).pow(k)
-            val rel = 1f - (1f - SMOOTH_RELEASE).pow(k)
-            for (b in 0 until BANDS) {
-                val l = db[if (b > 0) b - 1 else b]
-                val r = db[if (b < BANDS - 1) b + 1 else b]
-                dbF[b] = db[b] * (1f - 2f * SMOOTH_NEIGHBOR) + (l + r) * SMOOTH_NEIGHBOR
-            }
-            val avgA = min(1f, dt / BAND_AVG_SEC)
-            val avgUpA = min(1f, dt / BAND_AVG_UP_SEC)
-            frameMaxDb = -100f
-            for (b in 0 until BANDS) {
-                dbS[b] = when {
-                    !smoothed -> dbF[b]
-                    dbF[b] > dbS[b] -> dbS[b] + (dbF[b] - dbS[b]) * att
-                    else -> dbS[b] + (dbF[b] - dbS[b]) * rel
-                }
-                dbAvg[b] = if (!smoothed) dbS[b] else dbAvg[b] + (dbS[b] - dbAvg[b]) * (if (dbS[b] > dbAvg[b]) avgUpA else avgA)
-                if (dbS[b] > frameMaxDb) frameMaxDb = dbS[b]
-            }
-            smoothed = true
-            topRef = if (frameMaxDb > topRef) frameMaxDb else max(frameMaxDb, topRef - TOP_RELEASE_DB_PER_SEC * dt)
-            // 曲の強弱(音量が測れる端末だけ): 静かな部分は全体を低く
-            val loudFactor = if (rmsDb != null) {
-                // 曲の音量の基準: 大きい音には即追従、静かになってもゆっくりしか下げない
-                loudRef = if (rmsDb > loudRef) rmsDb else loudRef - LOUD_RELEASE_DB_PER_SEC * dt
-                val loudNow = ((rmsDb - (loudRef - LOUD_RANGE_DB)) / LOUD_RANGE_DB).coerceIn(0f, 1f)
-                val la = 1f - (1f - LOUD_ATTACK).pow(k)
-                val lr = 1f - (1f - LOUD_RELEASE).pow(k)
-                loudS = if (loudS < 0f) loudNow else loudS + (loudNow - loudS) * (if (loudNow > loudS) la else lr)
-                loudness = loudS
-                LOUD_MIN + (1f - LOUD_MIN) * loudS
-            } else {
-                loudness = -1f
-                1f
-            }
-            // 高さ: 周波数ごとの形(縮めて)＋最近の平均からの差(広げて)を、基準の 32 dB 下〜10 dB 上に写す。
-            // 10 dB 上を超えた分は、さらに 12 dB で残りの上の部分(天井まで)を使う(天井に届くのはとても強い拍だけ)
-            for (b in 0 until BANDS) {
-                val p = (dbAvg[b] - topRef) * SPEC_K + (dbS[b] - dbAvg[b]) * DYN_K
-                val x = ((p + SHOW_BELOW_DB) / (SHOW_BELOW_DB + SHOW_ABOVE_DB)).coerceIn(0f, 1f)
-                val over = ((p - SHOW_ABOVE_DB) / TOP_EXT_DB).coerceIn(0f, 1f)
-                // 床にいる(音の無い)帯は消す。床から GATE_DB 上で元の高さ
-                val gate = ((dbS[b] - tilt[b] - FLOOR_DB) / GATE_DB).coerceIn(0f, 1f)
-                out[b] = (x * TOP_LEVEL + over * (1f - TOP_LEVEL)) * loudFactor * gate
-            }
+            // 前に波形が進んでからの時間ぶん、進んでいるはず(つなぐ位置を探し始める目安)
+            val expected = if (advancedAtNs == 0L) 0 else ((nowNs - advancedAtNs) * 1e-9 * sampleRate).toInt()
+            if (stitcher.push(wave, size, expected) != 0) advancedAtNs = nowNs
+            // 曲の音量は 1 回おきに読む(約 0.4 秒の平均なので、毎回読まなくてよい)
+            if (tick++ % 2 == 0) rmsDb = readRmsDb()
+            if (!bands.compute(stitcher, power)) return zeros
+            val dt = if (mappedAtNs == 0L) 0.0125f else ((nowNs - mappedAtNs) * 1e-9f).coerceIn(0f, 0.5f)
+            mappedAtNs = nowNs
+            val out = mapper.map(power, rmsDb, peak, dt)
+            if (!mapper.silent) lastAudibleAt = SystemClock.uptimeMillis()
+            loudness = mapper.loudness
             // 受け取る側(画面)はその場で写すので、配列は使い回す(毎回の確保をしない)
             return out
         }
