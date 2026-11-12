@@ -104,9 +104,11 @@ class BandAnalyzer(val sampleRate: Float, val bands: Int = 48) {
         }
     }
 
-    private val low = Res(asymmetric(N_LOW, LOW_FALL), N_LOW)
-    private val mid = Res(hann(N_MID), N_MID)
-    private val high = Res(hann(N_HIGH), N_HIGH)
+    // 長い窓は、窓をかけたあと 4 つ（2 つ）ずつ足して 1024 点にしてから FFT する（使うのは低い周波数の本だけなので、結果はほぼ同じ。
+    // 4096 点・2048 点の FFT をそのまま計算するより、ずっと軽い）
+    private val low = Res(asymmetric(N_LOW, LOW_FALL), N_HIGH, N_LOW / N_HIGH)
+    private val mid = Res(hann(N_MID), N_HIGH, N_MID / N_HIGH)
+    private val high = Res(hann(N_HIGH), N_HIGH, 1)
     private val highB = FloatArray(N_HIGH / 2 + 1)
     private val stagger = (STAGGER_SEC * sampleRate).toInt()
 
@@ -121,11 +123,12 @@ class BandAnalyzer(val sampleRate: Float, val bands: Int = 48) {
         for (b in 0 until bands) {
             wStart[b] = bins.size
             val r = res(resolution[b])
-            val df = sampleRate / r.n
+            val df = sampleRate / r.length
             val fl = edges[b]
             val fh = edges[b + 1]
             val k0 = max(1, floor(fl / df + 0.5f).toInt())
-            val k1 = min(r.n / 2, floor(fh / df + 0.5f).toInt())
+            // まとめて足した窓では、使える本は全体の 1/4 まで（それより上は、折り返しが混ざる）
+            val k1 = min(if (r.decim > 1) r.n / 4 else r.n / 2, floor(fh / df + 0.5f).toInt())
             for (k in k0..k1) {
                 val a = max(fl, (k - 0.5f) * df)
                 val z = min(fh, (k + 0.5f) * df)
@@ -171,33 +174,51 @@ class BandAnalyzer(val sampleRate: Float, val bands: Int = 48) {
         return true
     }
 
-    /** 1 つの分解能: 窓（長さ = FFT の大きさ n。最後が最新）と、計算用の置き場 */
-    private class Res(val w: FloatArray, val n: Int) {
+    /**
+     * 1 つの分解能: 窓（長さ n × decim。最後が最新）と、計算用の置き場。
+     * decim > 1 のときは、窓をかけた波形を decim 個ずつ足して n 点にしてから FFT する（周波数の刻みは、窓の長さぶんの細かさのまま）
+     */
+    private class Res(val w: FloatArray, val n: Int, val decim: Int) {
+        /** 窓の長さ（サンプル） */
+        val length = n * decim
         private val fft = Fft(n)
         private val re = FloatArray(n)
         private val im = FloatArray(n)
-        private val x = FloatArray(n)
+        private val x = FloatArray(length)
         /** 片側の強さ（本ごと。帯の中を足すと、その帯の成分の二乗平均） */
         val p = FloatArray(n / 2 + 1)
         /** 新しい側 i サンプルぶんの、窓の 2 乗の和（履歴が短いときの大きさ合わせ） */
-        private val tail = FloatArray(n + 1).also { t ->
+        private val tail = FloatArray(length + 1).also { t ->
             var s = 0.0
-            for (i in 1..n) {
-                s += w[n - i].toDouble() * w[n - i]
+            for (i in 1..length) {
+                s += w[length - i].toDouble() * w[length - i]
                 t[i] = s.toFloat()
             }
         }
 
         fun power(st: WaveStitcher, back: Int) {
-            val valid = st.read(x, n, back)
-            for (i in 0 until n) {
-                re[i] = x[i] * w[i]
-                im[i] = 0f
+            val valid = st.read(x, length, back)
+            if (decim == 1) {
+                for (i in 0 until n) {
+                    re[i] = x[i] * w[i]
+                    im[i] = 0f
+                }
+            } else {
+                var j = 0
+                for (i in 0 until n) {
+                    var s = 0f
+                    for (d in 0 until decim) {
+                        s += x[j] * w[j]
+                        j++
+                    }
+                    re[i] = s
+                    im[i] = 0f
+                }
             }
             fft.transform(re, im)
             // 履歴が窓より短いときは、入っている部分の窓の大きさで割る（強さが小さく出ないように）
             val energy = max(tail[valid], 1e-9f)
-            val norm = 2f / (n * energy)
+            val norm = 2f / (length * energy)
             for (k in p.indices) p[k] = (re[k] * re[k] + im[k] * im[k]) * norm
         }
     }
