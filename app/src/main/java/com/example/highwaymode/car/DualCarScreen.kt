@@ -176,10 +176,12 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     /** いま一覧をずらしている量 [px]（描画スレッド専用。目標へなめらかに近づける） */
     private var shiftShownH = 0f
     private var shiftAnimAt = 0L
-    /** 次のフレームを画面へ出す予定の時刻 [ns]（System.nanoTime 基準。0 = 予定なし: すぐ描く） */
-    @Volatile private var postAtNs = 0L
-    /** 「すぐ描く」の依頼の数（描いている間に依頼が来たかを見分ける） */
-    @Volatile private var frameRequests = 0
+    /** 次のフレームを画面へ出す予定の時刻 [ns]（System.nanoTime 基準。0 = 予定なし: すぐ描く。描画スレッド専用） */
+    private var postAtNs = 0L
+    /** 「すぐ描く」の依頼の数（メインスレッドが進める。最初の 1 回も依頼として数える） */
+    @Volatile private var frameRequests = 1
+    /** 描画スレッドが応えた依頼の数（描画スレッド専用） */
+    private var handledRequests = 0
     /** 描き始めてから画面へ出せるようになるまでの時間の見積もり [ns]（描画スレッド専用） */
     private var drawCostNs = DRAW_COST_START_NS
     /** いまのフレームを描き終えた（出せるようになった）時刻 [ns]。描かなかったら 0（描画スレッド専用） */
@@ -227,8 +229,11 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
             // 二重に予約されていたら 1 つにまとめる
             h.removeCallbacks(this)
             val requests = frameRequests
-            var target = postAtNs
-            // 予定が無い（最初・タップなどで「すぐ描く」）・大きく遅れた → 待たずに描いて、そこから数え直す
+            // 「すぐ描く」の依頼が来ていたら（最初・タップなど）、予定の時刻を待たずに描いて、そこから数え直す。
+            // 依頼は数で見分ける（予定の時刻を別のスレッドから書き換えると、ここで書き戻してしまうことがあるため）
+            var target = if (requests != handledRequests) 0L else postAtNs
+            handledRequests = requests
+            // 大きく遅れたとき（止まっていた）も、そこから数え直す
             if (target != 0L && System.nanoTime() - target > LATE_RESET_NS) target = 0L
             // 描き始める時刻まで正確に待つ（描き始めの間隔がそろうと、経過時間で計算している動きもそろう）
             if (target != 0L) waitUntil(target - drawCostNs - DRAW_MARGIN_NS)
@@ -552,7 +557,6 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     private fun requestFrame() {
         val h = drawHandler ?: return
         frameRequests++
-        postAtNs = 0L
         h.removeCallbacks(frame)
         h.post(frame)
     }
