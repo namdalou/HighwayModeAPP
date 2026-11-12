@@ -7,7 +7,7 @@
 - Android アプリ「Spectrum ハイウェイ」。スマホと Android Auto（車の画面）に対応。
 - 音楽プレーヤー表示とスペクトラムアナライザーの **Spectrum** と、高速道路の前方の IC / JCT / SA / PA までの距離・到着予定時刻を出す **ハイウェイモード** を 1 つにしたもの。
 - 高速道路の外では Spectrum を全画面表示。高速道路に入ると自動で 2 画面（左 Spectrum : 右ハイウェイ = 4 : 5）。
-- 現在の版は **v2.14.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
+- 現在の版は **v2.15.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
 
 ## 利用者について
 
@@ -22,8 +22,8 @@
 
 | モジュール | 内容 |
 |---|---|
-| `:core` | Android に依存しない演算（純粋な Kotlin/JVM）。地図データ（HWDB）、道路グラフ、マップマッチング、前方経路（カーナビの案内に合わせる `route/NavGuide`）、到着予測、渋滞、オービス、エンジン統合（`HighwayEngine`）、電池の節約の判定（`PowerPolicy`）、画面の切替判定と区画割り（`dual/HighwayPresence`, `dual/DualGeometry`）。**JVM 上でテストできる** |
-| `:app` | Android アプリ。`com.example.spectrum`（Spectrum：音声解析 `SpectrumEngine`、音声の自動探索 `SessionProber`、描画 `PlayerRenderer` / `PlayerView`、スペアナの表示の種類ごとの描画 `SpectrumPainter`、昔のカーオーディオの 3 つの表示 `CarAudioPainter`、ジャケットの色 `ArtPalette`、見た目の設定 `SpectrumStyle`、通知の受け渡し `NotificationHooks`、音楽の画面に出すカーナビの案内 `Guidance`）と `com.example.highwaymode`（スマホ画面、常駐サービス、`engine/EngineHost`、`car/DualCarScreen`（Android Auto）、`ui/PanelRenderer`（ハイウェイ側の描画）、`ui/SettingsActivity`（設定画面）・`ui/DevSettingsActivity`（開発者向け設定）・`ui/SpectrumPickers`（スペアナの見本・選ぶ画面）、`nav/NavNotifications`（Google マップのナビの通知の読み取り）） |
+| `:core` | Android に依存しない演算（純粋な Kotlin/JVM）。地図データ（HWDB）、道路グラフ、マップマッチング、前方経路（カーナビの案内に合わせる `route/NavGuide`）、到着予測、渋滞、オービス、エンジン統合（`HighwayEngine`）、電池の節約の判定（`PowerPolicy`）、Android Auto の切断後に常駐を止める判定（`engine/DisconnectPolicy`）、画面の切替判定と区画割り（`dual/HighwayPresence`, `dual/DualGeometry`）、スペアナの解析（`audio/WaveStitcher`・`BandAnalyzer`・`SpectrumMapper`。v2.15）、主要バイパスの判定（`graph/BypassClassifier`）。**JVM 上でテストできる** |
+| `:app` | Android アプリ。`com.example.spectrum`（Spectrum：音声解析 `SpectrumEngine`、音声の自動探索 `SessionProber`、描画 `PlayerRenderer` / `PlayerView`、スペアナの表示の種類ごとの描画 `SpectrumPainter`、昔のカーオーディオの 3 つの表示 `CarAudioPainter`、ジャケットの色 `ArtPalette`、見た目の設定 `SpectrumStyle`、通知の受け渡し `NotificationHooks`、音楽の画面に出すカーナビの案内 `Guidance`）と `com.example.highwaymode`（スマホ画面、常駐サービス、`engine/EngineHost`、`car/DualCarScreen`（Android Auto）、`ui/PanelRenderer`（ハイウェイ側の描画）、`ui/SettingsActivity`（設定画面）・`ui/DevSettingsActivity`（開発者向け設定）・`ui/SpectrumPickers`（スペアナの見本・選ぶ画面）、`nav/NavNotifications`（Google マップのナビの通知の読み取り）、`car/CarTemplates`（車の画面の決まりと共通の部品）、`CarAutoStop`（切断後に常駐を止める）） |
 | `:datatool` | PC・CI 用の地図データ（HWDB）作成ツール |
 
 ファイル構成の詳細は README の「ファイル構成」。
@@ -31,17 +31,22 @@
 ### 押さえておくべき設計
 
 - **Android Auto**：Car App Library 1.7.0、`NavigationTemplate` ＋ Surface に自前で描画（`DualCarScreen`）。
-  - 描画は専用スレッド（THREAD_PRIORITY_DISPLAY）で、締め切り方式の 30fps（一時停止中 15fps、待機中 10fps）。
+  - 描画は専用スレッド（THREAD_PRIORITY_DISPLAY）で、30fps（一時停止中 15fps、ハイウェイだけのとき 10fps。下のバーの曲名を流している間は 30fps）。
+  - **画面へ出す時刻をそろえる（v2.15）**：出す時刻（`postAtNs`。System.nanoTime）は 33.33ms ごとの決まった時刻。描くのにかかる時間の見積もり（`drawCostNs`。最近の最大に近い値）＋余裕だけ前から描き始め（`waitUntil`）、描き終えたら決まった時刻まで待ってから `unlockCanvasAndPost`。Handler は 1ms 刻みなので、少し早めに起こしてもらって `LockSupport.parkNanos` で合わせる。利用者の報告「Android Auto でスペアナがときどきカクつく」への対策（出す時刻のぶれで、スマホの中の画面の合成の区切りをまたぐフレームが出る）。まだカクつくと言われたら、`DRAW_MARGIN_NS`・`drawCostNs` の決め方、解析の間隔（`SpectrumEngine.READ_PERIOD_NS`）を見直す。
+  - ハイウェイモードの画面の記録（RenderNode）は、すぐ反映したいとき（`panelInvalid`：操作・区画の変更）だけその場で描き直し、新しい位置情報・1 秒ごとの描き直し（`panelStale`）は**フレームを出した直後の空き時間**に行う（`refreshPanelNode`）。
+  - 「すぐ描く」は `requestFrame()`（`frameRequests` を進めて予約し直す）。フレームの処理の最後で予約するときは、描いている間に依頼が来ていないか `frameRequests` で確かめる（二重に予約しない）。
   - 描くたびに `EngineHost.latest` を読みます（スマホと車で表示がずれないように）。
 - **右上のボタン（ActionStrip）**：`NavigationTemplate` では必須。出し入れは Android Auto 側が行い、約 10 秒操作が無いと隠れます（アプリから時間は変えられない）。
   - 画面は常に上端から描きます。ボタンが出ている間（`onVisibleAreaChanged` の top > 0）だけ、施設一覧の列を下へずらします。
   - **隠れても表示範囲を戻してこない車がある**（v2.3 で一覧が下がったままになった）。v2.4 から `stripShownAt`（画面の表示・`onGetTemplate`・タップ・ボタン・上端が下がった通知で更新）から `STRIP_HIDE_MS`（10 秒）たったら、通知が無くても隠れたとみなして戻します。ずらす量は `animateShift` でなめらかに変えます（`PanelRenderer.topRightReserveH`）。
   - `invalidate()` はボタンの組み合わせが変わるときだけ呼んでください（呼ぶたびにボタンが出直すため）。
 - **車のメニュー（`CarMenuScreen`）と、スペアナの表示を選ぶ画面（v2.14、`CarSpectrumScreen`）**：一覧は走行中に出せる 6 件まで。メニューは「画面の切替・ハイウェイの表示・スペアナの表示・再探索・一般道モード・自動切替」の 6 件で、「終了」は v2.14 から右上の電源のボタン（`ic_car_exit`。この画面の右上のボタンは 2 つまで・文字を出せるのは 1 つまでなので、アイコンだけ）。
-  - `CarSpectrumScreen` は 2 段：1 段目「LED バー（標準）」「カーオーディオ（3 種類）」「アナログメーター（2 種類）」「バー・曲線・ドット（4 種類）」、2 段目にそれぞれの種類（アナログメーターは「照明の色を選ぶ」（`GROUP_LIGHT` の 6 色の一覧）と「メーターを 1 つにする」（`Toggle`）も）。選んだら `popToRoot()` で音楽の画面に戻る。行の絵は `drawDemo` の止まった 1 枚（144×90 画素。`oneMeter` でメーターは 1 つを大きく）を `IconCompat.createWithBitmap` で付ける（`SpectrumStyle.version` が変わったら作り直す）。
+  - **車の画面の決まり（v2.15。`car/CarTemplates` の先頭に全部書いてある。破ると「予期せぬエラーが発生したため終了します」で落とされる）**：①画面は最初の画面（NavigationTemplate）から 5 段まで・**5 段目は一覧（ListTemplate）にできない**、②同じ画面の中身を変えるのも 1 段と数えられる（数えられない「更新」は、一覧なら題名・行の数・各行の題名が同じとき）、③一覧・詳細の右上のボタンは 2 つまで・**文字は 1 つだけ**、④題名は空にできない、⑤画面を作る処理・押したときの処理の例外はアプリごと落ちる。画面は `CarTemplates.safe { }`・`CarTemplates.click { }` で包み、行の数・題名が変わる内容に替えるときは `CarTemplates.reopenLater`（最初の画面に戻してから開き直す）。日本メーカーの車は、段の数の制限をゆるめる仕組み（Adaptive task limits）が使えない。
+  - v2.14 は「照明の色を選ぶ」（メニュー → スペアナの表示 → アナログメーター → 色の一覧）が 5 段目の一覧になって落ちた。いまは一覧を開かず、**行を押すたびに照明の色が切り替わる**（題名は「照明の色（押すたびに切り替え）」のまま、説明に「いま: ○ → 次: △」）。メニューの「一般道モード」「自動切替」は `Toggle`。施設一覧（`FacilityListScreen`）は開いたときの行の並び・題名のまま説明だけ更新し、SA/PA の切り替えは `reopenLater`。動作状態（`RunStatusScreen`）も並びを固定。
+  - `CarSpectrumScreen` は 2 段：1 段目「LED バー（標準）」「カーオーディオ（3 種類）」「アナログメーター（2 種類）」「バー・曲線・ドット（4 種類）」、2 段目にそれぞれの種類（アナログメーターは「照明の色（押すたびに切り替え）」と「メーターを 1 つにする」（`Toggle`）も）。選んだら `popToRoot()` で音楽の画面に戻る。行の絵は `drawDemo` の止まった 1 枚（144×90 画素。`oneMeter` でメーターは 1 つを大きく）を `IconCompat.createWithBitmap` で付ける（`SpectrumStyle.version` が変わったら作り直す）。
   - **一覧の行の題名を `invalidate()` で書き換えない**（Android Auto では、題名が変わると「新しい画面」と数えられ、続けて出せる画面の数に限りがある）。状態はスイッチ（`Toggle`）か、別の一覧で選んで戻る形にする。
   - **下げる量（v2.6.1）**：利用者の車では、Android Auto が知らせる表示範囲の上端（`onVisibleAreaChanged` の top）がボタンの下端より小さく、v2.6 までは一覧がボタンに重なった。表示範囲の上端・安定した範囲の上端（`onStableAreaChanged`）・見積もり（`STRIP_BOTTOM_DP` = 80dp × 密度）の最大まで下げる。設定 `Prefs.stripExtra`（0/16/32dp を足す）で増やせる。実際の値は開発者向け設定の「車の画面の表示範囲（確認用）」（`DualCarScreen.areaInfo`）で見られるので、報告があればそれをもとに見積もりを直す。
-- **スペアナ**：`Visualizer` を使用。
+- **スペアナ**：`Visualizer` を使用（v2.15 から、FFT ではなく波形 `getWaveForm` を読む。下の「解析（v2.15）」）。
   - 同じセッションに 2 つ目を付けると操作権が無く読めません。そのため、スレッドは世代番号で管理し、前のスレッドの終了を待ってから付けています。
   - 読めない状態が続いたら付け直します（ウォッチドッグ）。
   - 音声セッションを知らせないアプリ（Amazon Music など）は、`SessionProber` が新しい番号から 8 刻みでさかのぼって音の大きさを測り、探します（録音はしない）。
@@ -55,7 +60,14 @@
   - **メーターの見た目（v2.14 で作り直し。動きは v2.8 のまま）**：`drawFace`（目盛り板。区画・色・設定が変わったときだけ画像に描く）は、金属の枠（`M_BEZEL`）・照明で光る文字盤（下の中央から照らす）・目盛りの弧（中心は文字盤の下の外側 `M_PIVOT_Y` 1.1、半径 `M_ARC_R` 0.83。-20〜0 は細い線、0〜+3 は太い赤）・数字（細めの字。振れ幅は `needleAngle` で ±46°。v2.13 までの ±44° と太字では -3 -2 -1 が重なりかけていた）・内側のパーセントの目盛り（小さいメーターでは省く）・「VU」・左下に BASS / TREBLE・右下に PEAK のランプ。`drawNeedle` は針（明るい文字盤は薄い影、暗い文字盤は光る針）→ 針の根元を隠す丸い台（`bridgePath`。v2.13 までは下いっぱいの黒い帯）→ ピークのランプ（+1 VU 超えで 0.3 秒）→ ガラスの映り込み。色は `MeterLook`（`updateLook`）で、照明の色（`SpectrumStyle.meterLight`：標準（明るい文字盤は電球色・暗い文字盤は青）・電球色・白・青・緑・スペアナの色）から作る。設定（`SpectrumStyle.meterLight` / `meterSingle`（1 つを大きく）/ `meterPeak`、保存は `meter_light` / `meter_single` / `meter_peak`）は、設定画面の「音楽（スペアナ）」でメーターを選んでいるときだけ出す。
   - **メーターの針（v2.8）**：`NEEDLE_K`・`NEEDLE_D`（約 38 rad/s・減衰比 0.6。約 0.05 秒で振れる）。v2.7 までは入力にバーの高さ（1 で切った値）× 1.15 を使っていて、バーはいつも上の方にあるので針が右の端に張り付いていた。v2.8 からは `PlayerRenderer` が 1 で切る前の強さ（`level`）を `draw(..., raw = level)` で渡し、`needleTarget` が「最近 `AVG_TAU`（2 秒）の dB の平均との差 ÷ ばらつき（下限 `SD_MIN` 1.2 dB）× `EXPAND`（3）＋ `CENTER_VU`（-1.5）」を VU の目盛りに写す（曲の音量・高さの設定によらない）。鳴り始めの 1 秒は平均を早く合わせる（`age`）。入力は帯の最大値 3 割・実効値 7 割（`meterInput`）。並びは `meterLayout`（v2.9 から利用者の指示でいつも 2 つ。横並びか縦積みの大きい方。v2.8 は縦長の区画で 1 つにしていて「再生すると 1 つになる」と言われた）。調整は作業用フォルダで SpectrumEngine と PlayerRenderer の計算をまねた試しの曲（EDM・ロック・バラード）で行った（右の端 1〜3%、平均 0.6 前後）。
   - **音が無いとき（v2.9）**：メーター以外は何も描かない（`SpectrumPainter.silent`。ミラーの最小のバー・中央の線もなし）。利用者の指示（再生していないときにブロックが出ないように）。
-  - **動きと高さ（v2.10）**：v2.9 で「見本のようになめらかに」と言われて時間のならし・ばねを強くしたら、v2.10 で「遅すぎてほとんど動かない」「高すぎて上に張り付く」と言われた。いまは：
+  - **解析（v2.15 で作り直し。計算は `:core` の `audio/`）**：利用者の報告「スペアナ（特に標準）の表示が、聞こえてくる周波数と合っていない」。v2.14 までは Visualizer の FFT（1024 サンプル・窓なし・結果は 1 バイトで、大きい値は半分にされ続ける）を使っていて、①低い帯が 1 帯 = FFT の 1 本（約 47Hz）で、画面の左 6 割が 47Hz〜1.4kHz を等間隔に並べた形、②強い音が広くにじむ（ベースだけの音で画面の左 7 割が光る）、だった。
+    - `SpectrumEngine`：`getWaveForm` を `READ_PERIOD_NS`（12.5ms）ごとの決まった時刻に読み（スレッドは THREAD_PRIORITY_DISPLAY、`LockSupport.parkNanos`）、毎回 解析して配る（80 回/秒）。音量（`getMeasurementPeakRms`）は 1 回おき。
+    - `WaveStitcher`：続けて読んだ波形の重なり（同じ値）を探してつなぎ、最大 8192 サンプルの履歴にする（見積もりのずれに近い順に探す。重なりは 128 サンプル以上。少し戻ったときは足さない。つながらなければその 1 回ぶんから作り直す）。診断画面（開発者向け設定 → Spectrum の診断）の「波形の読み取り」に、履歴の長さ・つなぎ直した回数が出る。**つなぎ直しが多い端末では低音の細かさが落ちる**ので、報告があればここを見る。
+    - `BandAnalyzer`：帯は 48（`SpectrumEngine.BANDS`）。境目は 35Hz〜16kHz を対数で等分（幅は 解析の細かさ sr/4096 ≈ 12Hz より狭くしない。`bandEdges`）。48kHz で、帯 12 ≈ 216Hz・帯 24 ≈ 907Hz・帯 36 ≈ 3.8kHz。帯の幅に応じて窓を変える：低音は 4096 サンプル（新しい側 1024 で速く落とす左右非対称の窓。出だしへの反応を速くする）、中低音は Hann 2048、それより上は Hann 1024（少しずらした 2 回の大きい方。短い音の取りこぼし防止）。長い窓は、窓をかけてから 4 つ（2 つ）ずつ足して 1024 点の FFT にする（軽くするため。使うのは低い本だけ）。帯の値は二乗平均（8bit の目盛りの 2 乗）。
+    - `SpectrumMapper`：高さの付け方は v2.13 と同じ考え方（下の「動きと高さ」）で、数字はここにある。v2.15 で変えたところ：高音の持ち上げは +2 dB/オクターブ（1kHz から。上限 +6 dB）、`SMOOTH_ATTACK` 0.9、`DYN_K` 3.4、`TOP_EXT_DB` 16、**基準（最近いちばん強い帯）より 20 dB 以上弱い帯は急に下げる**（`SHAPE_KNEE_DB`・`SHAPE_STEEP_K`。約 40 dB 下で見えなくなる）、基準より 25〜46 dB 弱い帯は上がれる高さに上限（`CAP_FROM_DB`・`GATE_BELOW_TOP_DB`）、音の無い帯は 8bit の細かさの雑音＋8 dB から出す（`GATE_MARGIN_DB`）。
+    - **全体がそろって下がったときは戻す（`SpectrumMapper.commonDip`）**：Android の Visualizer（NORMALIZED）は、音声の処理 1 回分（約 10〜40ms）ごとに最大値をそろえるので、大きな音（バスドラム）の間だけ、ほかの全部の帯が同じ量だけ小さく読める。短い窓の帯のうち鳴っている帯の「いまの値 − 平均」が、そろって（幅 3 dB 以内で）1.5 dB 以上下がっていたら、その分（上限 8 dB）を戻す。帯ごとに下がり方が違うとき（楽器が止まった）は戻さない。
+    - 数字の合わせ方：作業用フォルダで、楽器ごとに分けた試験用の音（バスドラム・ベース・歌・ハイハット・スネア・和音）とそれを混ぜた曲、v2.13 の調整に使った録画の音を、v2.13 の計算のまねと新しい計算の両方に通し、平均の高さ・一番上の段にいる時間・上がる／下がる速さ・動きの量がほぼ同じになるようにした（Python の試作と Kotlin の出力が一致することも確かめた）。なお、v2.13 の調整に使った利用者の録画の音は、スマホのスピーカーをマイクで拾ったもので低音が入っていなかった（低音の確認には使えない）。もっと高く・低く・速く・遅くと言われたら `SpectrumMapper` の `DYN_K`・`SHOW_ABOVE_DB`・`TOP_LEVEL`・`SMOOTH_ATTACK` と、`PlayerRenderer` の `FALL_PER_SEC` を直す。
+  - **動きと高さ（v2.10。下の数字は v2.13 までのもの。考え方は同じで、いまの数字は `SpectrumMapper` にある）**：v2.9 で「見本のようになめらかに」と言われて時間のならし・ばねを強くしたら、v2.10 で「遅すぎてほとんど動かない」「高すぎて上に張り付く」と言われた。いまは：
     - `SpectrumEngine`（v2.13 の数字）：解析の帯は `BANDS` 48（v2.12 までは 24）。低い帯は FFT の 1 本（約 47Hz）より狭いので、どの帯も前の帯より後ろの本から読む（`edges` の補正。低いところは 1 帯 = 1 本。v2.12 までは低い 4 帯が同じ 1 本を読んで、左端の数本が同じ高さで動いていた）。帯の値の下限は `FLOOR_POW` 1（FFT の 1 目盛り。v2.12 までは -60 dB で、音の小さい高音の帯が少し鳴るたびに天井まで上がっていた）で、床から `GATE_DB` 6 dB までの帯は高さを 0〜1 倍に絞る（音の無い帯は消す。絞らないと、床にいる帯が中ほどの同じ高さで並ぶ）。帯の dB を隣の帯と軽くならし（`SMOOTH_NEIGHBOR` 0.15）、時間のならしは FFT のばらつきを抑える程度（`SMOOTH_ATTACK` 0.8・`SMOOTH_RELEASE` 0.6／25ms）。高さは「帯の最近の平均（下がるときは `BAND_AVG_SEC` 0.6 秒、上がるときは `BAND_AVG_UP_SEC` 0.25 秒で追う。v2.12 は上がるときも 0.6 秒で、急に大きくなると 1 秒近く天井に張り付いた）と全体の基準（最近いちばん大きい帯。`TOP_RELEASE_DB_PER_SEC` 10 dB/秒で下がる）の差 × `SPEC_K` 0.35 ＋ いまの値と平均の差 × `DYN_K` 3.0」を、基準の `SHOW_BELOW_DB` 32 dB 下〜`SHOW_ABOVE_DB` 10 dB 上に写して `TOP_LEVEL` 0.88 まで、10 dB 上を超えた分だけ `TOP_EXT_DB` 12 dB で残りの上（天井まで）を使い、× 強弱（`LOUD_MIN` 0.35〜1）。ずっと鳴る音は中ほど、天井はとても強い拍だけ。音量が測れない端末は強弱 1。
     - **v2.13 の調整は、利用者の画面録画（横画面の LED 49 本 × 18 段）を 1 コマずつ測った値に合わせた**。作業用フォルダで、録画の音を Visualizer と同じ形で解析するまね（`EffectVisualizer` の NORMALIZED＝音声のかたまりごとの 2 のべき乗の拡大、8bit、`Visualizer.doFft` の固定小数点の FFT（≈ 1024 点の DFT ÷ 128）、音量（`MeasurementPeakRms`）は約 0.4 秒の平均）を作り、v2.12 の計算が録画（平均 0.455・天井に届くコマ 25.9%）と合うことを確かめてから比べた（録画は 0.333 秒遅れ。録画の音は AAC で 10 kHz より上が削られていたので、高音のざわめきとハイハットを足して補った）。結果（横画面）：一番上の段にいる時間 2.4% → 0.4%（右端 5 本 13% → 0.3%）、点灯中に左端 5 本が隣と同じ高さ 85% → 17%、平均の高さ・上から 1 割の高さはほぼ同じ。
     - `PlayerRenderer.stepLevel`：上がるのは時定数 `RISE_TAU` 0.012 秒、下がるのは一定の速さ `FALL_PER_SEC` 4.0（解析の値/秒）。画面の伸び（`Layout.gain`）は v2.12 からどの配置も 1.0（v2.11 までは横画面 1.25・2 画面の横長 1.2 で、横画面だけ上に張り付いて見えた）。
@@ -66,6 +78,7 @@
   - **24 本で描く表示（v2.13）**：なめらかなバー・ミラー・ライン・ドット・メーターは、`SpectrumPainter` の中の 24 本用の描き手（`coarse`）に、2 つの帯をまとめて（高さは平均・ピークは大きい方、メーターの入力も平均）渡して描く（見た目は v2.12 までと同じ）。見本（`drawDemo`）も同じ。LED とカーオーディオ 3 種は 48 の帯をそのまま使う。
   - **高音の雑音（v2.11）**：`SpectrumEngine` の高音の持ち上げ（4 dB/オクターブ）に上限 `TILT_MAX_DB`（+9 dB）、FFT の 1 本ごとの強さから `QUANT_NOISE_POW`（2）を引く。上限が無いと 8bit の FFT の雑音が持ち上がって、右端の数本が同じ高さで上に張り付いていた（利用者のスクリーンショット）。v2.13 で下限 `FLOOR_POW`・`GATE_DB`（上の「動きと高さ」）を足した。
   - 模様・グラデーション・メーターの目盛り板は、区画・色・種類が変わったときだけ作り直します（作り直しの判断は数値の比較。文字列のキーを毎フレーム作らない）。目盛り板の古い画像は `recycle()` しない（描画中の画面が使っていることがある）。
+  - **再生ボタン・再生位置のバーの色（v2.15）**：色の設定が「ジャケットの色」（`THEME_ART`）のときは、`PlayerRenderer.updateAccent` が、スペアナのバーと同じ色（`artBarReady` → `gradientFor` の上の色）を使う（それまでは別の抽出 `extractAccent` で、スペアナと違う色になることがあった。利用者の報告）。ほかの色の設定では、これまでどおり `extractAccent` の淡い色。
   - 色は `SpectrumStyle.colorsFor`（帯ごとの下・上の色）→ `painter.setColors`。決まった色は `fixedColors`、ジャケットの色・カラーコードは `gradientFor`（その色を中ほどに、下を濃く・上を明るく、色合いを少しずらす）。ジャケットの代表色は `ArtPalette.dominant`（色合い 24 区分の重み付き。白黒は銀色）をジャケットの別スレッドで求めます。
   - 保存する番号（色 `bar_theme` の 0〜5、表示 `bar_visual`）は前の版と互換にしてあります。番号を並べ替えないでください（選ぶ画面の並びは `PICKER_ORDER`）。
   - 音楽の画面でスペアナを長押し（`PlayerView.onSpectrumLongPress`）すると表示の種類を順に切り替えます（20 回タップの数には入れない）。
@@ -76,6 +89,8 @@
   - このアプリは Android Auto の `NavigationManager.navigationStarted()` を呼びません（呼ぶと、ナビ中のほかのアプリ（Google マップ）のナビが止められる可能性がある）。ナビ連携のため、今後も呼ばないでください。
   - **音楽の画面の案内の帯（v2.6）**：`NavNotifications` が読んだ案内を `com.example.spectrum.Guidance` に入れ（`Prefs.navBanner`。経路合わせ `Prefs.navSync` とは別にオン・オフ）、`PlayerRenderer` がスペアナの区画の上を帯にして描きます（`guideSplit`・`drawGuidance`。一般道でも、スマホ・車の両方）。矢印は通知の大きなアイコン（1 色の図形なら白くする `maneuverIcon`）、無ければ案内の文から `Guidance.arrowFor` で推定して描く。帯のタップはスマホだけ Google マップを開く（`PlayerView.onGuideTap` → `NavNotifications.openNavApp`）。`NavNotifications.install` はエンジンの起動・`MainActivity`・`HighwayCarAppService` のどこから呼んでもよい（エンジンが動いていなくても帯を出すため）。
 - **再生位置のバー（v2.14）**：スマホはバーに触れたら指に合わせて動かし（`PlayerView` → `PlayerRenderer.isSeekAt` / `scrubTo` / `endScrub`。動かしている間は丸いつまみと、上に移る先の時刻の吹き出し）、離した位置へ `NowPlaying.seekToFraction`。v2.13 までは離したときだけ位置が変わっていた。`seekToFraction` は移る先（`pendingSeekMs`）を覚え、音楽アプリが新しい位置を知らせる（`PlaybackState.lastPositionUpdateTime` が新しくなる）まで最大 2 秒はその位置を表示する（一瞬前の位置に戻って見えないように）。車の画面はタップで移る（引きずりの開始位置が分からないため）。
+- **下のバーの曲名（v2.15）**：ハイウェイだけの表示のとき、`ModeBarRenderer.drawNowPlaying` が曲名・アーティスト名を出す。収まらないときは音楽の画面と同じ動きで流す（`drawMarquee`：先頭で 3 秒 → 文字の大きさ × 2 倍/秒で右から左 → 末尾で 1.5 秒 → 先頭へ）。流している最中は `marqueeMoving`（車は 30fps で描く・スマホは `postInvalidateOnAnimation`）、止まっている間は `marqueeWaitMs` 後に描き直す。
+- **Android Auto の切断後の常駐（v2.15）**：`HighwaySession.onDestroy`（最後の接続が終わったとき）→ `CarAutoStop.onCarDisconnected`。判定時間（`Prefs.carStopAfter`：3 分・10 分・終了しない）たっても、車がつながり直さず、スマホの画面（`AppPresence.phoneVisible`。Activity の数を数える）でも開いていなければ、`TrackingService.stop` とエンジンの停止。判定は `core` の `DisconnectPolicy`（高速道路を 20km/h 以上で走行中は待つ）。時間は、メインスレッドのタイマー・エンジンの状態が届くたび（`TrackingService` の `listener`）・アラーム（`setAndAllowWhileIdle`。`TrackingService` が受信）の 3 通りで確かめる（スマホが眠るとタイマーが進まないため）。車のメニューの電源のボタンは `CarAutoStop.exitRequested` を立ててから `finishCarApp()`（すぐ止める）。確認用：開発者向け設定の「接続が切れたあとの終了（確認用）」。
 - **再生ボタン（v2.11）**：`NowPlaying.playPause` の再生は `requestPlay`：送ったあと 0.7 秒で再生が始まったか確かめ（`playingNow`：覚えているセッション・`MediaTracker.anyPlaying`・`AudioManager.isMusicActive`）、始まっていなければ ① `MediaTracker.pick` して送り直す＋メディアキーの PLAY → ② 通知の「再生」ボタン（`MediaListenerService.pressPlayAction`。名前で「再生」を探し「一時停止」は押さない）→ ③ `MediaResumer.play(resumeOnly = true)`。どれも「再生」だけ（切り替えを送らない）。一時停止を押したら `playRequest` を進めて確かめをやめる。`MediaTracker` はセッションが終わったら通知の控え（`notifControllers`）からも外す。利用者の報告：一時停止してしばらくたつと再生ボタンが効かない（曲情報は出たまま、通知からは再生できる）。
 - **電池**：`PowerPolicy` が GPS の間隔とセンサーの ON/OFF を決めます（高速道路上・近く・デモ・設定で節約オフのときは常に毎秒）。
 - **設定画面（v2.4、v2.5 で項目を追加）**：スマホの下部バーの［⋮］で `ui/SettingsActivity`（1 画面にまとめたもの。部品は `ui/SettingsUi`、ダイアログは `ui/SettingsDialogs`）。値は `data/Prefs` に保存し、選んだらすぐ反映（保存ボタンなし）。
@@ -87,9 +102,12 @@
 
 ## ビルドとテスト
 
-- テスト：`./gradlew :core:test`（JVM のみ。v2.5 時点で 69 件すべて成功）。
+- テスト：`./gradlew :core:test`（JVM のみ。v2.15 時点で 91 件すべて成功）。
 - アプリ：`./gradlew :app:assembleRelease`（Android SDK が必要）。CI（`.github/workflows/build-app.yml`）は `:core:test :app:assembleRelease`（署名鍵があれば `:app:bundleRelease` も）を実行します。
 - 地図データ：`.github/workflows/build-data.yml`（build-hwdb）が毎週作って `hwdb-latest` リリースに公開します。build-app はそれを同梱します。
+- **主要バイパスの判定（v2.15 で作り直し。`core/graph/BypassClassifier`）**：利用者の報告「バイパスでない一般道が、5km 先のバイパスの IC の延長として対象になった」（国道 23 号の名四国道）。いまの決まり：①信号・横断歩道・踏切のノード（`OsmDataSet.barrierNodes`。データ作成ツールの `OsmXmlLoader`・Overpass の取得の両方で読む）と、国道どうしの平面交差を「区切り」にする（反対車線にも写し、ウェイの途中なら分ける `prepare`）、②IC の間（10km 以内）・前後 1.5km を候補にする（区切りはまたがない）、③区切り無しでつながったひと続きの区間に、出口の IC が 2 か所以上・長さ 3km 以上のときだけ採用、④自動車専用・有料の区間どうしの間（道のりが両端の距離の 1.3 倍＋300m 以内。峠の旧道を除くため）と、そこから続く IC のある区間は採用。
+  - 判定を変えたら、**確認用のワークフロー check-bypass**（`.github/workflows/check-bypass.yml`。`claude/**` のブランチで判定・datatool を変えて push すると自動で動く。全国のデータで判定して一覧を出すだけで、公開はしない）の結果を見る。一覧は記録（ログ）の最後に、名前ごとにまとめて出る（`BypassClassifier.summary`）。この作業環境からは記録のファイルを直接取れない（保存先のホストが許可されていない）ので、GitHub の MCP の `get_job_logs`（`return_content: true`・`tail_lines` は 170 くらい）で読む。細かい一覧は Artifacts の `bypass-report`。
+  - v2.15 の確認結果（2026-11-12 の全国データ）：信号・横断歩道・踏切は約 10.3 万か所、採用 93 区間・921km（上下線を別々に数えた合計）。名四国道は対象外、名豊道路（151km・IC 36）・衣浦豊田道路・静清バイパス・新潟の各バイパスなどは採用。IC が 1 か所以下しか登録されていないバイパス（松永道路・豊田南バイパスなど）は対象外（表示する IC が無いので、そのままにしている）。
 - **`:app` は実機・CI でしか確認できていません**。これまでの作業環境では Android SDK を使った完全なビルドができず、描画は AWT の代替実装で `PlayerRenderer` / `PanelRenderer` を PC 上で描いてプレビュー画像（`docs/preview_*.png`）を作っていました（そのプレビュー用の道具はリポジトリに入っていません）。
 - 変更後は少なくとも `:core:test` を通し、`:app` は Kotlin のコンパイルが通ることを確認してください。
   - v2.4 の作業環境では dl.google.com（Android SDK・Google Maven）につながらず、ルートの `build.gradle.kts` が AGP を読むため `./gradlew :core:test` もそのままでは動きませんでした。作業用フォルダ（リポジトリの外）に Gradle の小さなビルドを作り、`:core` はリポジトリのソースを指してテスト、`:app` は Maven Central の `org.robolectric:android-all:16-robolectric-13921718`（Android 16 のフレームワーク）と、androidx（Car App Library 1.7.0・lifecycle・core）・Shizuku・`R`・`BuildConfig` の代用品（使っている部分だけの Java のスタブ）で Kotlin をコンパイルして確認しました（この道具もリポジトリには入れていません）。
@@ -106,9 +124,19 @@
 - 改行コードは `.gitattributes` で LF に統一しています（`*.bat` / `*.cmd` だけ CRLF）。
 - 新しい権限を追加したり、取得するデータを変えたりしたら、`docs/PRIVACY.md` も更新してください。
 
-## 実機で未確認の点（v2.14 時点）
+## 実機で未確認の点（v2.15 時点）
 
 利用者の実機での確認待ちです。報告があればここから調べてください。
+
+v2.15 で入れたもの:
+
+- スペアナの新しい解析：実際の曲で、低音が左・歌が中ほど・ハイハットが右に出るか。大きさ・動きが v2.14 と同じくらいか。**波形がつながるか**（診断画面の「波形の読み取り」：履歴が 8192 まで伸びるか、つなぎ直しが増え続けないか。端末・Android の版・Android Auto の音声の経路で違う可能性）。つながらない端末では低音の帯が隣どうし似た動きになる（細かさが約 47Hz になる）。解析の重さ（80 回/秒）。「そろって下がったら戻す」が、曲によって不自然に見えないか。
+- 車の画面のカクつき：出す時刻をそろえた効果（スマホの画面が消えているとき・点いているとき）。ハイウェイ側の表示が 1 フレーム遅れて更新されることによる違和感が無いか。
+- 車のメニュー：照明の色が押すたびに切り替わるか（落ちないか）。施設一覧・SA/PA の切り替え（いったん最初の画面に戻ってから開き直す動き）・動作状態・メニューのスイッチ。ほかに落ちる画面が無いか。
+- 下のバーの曲名が流れるか（車の画面・スマホの横画面）。
+- 切断後：3 分後に通知が消えて止まるか（スマホが眠っていても）。つなぎ直したら続くか。高速道路を走行中に切れたとき止まらないか。車のメニューの電源のボタンですぐ止まるか。スマホで開いているときは止まらないか。
+- バイパス：名四国道など一般道が対象外になったか。いつも使うバイパスが対象のままか（対象外になったものがあれば、場所を聞いて check-bypass の一覧と照らす）。
+- 「ジャケットの色」のとき、再生ボタン・再生位置のバーがスペアナと同じ色か（白黒のジャケットでは銀色）。
 
 v2.14 で入れたもの:
 
