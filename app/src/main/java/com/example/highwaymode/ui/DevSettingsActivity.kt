@@ -178,9 +178,9 @@ class DevSettingsActivity : Activity() {
             demo.value(if (EngineHost.demoRunning) "走行中（押すと停止）" else if (EngineHost.running) "停止中" else "使えません（位置情報の許可が必要）")
         }
 
-        // ---- Google マップのナビ連携（確認用）
-        val gm = ui.section(c, "Google マップのナビ連携（確認用）", "うまく合わないときは、ここの内容をコピーして送ってください（通知の言い回しに合わせて直せます）。")
-        val navRow = ui.actionRow(gm, "最後に受け取ったナビの通知", "通知の文字（部品の名前つき）・読み取った距離と案内・照合の結果") {
+        // ---- ナビアプリの連携（確認用）
+        val gm = ui.section(c, "ナビアプリの連携（確認用）", "案内が出ない・合わないときは、ここの内容をコピーして送ってください（アプリごとの通知の言い回しに合わせて直せます）。")
+        val navRow = ui.actionRow(gm, "最後に受け取ったナビの通知", "アプリの名前・案内として扱ったか・通知の文字（部品の名前つき）・読み取った距離と案内・照合の結果") {
             showNavDebug()
         }
         refreshers += {
@@ -272,6 +272,8 @@ class DevSettingsActivity : Activity() {
         val nav = EngineHost.latest?.nav
         val msg = buildString {
             append("受信: ").append(if (NavNotifications.lastReadWallMs == 0L) "まだありません" else Formats.clock(NavNotifications.lastReadWallMs)).append('\n')
+            append("アプリ: ").append(NavNotifications.lastApp ?: "—").append('\n')
+            append("判定: ").append(NavNotifications.lastVerdict ?: "—").append('\n')
             append("ナビ中: ").append(if (NavNotifications.active) "はい" else "いいえ").append('\n')
             append("距離: ").append(NavNotifications.lastDistanceM?.let { Formats.distance(it) } ?: "読み取れず").append('\n')
             append("案内: ").append(NavNotifications.lastText ?: "—").append('\n')
