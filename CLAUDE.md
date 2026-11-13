@@ -7,7 +7,7 @@
 - Android アプリ「Spectrum ハイウェイ」。スマホと Android Auto（車の画面）に対応。
 - 音楽プレーヤー表示とスペクトラムアナライザーの **Spectrum** と、高速道路の前方の IC / JCT / SA / PA までの距離・到着予定時刻を出す **ハイウェイモード** を 1 つにしたもの。
 - 高速道路の外では Spectrum を全画面表示。高速道路に入ると自動で 2 画面（左 Spectrum : 右ハイウェイ = 4 : 5）。
-- 現在の版は **v2.15.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
+- 現在の版は **v2.16.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
 
 ## 利用者について
 
@@ -22,8 +22,8 @@
 
 | モジュール | 内容 |
 |---|---|
-| `:core` | Android に依存しない演算（純粋な Kotlin/JVM）。地図データ（HWDB）、道路グラフ、マップマッチング、前方経路（カーナビの案内に合わせる `route/NavGuide`）、到着予測、渋滞、オービス、エンジン統合（`HighwayEngine`）、電池の節約の判定（`PowerPolicy`）、Android Auto の切断後に常駐を止める判定（`engine/DisconnectPolicy`）、画面の切替判定と区画割り（`dual/HighwayPresence`, `dual/DualGeometry`）、スペアナの解析（`audio/WaveStitcher`・`BandAnalyzer`・`SpectrumMapper`。v2.15）、主要バイパスの判定（`graph/BypassClassifier`）。**JVM 上でテストできる** |
-| `:app` | Android アプリ。`com.example.spectrum`（Spectrum：音声解析 `SpectrumEngine`、音声の自動探索 `SessionProber`、描画 `PlayerRenderer` / `PlayerView`、スペアナの表示の種類ごとの描画 `SpectrumPainter`、昔のカーオーディオの 3 つの表示 `CarAudioPainter`、ジャケットの色 `ArtPalette`、見た目の設定 `SpectrumStyle`、通知の受け渡し `NotificationHooks`、音楽の画面に出すカーナビの案内 `Guidance`）と `com.example.highwaymode`（スマホ画面、常駐サービス、`engine/EngineHost`、`car/DualCarScreen`（Android Auto）、`ui/PanelRenderer`（ハイウェイ側の描画）、`ui/SettingsActivity`（設定画面）・`ui/DevSettingsActivity`（開発者向け設定）・`ui/SpectrumPickers`（スペアナの見本・選ぶ画面）、`nav/NavNotifications`（Google マップのナビの通知の読み取り）、`car/CarTemplates`（車の画面の決まりと共通の部品）、`CarAutoStop`（切断後に常駐を止める）） |
+| `:core` | Android に依存しない演算（純粋な Kotlin/JVM）。地図データ（HWDB）、道路グラフ、マップマッチング、前方経路（カーナビの案内に合わせる `route/NavGuide`、ナビの通知の文字の読み取りと案内かどうかの判定 `route/NavText`。v2.16）、到着予測、渋滞、オービス、エンジン統合（`HighwayEngine`）、電池の節約の判定（`PowerPolicy`）、Android Auto の切断後に常駐を止める判定（`engine/DisconnectPolicy`）、画面の切替判定と区画割り（`dual/HighwayPresence`, `dual/DualGeometry`）、スペアナの解析（`audio/WaveStitcher`・`BandAnalyzer`・`SpectrumMapper`。v2.15。高さと曲の音量は v2.16 で作り直し）、主要バイパスの判定（`graph/BypassClassifier`）。**JVM 上でテストできる** |
+| `:app` | Android アプリ。`com.example.spectrum`（Spectrum：音声解析 `SpectrumEngine`、音声の自動探索 `SessionProber`、描画 `PlayerRenderer` / `PlayerView`、スペアナの表示の種類ごとの描画 `SpectrumPainter`、昔のカーオーディオの 3 つの表示 `CarAudioPainter`、ジャケットの色 `ArtPalette`、見た目の設定 `SpectrumStyle`、通知の受け渡し `NotificationHooks`、音楽の画面に出すカーナビの案内 `Guidance`）と `com.example.highwaymode`（スマホ画面、常駐サービス、`engine/EngineHost`、`car/DualCarScreen`（Android Auto）、`ui/PanelRenderer`（ハイウェイ側の描画）、`ui/SettingsActivity`（設定画面）・`ui/DevSettingsActivity`（開発者向け設定）・`ui/SpectrumPickers`（スペアナの見本・選ぶ画面）、`nav/NavNotifications`（ナビのアプリ（Google マップなど）の通知の読み取り）、`car/CarTemplates`（車の画面の決まりと共通の部品）、`CarAutoStop`（切断後に常駐を止める）） |
 | `:datatool` | PC・CI 用の地図データ（HWDB）作成ツール |
 
 ファイル構成の詳細は README の「ファイル構成」。
@@ -64,9 +64,15 @@
     - `SpectrumEngine`：`getWaveForm` を `READ_PERIOD_NS`（12.5ms）ごとの決まった時刻に読み（スレッドは THREAD_PRIORITY_DISPLAY、`LockSupport.parkNanos`）、毎回 解析して配る（80 回/秒）。音量（`getMeasurementPeakRms`）は 1 回おき。
     - `WaveStitcher`：続けて読んだ波形の重なり（同じ値）を探してつなぎ、最大 8192 サンプルの履歴にする（見積もりのずれに近い順に探す。重なりは 48 サンプル以上。少し戻ったときは足さない。重なりが無くても、時間の見積もりが 1 回ぶんの 1.6 倍以内で、つなぎ目がなめらかなら「すぐ続きの波形」としてつなぐ（読む位置が処理 1 回分ずつ進む端末のため。実機では未確認の想定）。つながらなければその 1 回ぶんから作り直す）。診断画面（開発者向け設定 → Spectrum の診断）の「波形の読み取り」に、履歴の長さ・つなぎ直した回数・続きとしてつないだ回数が出る。**つなぎ直しが多い端末では低音の細かさが落ちる**ので、報告があればここを見る。
     - `BandAnalyzer`：帯は 48（`SpectrumEngine.BANDS`）。境目は 35Hz〜16kHz を対数で等分（幅は 解析の細かさ sr/4096 ≈ 12Hz より狭くしない。`bandEdges`）。48kHz で、帯 12 ≈ 216Hz・帯 24 ≈ 907Hz・帯 36 ≈ 3.8kHz。帯の幅に応じて窓を変える：低音は 4096 サンプル（新しい側 1024 で速く落とす左右非対称の窓。出だしへの反応を速くする）、中低音は Hann 2048、それより上は Hann 1024（少しずらした 2 回の大きい方。短い音の取りこぼし防止）。長い窓は、窓をかけてから 4 つ（2 つ）ずつ足して 1024 点の FFT にする（軽くするため。使うのは低い本だけ）。帯の値は二乗平均（8bit の目盛りの 2 乗）。
-    - `SpectrumMapper`：高さの付け方は v2.13 と同じ考え方（下の「動きと高さ」）で、数字はここにある。v2.15 で変えたところ：高音の持ち上げは +2 dB/オクターブ（1kHz から。上限 +6 dB）、`SMOOTH_ATTACK` 0.9、`DYN_K` 3.4、`TOP_EXT_DB` 16、**基準（最近いちばん強い帯）より 20 dB 以上弱い帯は急に下げる**（`SHAPE_KNEE_DB`・`SHAPE_STEEP_K`。約 40 dB 下で見えなくなる）、基準より 25〜46 dB 弱い帯は上がれる高さに上限（`CAP_FROM_DB`・`GATE_BELOW_TOP_DB`）、音の無い帯は 8bit の細かさの雑音＋8 dB から出す（`GATE_MARGIN_DB`）。
-    - **全体がそろって下がったときは戻す（`SpectrumMapper.commonDip`）**：Android の Visualizer（NORMALIZED）は、音声の処理 1 回分（約 10〜40ms）ごとに最大値をそろえるので、大きな音（バスドラム）の間だけ、ほかの全部の帯が同じ量だけ小さく読める。短い窓の帯のうち鳴っている帯の「いまの値 − 平均」が、そろって（幅 3 dB 以内で）1.5 dB 以上下がっていたら、その分（上限 8 dB）を戻す。帯ごとに下がり方が違うとき（楽器が止まった）は戻さない。
+    - `SpectrumMapper`：高さの付け方は v2.13 と同じ考え方（下の「動きと高さ」）に、v2.16 で「全体の高さの自動合わせ」と「曲の音量」を足した（下の「高さと曲の音量（v2.16）」）。数字はここにある。v2.15 で変えたところ：高音の持ち上げは +2 dB/オクターブ（1kHz から。上限 +6 dB）、`SMOOTH_ATTACK` 0.9、`DYN_K` 3.4、`TOP_EXT_DB` 16、**基準（最近いちばん強い帯）より 20 dB 以上弱い帯は急に下げる**（`SHAPE_KNEE_DB`・`SHAPE_STEEP_K`。約 40 dB 下で見えなくなる）、基準より 25〜46 dB 弱い帯は上がれる高さに上限（`CAP_FROM_DB`・`GATE_BELOW_TOP_DB`）、音の無い帯は 8bit の細かさの雑音＋8 dB から出す（`GATE_MARGIN_DB`）。
+    - **全体がそろって下がったときは戻す（`SpectrumMapper.commonDip`）**：Android の Visualizer（NORMALIZED）は、音声の処理 1 回分（約 10〜40ms）ごとに最大値をそろえるので、大きな音（バスドラム）の間だけ、ほかの全部の帯が同じ量だけ小さく読める。短い窓の帯のうち鳴っている帯の「いまの値 − 平均」が、そろって（幅 3 dB 以内で）1.5 dB 以上下がっていたら、その分（上限 `DIP_MAX_DB`。v2.15 は 8 dB、v2.16 から 5 dB）を戻す。帯ごとに下がり方が違うとき（楽器が止まった）は戻さない。
     - 数字の合わせ方：作業用フォルダで、楽器ごとに分けた試験用の音（バスドラム・ベース・歌・ハイハット・スネア・和音）とそれを混ぜた曲、v2.13 の調整に使った録画の音を、v2.13 の計算のまねと新しい計算の両方に通し、平均の高さ・一番上の段にいる時間・上がる／下がる速さ・動きの量がほぼ同じになるようにした（Python の試作と Kotlin の出力が一致することも確かめた）。なお、v2.13 の調整に使った利用者の録画の音は、スマホのスピーカーをマイクで拾ったもので低音が入っていなかった（低音の確認には使えない）。もっと高く・低く・速く・遅くと言われたら `SpectrumMapper` の `DYN_K`・`SHOW_ABOVE_DB`・`TOP_LEVEL`・`SMOOTH_ATTACK` と、`PlayerRenderer` の `FALL_PER_SEC` を直す。
+  - **高さと曲の音量（v2.16 で作り直し。`SpectrumMapper`）**：利用者の報告「それほど大きい音でないのに上に張り付く」「曲の静かな前半とサビで強弱が変わらない」「まだ聞こえる音と合っていない」。利用者の画面録画 2 本（横画面の LED 49 本 × 18 段。作業用フォルダの `rec16/measure.py` で 1 コマずつ測った）で、v2.15 は平均の高さ 0.56〜0.61（v2.13 は 0.455）、上の 2 段にいる時間 8〜12%（左端の低音 6 本は 14〜22%）、前奏 0.44・A メロ 0.56・サビ 0.61 だった。原因は、v2.15 の調整に使った音（マイクで拾った録画の音・合成した音）より、スマホの中の実際の音の方が拍の跳ね上がりがずっと大きかったこと（録画の音から実機の統計に合う入力を作ると、上向きの振れ 1.4〜2.2 倍・低音に拍ごとの山 10〜16 dB・全体 +8 dB くらい）と、曲の音量の基準が「最近いちばん大きかった音」（18 dB 幅・1 dB/秒で下がる）で、静かな部分が続くと基準が下がって元の高さに戻っていたこと。いまの形：
+    - **上向きの振れの頭打ち**：「平均からの差 × `DYN_K` 3.0」が正のときは `DYN_UP_MAX_DB` 18 ×（1 − e^(−x/18)）。`SPEC_K` 0.35 → 0.6（強い音域は高く、弱い音域は低く）。
+    - **全体の高さの自動合わせ**（`autoDb`）：鳴っている帯（gate > 0.5）の位置（基準からの dB を −`SHOW_BELOW_DB`〜`SHOW_ABOVE_DB` で切った値）の平均を `AUTO_TARGET_DB` −10 に、時定数 `AUTO_TAU_SEC` 4 秒で合わせる（範囲 −24〜+10、最初 −6。無音の間も保つ）。さらに、上の 2 段あたり（`TOP_LEVEL` より上の部分の半分 `HIT_AT`）に届いた帯の割合 × `HIT_PULL_DB_PER_SEC` 25 dB/秒だけ下げる。
+    - **曲の音量**（`loudnessFactor`）：`MeasurementPeakRms` の実効値と最大値（mRms・mPeak）を使う。最大値の記憶 `peakRefDb`（すぐ上がり、`PEAK_RELEASE_DB_PER_SEC` 0.1 dB/秒で下がる）との差「実効値 − 最大値の記憶」（音の詰まり具合。音量つまみによらない。いまどきの曲のサビ −8〜−10・A メロ −12〜−14・静かな前奏 −18 以下）を、基準 `loudRefDb`（最初 `LOUD_ANCHOR_DB` −9。1.5 秒の平均がこれより大きければ上がる（上限 −7）、下がるのは 0.025 dB/秒。最近の大きさが基準より 5 dB 以上小さいまま 20 秒続いたら 0.12 dB/秒。下限 −18）と比べ、基準の 1 dB 下まで 1 倍、8 dB 下で `LOUD_MIN` 0.25 倍。スマホの音量を**下げた**ときだけ `resetLoudness`（最大値の記憶を捨てる。上げたときは記憶がすぐ追従する）。測れない端末は 1 倍。診断画面の「波形の読み取り」の 2 行目に、実効値・最大・記憶・大きさ・基準・全体の上げ下げが出る。
+    - 結果（同じ録画の音から作った実機に近い入力での計算）：平均の高さ 0.39〜0.49、上の 2 段にいる時間 0〜1.4%（左端の低音 6 本 0〜4.6%）、前奏 0.23・A メロ 0.36・サビ 0.44。楽器ごとの音を混ぜた試験用の曲で、楽器の音の大きさとその音域のバーの高さの相関はベース 0.38 → 0.59・歌 0.24 → 0.38・和音 0.17 → 0.63（ドラム類は 0.6〜0.8 でほぼ同じ）。Python の試作（`tune3/map17.py` の `Engine17`）と Kotlin の出力の差は平均 0.00004。
+    - 調整の道具（作業用フォルダ。リポジトリには入れていない）：`tune3/rec16.py`（録画の読み込み）・`sur.py`（録画の音から低音を補った入力）・`dev17.py`（実機の統計に合う入力の当てはめ）・`try18.py`（いくつかの入力と合成した曲でまとめて比べる）・`loud19.py`（曲の部分ごとの音量）・`review16.py`（楽器ごとの合い方）。もっと高く・低く・強弱を強く・弱くと言われたら、`AUTO_TARGET_DB`・`DYN_UP_MAX_DB`・`LOUD_RANGE_DB`・`LOUD_MIN`・`LOUD_ANCHOR_DB` を直す。**実機の音（スマホの中の音）はこの作業環境では取れない**ので、報告があれば録画と診断画面の「音量の読み取り」をもらう。
   - **動きと高さ（v2.10。下の数字は v2.13 までのもの。考え方は同じで、いまの数字は `SpectrumMapper` にある）**：v2.9 で「見本のようになめらかに」と言われて時間のならし・ばねを強くしたら、v2.10 で「遅すぎてほとんど動かない」「高すぎて上に張り付く」と言われた。いまは：
     - `SpectrumEngine`（v2.13 の数字）：解析の帯は `BANDS` 48（v2.12 までは 24）。低い帯は FFT の 1 本（約 47Hz）より狭いので、どの帯も前の帯より後ろの本から読む（`edges` の補正。低いところは 1 帯 = 1 本。v2.12 までは低い 4 帯が同じ 1 本を読んで、左端の数本が同じ高さで動いていた）。帯の値の下限は `FLOOR_POW` 1（FFT の 1 目盛り。v2.12 までは -60 dB で、音の小さい高音の帯が少し鳴るたびに天井まで上がっていた）で、床から `GATE_DB` 6 dB までの帯は高さを 0〜1 倍に絞る（音の無い帯は消す。絞らないと、床にいる帯が中ほどの同じ高さで並ぶ）。帯の dB を隣の帯と軽くならし（`SMOOTH_NEIGHBOR` 0.15）、時間のならしは FFT のばらつきを抑える程度（`SMOOTH_ATTACK` 0.8・`SMOOTH_RELEASE` 0.6／25ms）。高さは「帯の最近の平均（下がるときは `BAND_AVG_SEC` 0.6 秒、上がるときは `BAND_AVG_UP_SEC` 0.25 秒で追う。v2.12 は上がるときも 0.6 秒で、急に大きくなると 1 秒近く天井に張り付いた）と全体の基準（最近いちばん大きい帯。`TOP_RELEASE_DB_PER_SEC` 10 dB/秒で下がる）の差 × `SPEC_K` 0.35 ＋ いまの値と平均の差 × `DYN_K` 3.0」を、基準の `SHOW_BELOW_DB` 32 dB 下〜`SHOW_ABOVE_DB` 10 dB 上に写して `TOP_LEVEL` 0.88 まで、10 dB 上を超えた分だけ `TOP_EXT_DB` 12 dB で残りの上（天井まで）を使い、× 強弱（`LOUD_MIN` 0.35〜1）。ずっと鳴る音は中ほど、天井はとても強い拍だけ。音量が測れない端末は強弱 1。
     - **v2.13 の調整は、利用者の画面録画（横画面の LED 49 本 × 18 段）を 1 コマずつ測った値に合わせた**。作業用フォルダで、録画の音を Visualizer と同じ形で解析するまね（`EffectVisualizer` の NORMALIZED＝音声のかたまりごとの 2 のべき乗の拡大、8bit、`Visualizer.doFft` の固定小数点の FFT（≈ 1024 点の DFT ÷ 128）、音量（`MeasurementPeakRms`）は約 0.4 秒の平均）を作り、v2.12 の計算が録画（平均 0.455・天井に届くコマ 25.9%）と合うことを確かめてから比べた（録画は 0.333 秒遅れ。録画の音は AAC で 10 kHz より上が削られていたので、高音のざわめきとハイハットを足して補った）。結果（横画面）：一番上の段にいる時間 2.4% → 0.4%（右端 5 本 13% → 0.3%）、点灯中に左端 5 本が隣と同じ高さ 85% → 17%、平均の高さ・上から 1 割の高さはほぼ同じ。
@@ -83,11 +89,12 @@
   - 保存する番号（色 `bar_theme` の 0〜5、表示 `bar_visual`）は前の版と互換にしてあります。番号を並べ替えないでください（選ぶ画面の並びは `PICKER_ORDER`）。
   - 音楽の画面でスペアナを長押し（`PlayerView.onSpectrumLongPress`）すると表示の種類を順に切り替えます（20 回タップの数には入れない）。
 - **音楽の画面の配置（v2.6）**：スマホの縦画面（`portraitLayout`）と車の 2 画面の縦長の区画（`splitLayout` の stacked）は、**ジャケットの下にスペアナを置き、重ねません**（v2.5 まではジャケットの下半分に重ねていて、表示窓・消えている段がジャケットに被った）。ジャケットの大きさは区画の高さの約 56%。
-- **Google マップのナビ連携（v2.5）**：`MediaListenerService`（通知へのアクセス）が受け取った通知を `NotificationHooks` で `nav/NavNotifications` へ渡し、Google マップの「実行中」の通知から文字（extras と独自の表示 RemoteViews を組み立てた文字）を集めて `NavText.parse` で距離と案内の文にします（1.5 秒にまとめて読む）。
+- **Google マップのナビ連携（v2.5）**：`MediaListenerService`（通知へのアクセス）が受け取った通知を `NotificationHooks` で `nav/NavNotifications` へ渡し、Google マップの「実行中」の通知から文字（extras と独自の表示 RemoteViews を組み立てた文字）を集めて `NavText.parse` で距離と案内の文にします（1.5 秒にまとめて読む。読み取り待ちは通知ごとに最新の 1 件）。
+  - **案内中だけ・ほかのナビアプリ（v2.16）**：利用者の報告「Android Auto につなぐと、案内を始めていないのに『Google マップは運転モード』の帯が出る」。`NavText`（v2.16 から `:core` の `route/`）が案内かどうか（`Parsed.guidance`）も決める：案内地点までの距離が読めれば案内（題名・距離だけの部品・距離で始まる部品「300m先 …」）。読めなければ、曲がる方向・出口・分岐・方面・○○IC/JCT などの言葉（`MANEUVER`・`ROAD_POINT`）があり、案内を始めていないときの言葉（`NOT_GUIDANCE`：運転モード・ナビを開始・ダウンロード・位置情報を共有 など）が無いときだけ案内。案内でない通知は使わず、案内中だった通知（`activeKey`）が案内でなくなったら `CLEAR_AFTER_MS` 6 秒で消す。読む通知は、`NavNotifications.APPS`（Google マップ・Google マップ Go・Yahoo!カーナビ `jp.co.yahoo.android.apps.navi`・moviLink `jp.co.toyotaconnected.tlbsapp`・カーナビタイム `com.navitime.local.carnavitime`・ドライブサポーター `com.navitime.local.navitimedrive`・トラックカーナビ・COCCHi `jp.pioneer.cocchi.android`・Yahoo!マップ・Waze）か、通知の種類が `CATEGORY_NAVIGATION` の「実行中」の通知（このアプリ自身の通知は除く）。案内中のアプリの通知が `KEEP_ACTIVE_MS` 15 秒以内に更新されていれば、ほかのアプリの案内には切り替えない。帯・施設の詳細・設定の状態にはアプリの名前（`Guidance.source`・`NavView.source`）を出し、帯のタップはそのアプリを開く。**Google マップ以外のアプリが案内中にどんな通知を出すかは未確認**（パッケージ名は Web の情報で確かめただけ）。開発者向け設定の「ナビアプリの連携（確認用）」に、アプリの名前・判定（案内として扱ったか・理由）が出るので、報告があればそのコピーで `NavText` の言葉を直す。
   - `EngineHost.setNavInstruction` → `HighwayEngine.setNavInstruction`。案内の文が変わったら前方経路を作り直し、`buildRoute` で `NavGuide.plan`（JCT の乗り換え先を `NavForkChooser` で選び直す）→ `NavGuide.match`（降りる IC）。降りる IC より先の施設は一覧に出しません。結果は `FacilityView.navExit` / `navNote` と `HighwaySnapshot.nav`（`NavView`）。
-  - 照合は文を解釈せず、前方経路の施設名・分岐の先の道路名と路線番号・ランプの行き先が案内の文に含まれるかで決めます（言い回しの違いに強くするため）。通知の実際の形は実機で未確認なので、開発者向け設定の「Google マップのナビ連携（確認用）」で受け取った文字（部品の名前つき）を見てもらい、合わない言い回しがあれば `NavText` / `NavGuide` を直してください。
+  - 照合は文を解釈せず、前方経路の施設名・分岐の先の道路名と路線番号・ランプの行き先が案内の文に含まれるかで決めます（言い回しの違いに強くするため）。通知の実際の形は実機で未確認なので、開発者向け設定の「ナビアプリの連携（確認用）」（v2.16 で名前を変更）で受け取った文字（部品の名前つき）を見てもらい、合わない言い回しがあれば `NavText` / `NavGuide` を直してください。
   - このアプリは Android Auto の `NavigationManager.navigationStarted()` を呼びません（呼ぶと、ナビ中のほかのアプリ（Google マップ）のナビが止められる可能性がある）。ナビ連携のため、今後も呼ばないでください。
-  - **音楽の画面の案内の帯（v2.6）**：`NavNotifications` が読んだ案内を `com.example.spectrum.Guidance` に入れ（`Prefs.navBanner`。経路合わせ `Prefs.navSync` とは別にオン・オフ）、`PlayerRenderer` がスペアナの区画の上を帯にして描きます（`guideSplit`・`drawGuidance`。一般道でも、スマホ・車の両方）。矢印は通知の大きなアイコン（1 色の図形なら白くする `maneuverIcon`）、無ければ案内の文から `Guidance.arrowFor` で推定して描く。帯のタップはスマホだけ Google マップを開く（`PlayerView.onGuideTap` → `NavNotifications.openNavApp`）。`NavNotifications.install` はエンジンの起動・`MainActivity`・`HighwayCarAppService` のどこから呼んでもよい（エンジンが動いていなくても帯を出すため）。
+  - **音楽の画面の案内の帯（v2.6）**：`NavNotifications` が読んだ案内を `com.example.spectrum.Guidance` に入れ（`Prefs.navBanner`。経路合わせ `Prefs.navSync` とは別にオン・オフ）、`PlayerRenderer` がスペアナの区画の上を帯にして描きます（`guideSplit`・`drawGuidance`。一般道でも、スマホ・車の両方）。矢印は通知の大きなアイコン（1 色の図形なら白くする `maneuverIcon`）、無ければ案内の文から `Guidance.arrowFor` で推定して描く。帯のタップはスマホだけ、案内を出しているナビのアプリを開く（`PlayerView.onGuideTap` → `NavNotifications.openNavApp`）。`NavNotifications.install` はエンジンの起動・`MainActivity`・`HighwayCarAppService` のどこから呼んでもよい（エンジンが動いていなくても帯を出すため）。
 - **再生位置のバー（v2.14）**：スマホはバーに触れたら指に合わせて動かし（`PlayerView` → `PlayerRenderer.isSeekAt` / `scrubTo` / `endScrub`。動かしている間は丸いつまみと、上に移る先の時刻の吹き出し）、離した位置へ `NowPlaying.seekToFraction`。v2.13 までは離したときだけ位置が変わっていた。`seekToFraction` は移る先（`pendingSeekMs`）を覚え、音楽アプリが新しい位置を知らせる（`PlaybackState.lastPositionUpdateTime` が新しくなる）まで最大 2 秒はその位置を表示する（一瞬前の位置に戻って見えないように）。車の画面はタップで移る（引きずりの開始位置が分からないため）。
 - **下のバーの曲名（v2.15）**：ハイウェイだけの表示のとき、`ModeBarRenderer.drawNowPlaying` が曲名・アーティスト名を出す。収まらないときは音楽の画面と同じ動きで流す（`drawMarquee`：先頭で 3 秒 → 文字の大きさ × 2 倍/秒で右から左 → 末尾で 1.5 秒 → 先頭へ）。流している最中は `marqueeMoving`（車は 30fps で描く・スマホは `postInvalidateOnAnimation`）、止まっている間は `marqueeWaitMs` 後に描き直す。
 - **Android Auto の切断後の常駐（v2.15）**：`HighwaySession.onDestroy`（最後の接続が終わったとき）→ `CarAutoStop.onCarDisconnected`。判定時間（`Prefs.carStopAfter`：3 分・10 分・終了しない）たっても、車がつながり直さず、スマホの画面（`AppPresence.phoneVisible`。Activity の数を数える）でも開いていなければ、`TrackingService.stop` とエンジンの停止。判定は `core` の `DisconnectPolicy`（高速道路を 20km/h 以上で走行中は待つ）。時間は、メインスレッドのタイマー・エンジンの状態が届くたび（`TrackingService` の `listener`）・アラーム（`setAndAllowWhileIdle`。`TrackingService` が受信）の 3 通りで確かめる（スマホが眠るとタイマーが進まないため）。車のメニューの電源のボタンは `CarAutoStop.exitRequested` を立ててから `finishCarApp()`（すぐ止める）。確認用：開発者向け設定の「接続が切れたあとの終了（確認用）」。
@@ -102,7 +109,7 @@
 
 ## ビルドとテスト
 
-- テスト：`./gradlew :core:test`（JVM のみ。v2.15 時点で 92 件すべて成功）。
+- テスト：`./gradlew :core:test`（JVM のみ。v2.16 時点で 104 件すべて成功）。
 - アプリ：`./gradlew :app:assembleRelease`（Android SDK が必要）。CI（`.github/workflows/build-app.yml`）は `:core:test :app:assembleRelease`（署名鍵があれば `:app:bundleRelease` も）を実行します。
 - 地図データ：`.github/workflows/build-data.yml`（build-hwdb）が毎週作って `hwdb-latest` リリースに公開します。build-app はそれを同梱します。
 - **主要バイパスの判定（v2.15 で作り直し。`core/graph/BypassClassifier`）**：利用者の報告「バイパスでない一般道が、5km 先のバイパスの IC の延長として対象になった」（国道 23 号の名四国道）。いまの決まり：①信号・横断歩道・踏切のノード（`OsmDataSet.barrierNodes`。データ作成ツールの `OsmXmlLoader`・Overpass の取得の両方で読む）と、国道どうしの平面交差を「区切り」にする（反対車線にも写し、ウェイの途中なら分ける `prepare`）、②IC の間（10km 以内）・前後 1.5km を候補にする（区切りはまたがない）、③区切り無しでつながったひと続きの区間に、出口の IC が 2 か所以上・長さ 3km 以上のときだけ採用、④自動車専用・有料の区間どうしの間（道のりが両端の距離の 1.3 倍＋300m 以内。峠の旧道を除くため）と、そこから続く IC のある区間は採用。
@@ -124,9 +131,16 @@
 - 改行コードは `.gitattributes` で LF に統一しています（`*.bat` / `*.cmd` だけ CRLF）。
 - 新しい権限を追加したり、取得するデータを変えたりしたら、`docs/PRIVACY.md` も更新してください。
 
-## 実機で未確認の点（v2.15 時点）
+## 実機で未確認の点（v2.16 時点）
 
 利用者の実機での確認待ちです。報告があればここから調べてください。
+
+v2.16 で入れたもの:
+
+- スペアナの高さ：実際の曲で上に張り付かなくなったか（平均 4〜5 割・天井はとても強い拍だけ）。低すぎ・動きが小さすぎにならないか。全体の高さの自動合わせ（約 4 秒）が、曲の変わり目・静かな部分から盛り上がる部分への切り替わりで不自然に見えないか。
+- 曲の音量：静かな前奏・A メロが低く、サビで元の高さになるか（A メロが長く続いても低いまま）。`getMeasurementPeakRms` の最大値（mPeak）が端末で読めるか（診断画面の「音量の読み取り」）。スマホの音量を変えたとき、Android Auto の音声の経路、もともと静かな曲（クラシックなど。慣れるまで 1〜2 分低め）。
+- ナビの帯：Android Auto につないだだけ（運転モード）では出ないか。Google マップで案内を始めると出るか・終わると消えるか（約 6 秒）。Android Auto でナビ中に、スマホの Google マップの通知が案内の形になるか（運転モードの通知のままだと帯は出ない）。
+- ほかのナビアプリ（Yahoo!カーナビ・moviLink・カーナビタイム・COCCHi など）：案内中に通知に距離・曲がる方向を出すか、帯が出るか（出なければ「ナビアプリの連携（確認用）」のコピーをもらう）。
 
 v2.15 で入れたもの:
 

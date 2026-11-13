@@ -90,7 +90,7 @@ object SpectrumEngine {
     @Volatile var loudness = 0f
         private set
 
-    /** 確認用(診断画面): 波形のつなぎ具合(履歴の長さ・つなぎ直した回数・読めた回数) */
+    /** 確認用(診断画面): 波形のつなぎ具合(履歴の長さ・つなぎ直した回数・読めた回数)と、曲の音量の読み取り */
     @Volatile var captureInfo = ""
         private set
 
@@ -367,13 +367,14 @@ object SpectrumEngine {
                 val cur = a
                 val silentWhilePlaying = cur != null && NowPlaying.isPlaying &&
                     now - cur.openedAt > SILENT_PROBE_MS && now - cur.lastAudibleAt > SILENT_PROBE_MS
-                // スマホの音量を変えたら、強弱の基準をその場で今の音に合わせ直す
-                // (音量を下げてもバーが小さくならず、音が出ていればいつも同じように動く)
+                // スマホの音量を下げたら、音の最大値の記憶を捨てて、今の音から覚え直す
+                // (音量を下げてもバーが小さくならず、音が出ていればいつも同じように動く。
+                //  上げたときは、大きくなった音に記憶がすぐ追従するので、捨てなくてよい)
                 if (am != null && now - lastVolCheck >= VOLUME_CHECK_MS) {
                     lastVolCheck = now
                     val vol = try { am.getStreamVolume(AudioManager.STREAM_MUSIC) } catch (_: Exception) { -1 }
                     if (vol != lastVolume) {
-                        if (lastVolume >= 0) a?.resetLoudness()
+                        if (lastVolume >= 0 && vol < lastVolume) a?.resetLoudness()
                         lastVolume = vol
                     }
                 }
@@ -462,29 +463,37 @@ object SpectrumEngine {
         private val peakRms = Visualizer.MeasurementPeakRms()
         private var rmsSupported = true
         private var rmsDb: Float? = null
+        private var peakDb: Float? = null
         private var tick = 0
 
-        /** 強弱の基準を捨てて、次に届く音を新しい基準にする(音量変更時) */
+        /** 音の最大値の記憶を捨てて、次に届く音から覚え直す(音量を下げたとき) */
         fun resetLoudness() = mapper.resetLoudness()
 
-        /** 確認用: 波形のつなぎ具合 */
+        /** 確認用: 波形のつなぎ具合と、曲の音量の読み取り */
         fun info(reads: Int, ms: Long): String =
             "履歴 ${stitcher.length} サンプル・つなぎ直し ${stitcher.resets} 回・続きとしてつないだ ${stitcher.joins} 回・読み取り ${if (ms > 0) reads * 1000L / ms else 0} 回/秒" +
-                "・${(sampleRate / 1000f).let { "%.1f".format(it) }}kHz"
+                "・${(sampleRate / 1000f).let { "%.1f".format(it) }}kHz\n" +
+                "音量の読み取り: " + (if (rmsDb == null || peakDb == null) "測れない端末(強弱は付けない)"
+                else "実効値 ${"%.1f".format(rmsDb)} dB・最大 ${"%.1f".format(peakDb)} dB(記憶 ${"%.1f".format(mapper.peakRefDb)} dB)" +
+                    "・大きさ ${"%.1f".format(mapper.loudNowDb)} dB(基準 ${"%.1f".format(mapper.loudRefDb)} dB)") +
+                "・全体の上げ下げ ${"%+.1f".format(mapper.autoDb)} dB"
 
-        /** 再生中の音の大きさ(dBFS)。測れない端末では null */
-        private fun readRmsDb(): Float? {
-            if (!rmsSupported) return null
-            return try {
+        /** 再生中の音の実効値と最大値(dBFS)を読む。測れない端末では null のまま */
+        private fun readLevels() {
+            if (!rmsSupported) return
+            try {
                 if (v.getMeasurementPeakRms(peakRms) == Visualizer.SUCCESS) {
-                    peakRms.mRms / 100f            // mB → dB
+                    rmsDb = peakRms.mRms / 100f            // mB → dB
+                    peakDb = peakRms.mPeak / 100f
                 } else {
                     rmsSupported = false
-                    null
+                    rmsDb = null
+                    peakDb = null
                 }
             } catch (_: Exception) {
                 rmsSupported = false
-                null
+                rmsDb = null
+                peakDb = null
             }
         }
 
@@ -504,12 +513,12 @@ object SpectrumEngine {
             // 前に波形が進んでからの時間ぶん、進んでいるはず(つなぐ位置を探し始める目安)
             val expected = if (advancedAtNs == 0L) 0 else ((nowNs - advancedAtNs) * 1e-9 * sampleRate).toInt()
             if (stitcher.push(wave, size, expected) != 0) advancedAtNs = nowNs
-            // 曲の音量は 1 回おきに読む(約 0.4 秒の平均なので、毎回読まなくてよい)
-            if (tick++ % 2 == 0) rmsDb = readRmsDb()
+            // 曲の音量は 1 回おきに読む(約 0.5 秒の窓の値なので、毎回読まなくてよい)
+            if (tick++ % 2 == 0) readLevels()
             if (!bands.compute(stitcher, power)) return zeros
             val dt = if (mappedAtNs == 0L) 0.0125f else ((nowNs - mappedAtNs) * 1e-9f).coerceIn(0f, 0.5f)
             mappedAtNs = nowNs
-            val out = mapper.map(power, rmsDb, peak, dt)
+            val out = mapper.map(power, rmsDb, peakDb, peak, dt)
             if (!mapper.silent) lastAudibleAt = SystemClock.uptimeMillis()
             loudness = mapper.loudness
             // 受け取る側(画面)はその場で写すので、配列は使い回す(毎回の確保をしない)

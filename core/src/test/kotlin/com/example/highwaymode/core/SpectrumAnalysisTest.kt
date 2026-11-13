@@ -237,7 +237,7 @@ class SpectrumAnalysisTest {
                 }
                 st.push(cap, 1024, 600)
                 if (an.compute(st, p)) {
-                    history.add(mapper.map(p, null, peak, 0.0125f).copyOf())
+                    history.add(mapper.map(p, null, null, peak, 0.0125f).copyOf())
                     dips.add(mapper.lastDip)
                 }
                 end += 600
@@ -361,5 +361,125 @@ class SpectrumAnalysisTest {
         val stopped = bandOf(an, 4000f)
         assertEquals("止まった帯は消える", 0f, last[stopped], 0.05f)
         assertTrue("鳴り続けている帯は残る", last[bandOf(an, 800f)] > 0.2f)
+    }
+    // ------------------------------------------------------------------ 高さの付け方（v2.16）
+
+    /** 帯の強さを直接作って、高さの計算だけを動かす（1 回 12.5ms） */
+    private class Feed(val an: BandAnalyzer) {
+        val mapper = SpectrumMapper(an)
+        val p = FloatArray(an.bands)
+        val rnd = Random(11)
+        val rows = ArrayList<FloatArray>()
+
+        /**
+         * 鳴りっぱなしの音（帯ごとに wobble dB の揺れ）に、kickEvery 秒ごとの低音の山（kickDb。帯 0〜9）を重ねて sec 秒ぶん流す。
+         * rmsDb・peakDb は音量の読み取り（null なら測れない端末）
+         */
+        fun play(sec: Float, wobble: Float, kickDb: Float = 0f, kickEvery: Float = 0.5f, rmsDb: Float? = null, peakDb: Float? = null): Feed {
+            val steps = (sec / 0.0125f).toInt()
+            for (i in 0 until steps) {
+                val t = i * 0.0125f
+                val sinceKick = t % kickEvery
+                val kick = if (kickDb > 0f) kickDb * Math.exp(-sinceKick / 0.08).toFloat() else 0f
+                for (b in 0 until an.bands) {
+                    // 全体はゆるやかな山形（中ほどが強い）。8bit の雑音より十分大きい
+                    val base = 28f - 0.012f * (b - 20) * (b - 20)
+                    val db = base + wobble * (rnd.nextFloat() * 2f - 1f) + (if (b < 10) kick else 0f)
+                    p[b] = 10f.pow(db / 10f)
+                }
+                rows.add(mapper.map(p, rmsDb, peakDb, 100, 0.0125f).copyOf())
+            }
+            return this
+        }
+
+        /** 最後の sec 秒の、帯 from〜to の平均の高さ */
+        fun mean(sec: Float, from: Int = 0, to: Int = an.bands): Float {
+            val tail = rows.takeLast((sec / 0.0125f).toInt())
+            var s = 0f
+            for (r in tail) for (b in from until to) s += r[b]
+            return s / (tail.size * (to - from))
+        }
+
+        /** 最後の sec 秒の、帯 from〜to が上の 2 段（17/18 以上）にいる割合 */
+        fun topShare(sec: Float, from: Int = 0, to: Int = an.bands): Float {
+            val tail = rows.takeLast((sec / 0.0125f).toInt())
+            var c = 0
+            for (r in tail) for (b in from until to) if (r[b] >= 17f / 18f) c++
+            return c.toFloat() / (tail.size * (to - from))
+        }
+
+        fun max(sec: Float, from: Int, to: Int): Float {
+            var m = 0f
+            for (r in rows.takeLast((sec / 0.0125f).toInt())) for (b in from until to) if (r[b] > m) m = r[b]
+            return m
+        }
+    }
+
+    @Test
+    fun strongBeatsRiseButDoNotStickToTheTop() {
+        // 実際の曲のバスドラム: 帯の平均より 15 dB 以上跳ね上がる。v2.15 は拍のたびに左の帯が天井に届いた（利用者の録画で 14〜22%）
+        for (kick in floatArrayOf(12f, 18f, 26f)) {
+            val f = Feed(BandAnalyzer(sr, 48)).play(30f, wobble = 3f, kickDb = kick)
+            assertTrue("拍で上がる（山 $kick dB。最大 ${f.max(10f, 0, 8)}）", f.max(10f, 0, 8) > 0.6f)
+            assertTrue("上の 2 段にいる時間は少ない（山 $kick dB。${f.topShare(10f, 0, 8)}）", f.topShare(10f, 0, 8) < 0.03f)
+            assertTrue("全体でも張り付かない（${f.topShare(10f)}）", f.topShare(10f) < 0.01f)
+        }
+    }
+
+    @Test
+    fun overallHeightIsTheSameWhateverTheInputLooksLike() {
+        // 揺れの小さい音・大きい音・拍の強い音のどれでも、全体の高さの平均はほぼ同じ（自動でそろえる）
+        val means = ArrayList<Float>()
+        for ((wobble, kick) in listOf(2f to 0f, 6f to 0f, 3f to 14f, 9f to 20f)) {
+            val f = Feed(BandAnalyzer(sr, 48)).play(40f, wobble = wobble, kickDb = kick)
+            means.add(f.mean(15f))
+        }
+        for (m in means) assertTrue("平均の高さ $means", m in 0.33f..0.60f)
+        assertTrue("入力による差が小さい $means", means.max() - means.min() < 0.15f)
+    }
+
+    @Test
+    fun quietSectionsAreLowerThanLoudOnes() {
+        // サビ（実効値 -9 dBFS・最大 -0.3）→ A メロ（-13.5）→ サビ。A メロは 30 秒続いても低いまま
+        val f = Feed(BandAnalyzer(sr, 48))
+        f.play(20f, 4f, 12f, rmsDb = -9f, peakDb = -0.3f)
+        val chorus = f.mean(8f)
+        f.play(30f, 4f, 12f, rmsDb = -13.5f, peakDb = -1f)
+        val verseEnd = f.mean(8f)
+        f.play(15f, 4f, 12f, rmsDb = -9f, peakDb = -0.3f)
+        val chorus2 = f.mean(8f)
+        assertTrue("A メロはサビより低い（$verseEnd / $chorus）", verseEnd < chorus * 0.8f)
+        assertTrue("A メロも見える（$verseEnd）", verseEnd > chorus * 0.4f)
+        assertEquals("サビに戻ると元の高さ", chorus.toDouble(), chorus2.toDouble(), chorus * 0.1)
+        // 静かな間奏（-21）はもっと低い
+        f.play(8f, 4f, 0f, rmsDb = -21f, peakDb = -9f)
+        assertTrue("静かな間奏（${f.mean(4f)} / $chorus）", f.mean(4f) < chorus * 0.45f)
+    }
+
+    @Test
+    fun quietIntroIsLowFromTheFirstPlay() {
+        // 曲の頭の静かな前奏（まだ大きい音を聞いていない）→ 盛り上がる部分
+        val f = Feed(BandAnalyzer(sr, 48))
+        f.play(10f, 4f, 0f, rmsDb = -24f, peakDb = -7f)
+        val intro = f.mean(5f)
+        f.play(15f, 4f, 12f, rmsDb = -9.5f, peakDb = -0.3f)
+        val loud = f.mean(6f)
+        assertTrue("前奏は低い（$intro / $loud）", intro < loud * 0.7f)
+    }
+
+    @Test
+    fun loudnessDoesNotDependOnTheVolumeSetting() {
+        // 音量つまみを下げる（実効値も最大値も 20 dB 下がる）→ 高さは変わらない
+        val a = Feed(BandAnalyzer(sr, 48)).play(20f, 4f, 12f, rmsDb = -13f, peakDb = -1f)
+        val b = Feed(BandAnalyzer(sr, 48)).play(20f, 4f, 12f, rmsDb = -33f, peakDb = -21f)
+        assertEquals(a.mean(8f).toDouble(), b.mean(8f).toDouble(), 0.02)
+        // 再生中に下げたとき（アプリが音量の変化に気づいて resetLoudness を呼ぶ）
+        a.mapper.resetLoudness()
+        a.play(10f, 4f, 12f, rmsDb = -33f, peakDb = -21f)
+        assertEquals(b.mean(8f).toDouble(), a.mean(8f).toDouble(), 0.03)
+        // 音量が測れない端末は、強弱を付けない（元の高さ）
+        val c = Feed(BandAnalyzer(sr, 48)).play(20f, 4f, 12f)
+        assertEquals(-1f, c.mapper.loudness, 0f)
+        assertTrue(c.mean(8f) > a.mean(8f))
     }
 }

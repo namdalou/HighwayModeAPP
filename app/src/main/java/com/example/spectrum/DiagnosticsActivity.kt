@@ -70,7 +70,7 @@ class DiagnosticsActivity : Activity() {
         line("解析中の音声: ${when { cs < 0 -> "なし"; cs == 0 -> "端末全体の出力音(セッション0)"; else -> "アプリの音声(セッション$cs)" }}")
         SpectrumEngine.captureInfo.takeIf { it.isNotEmpty() }?.let { line("波形の読み取り: $it") }
         val ld = SpectrumEngine.loudness
-        line("曲の音量(強弱): ${if (ld < 0f) "測定できない端末(従来の方式)" else "${(ld * 100).toInt()}%"}")
+        line("曲の音量(強弱): ${if (ld < 0f) "測定できない端末(強弱は付けない)" else "${(ld * 100).toInt()}%"}")
         line("音声の読み取り(DUMP 権限): ${if (SessionScanner.hasPermission(this)) "許可済み" else "未許可"}  / ${SessionScanner.lastStatus}")
         if (!SessionScanner.hasPermission(this)) {
             val shizukuState = when {

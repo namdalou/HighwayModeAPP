@@ -164,15 +164,17 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
             AppSettings.changed(this)
         }
 
-        // ---- Google マップのナビ連携
+        // ---- カーナビのアプリ（Google マップなど）のナビ連携
         val nv = ui.section(
-            c, "Google マップのナビ連携",
-            "Google マップでルートを決めてナビを始めると、ナビの通知から次の案内を読み取ります。" +
+            c, "ナビアプリの連携（Google マップなど）",
+            "Google マップなどのカーナビのアプリでルートを決めてナビを始めると、ナビの通知から次の案内を読み取ります。" +
                 "音楽の画面に次の案内（矢印・距離・案内の文）を出し（一般道でも）、高速道路ではハイウェイの一覧をナビの経路に合わせます" +
                 "（JCT で乗り換え先の路線へ、降りる IC より先は出しません）。" +
+                "案内をしているときだけ出します（ナビを始めていないときの通知では出しません）。" +
+                "Google マップのほか、次の案内（距離・曲がる方向）を通知に出すアプリ（Yahoo!カーナビ・moviLink・カーナビタイム・COCCHi など）に対応します。" +
                 "通知へのアクセス（曲名と同じ許可）を使います。読み取った内容は端末の中だけで使い、保存・送信しません。"
         )
-        ui.switchRow(nv, "音楽の画面にナビの案内を出す", "スペアナの上に、次に曲がる方向・距離・案内の文を出します（一般道でも）。押すと Google マップを開きます", prefs.navBanner) {
+        ui.switchRow(nv, "音楽の画面にナビの案内を出す", "スペアナの上に、次に曲がる方向・距離・案内の文を出します（一般道でも）。押すとナビのアプリを開きます", prefs.navBanner) {
             prefs.navBanner = it
             AppSettings.changed(this)
             NavNotifications.settingsChanged(this)
@@ -190,7 +192,7 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
                 st != null && st.exitName != null -> "${st.exitName} で降ります（${st.source}）"
                 st != null && st.transferText != null -> "乗り換え: ${st.transferText}（${st.source}）"
                 NavNotifications.active -> "ナビの案内を受け取っています: ${NavNotifications.lastText?.take(40) ?: ""}"
-                else -> "Google マップでナビを始めると使えます"
+                else -> "Google マップなどでナビを始めると使えます"
             }
             navStatus.value(text, SettingsUi.C_SUB)
         }

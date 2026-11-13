@@ -408,12 +408,12 @@ object EngineHost {
         traffic?.refreshNow()
     }
 
-    // ------------------------------------------------------------------ カーナビ（Google マップ）
+    // ------------------------------------------------------------------ カーナビ（Google マップなど）
 
-    /** カーナビの次の案内（text が null ならナビ終了）。エンジン用スレッドで反映する */
-    fun setNavInstruction(text: String?, distanceM: Double?) {
+    /** カーナビの次の案内（text が null ならナビ終了）。source は案内を出しているアプリの名前。エンジン用スレッドで反映する */
+    fun setNavInstruction(text: String?, distanceM: Double?, source: String = "Google マップ") {
         val t = SystemClock.elapsedRealtimeNanos()
-        post { it.setNavInstruction(text, distanceM, t) }
+        post { it.setNavInstruction(text, distanceM, t, source) }
     }
 
     // ------------------------------------------------------------------ 地図データ・オービス

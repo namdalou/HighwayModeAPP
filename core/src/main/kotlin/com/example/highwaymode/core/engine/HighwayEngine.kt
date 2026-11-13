@@ -172,7 +172,7 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
     /** データ取得に関するメッセージ（ホストが設定） */
     var dataMessage: String? = null
 
-    // ---- カーナビ（Google マップ）の案内との連携
+    // ---- カーナビ（Google マップなど）の案内との連携
     /** 次の案内（ナビ中でなければ null） */
     var navHint: NavHint? = null
         private set
@@ -185,7 +185,7 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
     private var odoT = Long.MIN_VALUE
 
     /**
-     * カーナビの次の案内を受け取る（Google マップの通知から）。text が空ならナビ終了。
+     * カーナビの次の案内を受け取る（カーナビのアプリの通知から。source はアプリの名前）。text が空ならナビ終了。
      * 案内の内容が変わったら前方経路を作り直す（距離だけの更新では作り直さない）。
      */
     fun setNavInstruction(text: String?, distanceM: Double?, t: Long, source: String = "Google マップ") {
