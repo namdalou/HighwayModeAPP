@@ -274,7 +274,8 @@ object FacilityExtractor {
      *  - IC・スマート IC の地点ごとに、近く（[Params.rampNearDist] 以内）の分岐・合流から、出口（本線からランプが分かれる）か
      *    入口（ランプが合流するだけ）かを決める。決まらなければ名前の「出口」「入口」で決める
      *  - 入口、または決められない地点は、同じ車線の前後 [Params.entrancePairDist] に同じ IC の出口があれば出さない
-     *    （その IC は、走行車線側の出口で表す）
+     *    （その IC は、走行車線側の出口で表す）。入口の地点は、決められない地点（出口の分岐ノードが分岐から離れて
+     *    登録されているもの）も出口とみなす
      *  - 入口で、同じ車線に同じ IC の出口が無ければ（入口だけのハーフ IC）、「出口なし」として出す
      */
     private fun resolveEntrances(
@@ -305,7 +306,8 @@ object FacilityExtractor {
                 for (x in perEdge[eid]) {
                     if (x === a || x.offset < from - 1e-6 || x.offset > to + 1e-6) continue
                     if (x.facility.baseName != f.baseName) continue
-                    if (kinds[x] == RAMP_EXIT) exitNear = true
+                    val xk = kinds[x] ?: continue
+                    if (xk == RAMP_EXIT || (kind == RAMP_ENTRANCE && xk == RAMP_UNKNOWN)) exitNear = true
                 }
             }
             if (exitNear) {

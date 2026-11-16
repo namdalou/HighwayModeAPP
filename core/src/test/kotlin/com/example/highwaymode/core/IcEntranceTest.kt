@@ -32,6 +32,8 @@ import org.junit.Test
  *   5.0km 豊川IC: 下りは出口の分岐（5.0km）と入口の合流（5.6km）の両方に「豊川IC」の分岐ノード
  *   7.0km 見附IC: 下りは出口の分岐ノードが未登録（推定出口）、入口の合流（7.5km）にだけ「見附IC入口」
  *   9.0km 西IC: 下りは入口の合流（9.0km）だけ（ハーフ IC）。上りは出口の分岐（9.0km）に「西IC」
+ *  10.9km 掛川IC: 下りの出口の分岐ノードが、実際の分岐（11.0km）より 100m 手前に登録されている（形では決められない）。
+ *          入口の合流（11.5km）にも「掛川IC」
  */
 class IcEntranceTest {
 
@@ -117,6 +119,12 @@ class IcEntranceTest {
             junction(sb[180], "西IC")
             nbExit(180)
             junction(nb[180], "西IC")
+
+            // ---- 掛川IC: 出口の分岐ノードが分岐の 100m 手前、入口にも同じ名前
+            sbExit(220)
+            junction(sb[218], "掛川IC")
+            sbEntrance(230)
+            junction(sb[230], "掛川IC")
             return this
         }
 
@@ -155,13 +163,15 @@ class IcEntranceTest {
         val r = route(1000.0, 12.5, net.sbWays)
         println("下り: " + r.describe())
         val names = r.facilities.map { it.facility.displayName }
-        assertEquals(listOf("豊川IC", "見附IC", "西IC"), names)
+        assertEquals(listOf("豊川IC", "見附IC", "西IC", "掛川IC"), names)
         // 豊川・見附は出口（分岐）の位置、西は入口だけなので「出口なし」
         assertEquals(4000.0, r.facilities[0].distance, 30.0)
         assertFalse(r.facilities[0].facility.noExit)
         assertEquals("推定出口の位置", 6000.0, r.facilities[1].distance, 60.0)
         assertFalse(r.facilities[1].facility.noExit)
         assertTrue("入口だけの IC は出口なし", r.facilities[2].facility.noExit)
+        assertEquals("出口の分岐ノードの位置", 9900.0, r.facilities[3].distance, 30.0)
+        assertFalse(r.facilities[3].facility.noExit)
     }
 
     @Test
@@ -175,6 +185,10 @@ class IcEntranceTest {
         val r2 = route(7_200.0, 12.5, net.sbWays)
         println("見附IC の出口を過ぎたあと: " + r2.describe())
         assertFalse("入口側の見附IC は出さない", r2.facilities.any { it.facility.displayName == "見附IC" })
+        // 掛川IC の出口（11.0km）を過ぎて、入口（11.5km）の手前
+        val r3 = route(11_200.0, 12.5, net.sbWays)
+        println("掛川IC の出口を過ぎたあと: " + r3.describe())
+        assertFalse("入口側の掛川IC は出さない", r3.facilities.any { it.facility.displayName == "掛川IC" })
     }
 
     @Test
@@ -206,7 +220,7 @@ class IcEntranceTest {
         val sink = Sink(e)
         val firsts = ArrayList<String>()
         var onHighway = false
-        while (sim.advance(0.25, sink) && sim.s < 9_500.0) {
+        while (sim.advance(0.25, sink) && sim.s < 12_500.0) {
             val snap = e.onTick(sim.t, sim.wallMs())
             if (snap.status == EngineStatus.ON_HIGHWAY) onHighway = true
             val first = snap.facilities.firstOrNull { it.type.isExit }?.displayName ?: continue
@@ -214,6 +228,6 @@ class IcEntranceTest {
         }
         println("先頭に出た IC の順: $firsts")
         assertTrue(onHighway)
-        assertEquals(listOf("豊川IC", "見附IC", "西IC"), firsts)
+        assertEquals(listOf("豊川IC", "見附IC", "西IC", "掛川IC"), firsts)
     }
 }
