@@ -49,6 +49,8 @@ class PlayerRenderer {
          */
         /** 2 画面でスペアナを重ねるとき、ジャケットの上からこの割合の位置からスペアナを始める（v2.17） */
         private const val OVERLAY_FROM = 0.32f
+        /** 横長の区画で案内を出すとき（ジャケットが小さめなので、上の方から重ねてスペアナの高さを取る。v2.17.1） */
+        private const val OVERLAY_FROM_WIDE = 0.25f
         private const val RISE_TAU = 0.012f
         private const val FALL_PER_SEC = 4.0f
 
@@ -259,10 +261,18 @@ class PlayerRenderer {
      *  - 縦長の区画（車の 2 画面など）: ジャケットを中央に大きく、文字はその上
      *  - 横長の区画（スマホの横画面の 2 画面など）: ジャケットを左に、文字はその右、スペアナは文字の下に横いっぱい
      *  - アナログメーターは針の板でジャケットが隠れるので重ねない（v2.16 までと同じ並び。案内の帯の扱いだけ新しくする）
+     *
+     * v2.17.1: 利用者の報告「2 画面で案内を出すと、曲名だけになった。アルバム名・アーティスト名も出して（小さくはしないで。
+     * 音楽とハイウェイの幅の比率は変えないで）」。案内中も 3 行（曲名・アルバム名・アーティスト名）を出す:
+     *  - 縦長の区画（車の 2 画面）: 文字を 3 行に戻す（ジャケットとスペアナが少し小さくなるだけで足りる）
+     *  - 横長の区画（スマホの横画面の 2 画面など）: 縦に並べると足りないので、全画面の横の配置と同じく
+     *    「文字は左下・操作ボタンは右下」にする（[splitWideGuide]）
      */
     private fun splitLayout(vh: Float, guide: Boolean, overlay: Boolean): Layout {
         val m = 12f
         val right = 400f - m
+        // 横長の区画で案内を出すときは、別の並び（文字と操作ボタンを横に並べる）
+        if (guide && vh < 380f) return splitWideGuide(vh, overlay)
         val roomy = vh >= 290f
         val titleSize = if (roomy) 27f else 24f
         val subSize = if (roomy) 20f else 18f
@@ -287,17 +297,12 @@ class PlayerRenderer {
         var albumY: Float
         var artistY: Float
         if (stacked || !overlay) {
-            // 文字は上に横いっぱい（案内中は曲名・アーティスト名の 2 行）
+            // 文字は上に横いっぱい（曲名・アルバム名・アーティスト名の 3 行。v2.17.1 から案内中も 3 行）
             iconX = 16f
             textX = 46f
             titleY = top0 + titleSize * 1.22f
-            if (guide) {
-                albumY = -1f
-                artistY = titleY + subSize + gap
-            } else {
-                albumY = titleY + subSize + gap
-                artistY = albumY + subSize + gap - 0.5f
-            }
+            albumY = titleY + subSize + gap
+            artistY = albumY + subSize + gap - 0.5f
             val midTop = artistY + subSize * 0.5f + 6f
             val midH = midBottom - midTop
             if (overlay) {
@@ -318,23 +323,17 @@ class PlayerRenderer {
                 spec = RectF(m + a + 16f, midTop, right, midBottom)
             }
         } else {
-            // 横長で重ねる: ジャケットは左に中段の高さいっぱい、文字はその右、スペアナは文字の下に横いっぱい
-            val midTop = top0 + (if (guide) 2f else 10f)
+            // 横長で重ねる（案内なし）: ジャケットは左に中段の高さいっぱい、文字はその右、スペアナは文字の下に横いっぱい
+            val midTop = top0 + 10f
             // 曲名の幅を残すため、ジャケットは幅の約 4 割（170）まで
             val a = (midBottom - midTop).coerceIn(40f, 170f)
             art = RectF(m, midTop, m + a, midTop + a)
             iconX = art.right + 12f
             textX = iconX + 30f
             titleY = midTop + titleSize * 1.02f
-            if (guide) {
-                // 案内中は曲名だけ（高さをスペアナに回す）
-                albumY = -1f
-                artistY = -1f
-            } else {
-                albumY = titleY + subSize + gap
-                artistY = albumY + subSize + gap - 0.5f
-            }
-            val textBottom = (if (artistY > 0f) artistY else titleY) + subSize * 0.5f
+            albumY = titleY + subSize + gap
+            artistY = albumY + subSize + gap - 0.5f
+            val textBottom = artistY + subSize * 0.5f
             spec = RectF(m, max(textBottom + 6f, midTop + a * OVERLAY_FROM), right, midBottom)
         }
         return Layout(
@@ -360,6 +359,64 @@ class PlayerRenderer {
             overlay = overlay
         )
     }
+    /**
+     * 2 画面の横長の区画（スマホの横画面の 2 画面・横に長い車の 2 画面）で、カーナビの案内を出すとき（v2.17.1）。
+     *  - いちばん上に案内の帯（横いっぱい。区画の高さの約 15.5%。1 行で、距離を大きく）
+     *  - 中段にジャケット（左）とスペアナ（ジャケットの下の部分に重ねて横いっぱい。メーターは重ねずにジャケットの右）
+     *  - 下に曲名・アルバム名・アーティスト名の 3 行（左。大きさは 22・17）と、操作ボタン（右）。全画面の横の配置と同じ形
+     *  - いちばん下に再生位置のバー
+     * 縦に 3 行を足すとスペアナが約 50 しか残らないので、文字と操作ボタンを横に並べて高さを空けた
+     * （スマホの横画面の 2 画面で、スペアナの高さは v2.17 の 84 とほぼ同じ 85）
+     */
+    private fun splitWideGuide(vh: Float, overlay: Boolean): Layout {
+        val m = 12f
+        val right = 400f - m
+        val titleSize = 22f
+        val subSize = 17f
+        val gap = 6f
+        val g = RectF(m, 6f, right, 6f + (vh * 0.155f).coerceIn(40f, 60f))
+        // 下から: 再生位置のバー → 3 行の文字（左）と操作ボタン（右）
+        val seekY = vh - 11f
+        val artistY = seekY - 19f
+        val albumY = artistY - subSize - gap
+        val titleY = albumY - subSize - gap
+        val textTop = titleY - titleSize * 0.92f
+        val cy = (textTop + artistY + subSize * 0.25f) / 2f
+        val playH = 42f
+        val playW = 66f
+        val side = 36f
+        val next = RectF(right - side, cy - side / 2, right, cy + side / 2)
+        val play = RectF(next.left - 8f - playW, cy - playH / 2, next.left - 8f, cy + playH / 2)
+        val prev = RectF(play.left - 8f - side, cy - side / 2, play.left - 8f, cy + side / 2)
+        // 中段: ジャケット（左）とスペアナ
+        val midTop = g.bottom + 6f
+        val midBottom = min(textTop, play.top) - 8f
+        val a = (midBottom - midTop).coerceIn(40f, 170f)
+        val art = RectF(m, midTop, m + a, midTop + a)
+        val spec = if (overlay) RectF(m, midTop + a * OVERLAY_FROM_WIDE, right, midBottom)
+        else RectF(art.right + 14f, midTop, right, midBottom)
+        return Layout(
+            vw = 400f, vh = vh,
+            art = art,
+            spec = spec,
+            specOnly = RectF(m, midTop, right, midBottom),
+            textX = m + 30f, textRight = prev.left - 10f, iconX = m,
+            titleY = titleY, albumY = albumY, artistY = artistY,
+            titleSize = titleSize, subSize = subSize,
+            prev = prev, play = play, next = next,
+            seekX0 = 66f, seekX1 = 334f, seekY = seekY,
+            timeY = seekY + 4f, timeSize = 11f,
+            seekTouch = RectF(60f, seekY - 12f, 340f, vh),
+            hintY = seekY + 4f,
+            segUnit = 5.5f,
+            gain = 1.0f,
+            noiseFloor = 0.03f,
+            boldTitle = true,
+            guide = g,
+            overlay = overlay
+        )
+    }
+
     /** 2 画面の表示（案内の有無・重ねるかどうかの組み合わせごと） */
     private val splitCaches = arrayOfNulls<Layout>(4)
 
@@ -689,34 +746,52 @@ class PlayerRenderer {
             gkTwo = two
             gkSize = big
             gkDist = Guidance.distanceM?.let { Guidance.distanceLabel(it) } ?: ""
-            text.typeface = BOLD
-            text.textSize = big
-            val distW = if (gkDist.isEmpty()) 0f else text.measureText(gkDist) + 6f
-            text.typeface = Typeface.DEFAULT
-            text.textSize = small
-            val lineAvail = if (two) avail else avail - distW
-            gkLine = TextUtils.ellipsize(Guidance.text.orEmpty(), text, lineAvail.coerceAtLeast(10f), TextUtils.TruncateAt.END).toString()
+            if (gkDist.isEmpty()) {
+                // 距離の読めない案内（「東に進む」など）は、案内の文そのものを大きく出す（v2.17.1。
+                // v2.17 まではアプリの名前を大きく出していて、肝心の案内が小さかった）
+                text.typeface = BOLD
+                text.textSize = big
+                gkLine = TextUtils.ellipsize(Guidance.text.orEmpty(), text, avail.coerceAtLeast(10f), TextUtils.TruncateAt.END).toString()
+            } else {
+                text.typeface = BOLD
+                text.textSize = big
+                val distW = text.measureText(gkDist) + 6f
+                text.typeface = Typeface.DEFAULT
+                text.textSize = small
+                val lineAvail = if (two) avail else avail - distW
+                gkLine = TextUtils.ellipsize(Guidance.text.orEmpty(), text, lineAvail.coerceAtLeast(10f), TextUtils.TruncateAt.END).toString()
+            }
         }
         text.textAlign = Paint.Align.LEFT
         text.color = Color.WHITE
-        if (two) {
+        if (gkDist.isEmpty()) {
+            // 距離なし: 案内の文を大きく（2 段なら下にアプリの名前を小さく）
+            text.typeface = BOLD
+            text.textSize = big
+            if (two) {
+                c.drawText(gkLine, x, r.top + r.height() * 0.46f, text)
+                text.typeface = Typeface.DEFAULT
+                text.textSize = small
+                text.color = Color.rgb(222, 245, 230)
+                c.drawText(Guidance.source, x, r.top + r.height() * 0.84f, text)
+            } else {
+                c.drawText(gkLine, x, r.centerY() + big * 0.36f, text)
+            }
+        } else if (two) {
             text.typeface = BOLD
             text.textSize = big
             val y1 = r.top + r.height() * 0.46f
-            c.drawText(if (gkDist.isEmpty()) Guidance.source else gkDist, x, y1, text)
+            c.drawText(gkDist, x, y1, text)
             text.typeface = Typeface.DEFAULT
             text.textSize = small
             text.color = Color.rgb(222, 245, 230)
             c.drawText(gkLine, x, r.top + r.height() * 0.84f, text)
         } else {
             val base = r.centerY() + big * 0.36f
-            var xx = x
-            if (gkDist.isNotEmpty()) {
-                text.typeface = BOLD
-                text.textSize = big
-                c.drawText(gkDist, xx, base, text)
-                xx += text.measureText(gkDist) + 6f
-            }
+            text.typeface = BOLD
+            text.textSize = big
+            c.drawText(gkDist, x, base, text)
+            val xx = x + text.measureText(gkDist) + 6f
             text.typeface = Typeface.DEFAULT
             text.textSize = small
             text.color = Color.rgb(222, 245, 230)
@@ -732,7 +807,10 @@ class PlayerRenderer {
     private var gtLine1 = ""
     private var gtLine2 = ""
 
-    /** 背の高い案内の帯（2 画面の専用の場所。v2.17）: 距離（大きく）と、案内の文（2 行まで。収まらなければ末尾を省く） */
+    /**
+     * 背の高い案内の帯（2 画面の専用の場所。v2.17）: 距離（大きく）と、案内の文（2 行まで。収まらなければ末尾を省く）。
+     * 距離の読めない案内は、案内の文の頭を大きく、残りを小さく（残りが無ければアプリの名前を小さく。v2.17.1）
+     */
     private fun drawGuidanceTall(c: Canvas, r: RectF, x: Float, avail: Float) {
         val h = r.height()
         val big = h * 0.34f
@@ -741,30 +819,34 @@ class PlayerRenderer {
             gtVersion = Guidance.version
             gtAvail = avail
             gtSize = small
-            gtDist = Guidance.distanceM?.let { Guidance.distanceLabel(it) } ?: Guidance.source
+            val s = Guidance.text.orEmpty().trim()
+            val dist = Guidance.distanceM?.let { Guidance.distanceLabel(it) }
+            val rest: String
+            if (dist != null) {
+                gtDist = dist
+                rest = s
+            } else {
+                // 1 行目（大きく）に入るところまで。空白で切れるなら、その位置で切る
+                text.typeface = BOLD
+                text.textSize = big
+                val cut = fitCut(s, avail)
+                gtDist = s.substring(0, cut).trimEnd()
+                rest = s.substring(cut).trimStart()
+            }
             text.typeface = Typeface.DEFAULT
             text.textSize = small
-            val s = Guidance.text.orEmpty().trim()
-            // 1 行目に収まるところで折り返す（日本語は区切りが無いので、文字単位で測る。二分探索）
-            var cut = s.length
-            if (text.measureText(s, 0, cut) > avail) {
-                var lo = 0
-                var hi = s.length
-                while (hi - lo > 1) {
-                    val mid = (lo + hi) / 2
-                    if (text.measureText(s, 0, mid) <= avail) lo = mid else hi = mid
-                }
-                cut = lo
-            }
-            if (cut >= s.length) {
-                gtLine1 = s
+            if (rest.isEmpty()) {
+                gtLine1 = if (dist == null) Guidance.source else ""
                 gtLine2 = ""
             } else {
-                // 空白で切れるなら、その位置で切る（地名の途中で切らないように）
-                val sp = s.lastIndexOf(' ', cut - 1)
-                if (sp > cut / 2) cut = sp
-                gtLine1 = s.substring(0, cut).trimEnd()
-                gtLine2 = TextUtils.ellipsize(s.substring(cut).trimStart(), text, avail.coerceAtLeast(10f), TextUtils.TruncateAt.END).toString()
+                val cut = fitCut(rest, avail)
+                if (cut >= rest.length) {
+                    gtLine1 = rest
+                    gtLine2 = ""
+                } else {
+                    gtLine1 = rest.substring(0, cut).trimEnd()
+                    gtLine2 = TextUtils.ellipsize(rest.substring(cut).trimStart(), text, avail.coerceAtLeast(10f), TextUtils.TruncateAt.END).toString()
+                }
             }
         }
         text.textAlign = Paint.Align.LEFT
@@ -777,6 +859,22 @@ class PlayerRenderer {
         text.color = Color.rgb(222, 245, 230)
         c.drawText(gtLine1, x, r.top + h * 0.66f, text)
         if (gtLine2.isNotEmpty()) c.drawText(gtLine2, x, r.top + h * 0.89f, text)
+    }
+
+    /**
+     * 文字列 s のうち、いまの文字の大きさで幅 avail に入る長さ（全部入ればその長さ）。
+     * 入りきらないときは、後半にある空白の位置で切る（地名の途中で切らないように。日本語は文字単位で測る。二分探索）
+     */
+    private fun fitCut(s: String, avail: Float): Int {
+        if (s.isEmpty() || text.measureText(s, 0, s.length) <= avail) return s.length
+        var lo = 0
+        var hi = s.length
+        while (hi - lo > 1) {
+            val mid = (lo + hi) / 2
+            if (text.measureText(s, 0, mid) <= avail) lo = mid else hi = mid
+        }
+        val sp = s.lastIndexOf(' ', lo - 1)
+        return if (sp > lo / 2) sp else lo.coerceAtLeast(1)
     }
 
     /** 白い矢印（Guidance.ARROW_*）を box の中に描く */
