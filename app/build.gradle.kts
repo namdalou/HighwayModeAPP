@@ -28,7 +28,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = appVersionCode
-        versionName = "2.16.0"
+        versionName = "2.17.0"
         // 地図データ（HWDB）の配布目録。GitHub Actions では自動で設定される:
         //   ./gradlew :app:assembleRelease -Phwdb.manifestUrl=https://github.com/<user>/<repo>/releases/download/hwdb-latest/hwdb-manifest.json
         val manifestUrl = (project.findProperty("hwdb.manifestUrl") as String?) ?: ""
@@ -79,9 +79,11 @@ kotlin {
 
 dependencies {
     implementation(project(":core"))
-    // Android Auto（Car App Library）。app-projected は Android Auto で車両の情報（車速など）を取るのに必要
-    implementation("androidx.car.app:app:1.7.0")
-    implementation("androidx.car.app:app-projected:1.7.0")
+    // Android Auto（Car App Library）。app-projected は Android Auto で車両の情報（車速など）を取るのに必要。
+    // v2.17: 1.7.0 → 1.8.0-rc01（セキュリティの修正を含む版。古い版のアプリに、Android Auto が右上のボタンの代わりに
+    // 「アップデートを確認」を出している可能性があるため）
+    implementation("androidx.car.app:app:1.8.0-rc01")
+    implementation("androidx.car.app:app-projected:1.8.0-rc01")
     implementation("androidx.core:core:1.13.1")
     // Spectrum: パソコンなしで DUMP 権限(音声の番号の読み取り用)を許可するため
     implementation("dev.rikka.shizuku:api:13.1.5")

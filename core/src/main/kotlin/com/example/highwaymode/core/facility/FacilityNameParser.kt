@@ -15,7 +15,9 @@ object FacilityNameParser {
         val direction: String?,
         val highwayOasis: Boolean,
         /** 種別が「出口」「入口」「ランプ」などから（IC 名などが無い）。「国道2号出口」は行き先の名前 */
-        val entryWordOnly: Boolean = false
+        val entryWordOnly: Boolean = false,
+        /** 名前の末尾の「出口」「入口」「出入口」「ランプ」（無ければ null）。「豊川IC入口」なら「入口」（v2.17: 入口側の地点の見分けに使う） */
+        val entryWord: String? = null
     )
 
     private val SUFFIXES: List<Pair<String, FacilityType>> = listOf(
@@ -105,6 +107,7 @@ object FacilityNameParser {
 
         var type: FacilityType? = null
         var entryOnly = false
+        var entryWord: String? = null
         val first = matchSuffix(s)
         if (first == null) {
             // 「大和スマートIC北」: 種別のあとに向きだけが付いた名前
@@ -124,6 +127,7 @@ object FacilityNameParser {
             // 「豊川IC入口」「○○IC出口」: 出入口などの手前に IC・JCT 等があれば、そちらを種別にする
             if (first.first in ENTRY_WORDS) {
                 entryOnly = true
+                entryWord = first.first
                 val second = matchSuffix(s)
                 if (second != null && second.first !in ENTRY_WORDS) {
                     type = second.second
@@ -156,6 +160,6 @@ object FacilityNameParser {
         }
         s = s.trim().trimEnd('・', '-', '_').trim()
         if (type == FacilityType.SIC) etc = true
-        return Parsed(s, type, etc, direction, oasis, entryOnly)
+        return Parsed(s, type, etc, direction, oasis, entryOnly, entryWord)
     }
 }

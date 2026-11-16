@@ -68,19 +68,39 @@ object DualGeometry {
      * @param left 表示範囲の左端（Android Auto の音楽カードなどが横に並ぶと狭くなる）
      * @param right 表示範囲の右端。範囲がおかしい（幅の 30% 未満・画面外）ときは画面全体を使う
      * @param highwayTop ハイウェイモード側の上端（右上のボタンと重ならないよう、表示範囲の上端を渡す）
-     * @param barVisible 下部バーを出す（対象エリア内、または手動で音楽以外を選んだとき）
+     * @param barVisible 下部バーを出す（v2.17 から車の画面ではいつも出す。右上のボタンが出ない車でも操作できるように）
+     * @param bottom 表示範囲の下端（Android Auto が画面の下に何かを重ねる車。高さの 60% 未満・画面外なら画面の下端）
+     *
+     * 縦長の画面（縦型のディスプレイ。幅が高さの 0.9 倍未満）の 2 画面は、スマホの縦画面と同じく上下に分ける（v2.17）。
      */
     fun car(
         width: Float, height: Float,
         left: Float, right: Float, highwayTop: Float,
-        layout: DualLayout, barVisible: Boolean, density: Float
+        layout: DualLayout, barVisible: Boolean, density: Float,
+        bottom: Float = height
     ): DualFrame {
         val valid = left >= 0f && right <= width && right - left >= width * 0.3f
         val l = if (valid) left else 0f
         val r = if (valid) right else width
-        val barH = if (barVisible) carBarHeight(height, density) else 0f
-        val areaB = height - barH
-        val bar = if (barVisible) Box(l, areaB, r, height) else null
+        val bot = if (bottom >= height * 0.6f && bottom <= height) bottom else height
+        val barH = if (barVisible) carBarHeight(bot, density) else 0f
+        val areaB = bot - barH
+        val bar = if (barVisible) Box(l, areaB, r, bot) else null
+        if (layout == DualLayout.SPLIT && r - l < areaB * 0.9f) {
+            // 縦長: 上にハイウェイモード、下に Spectrum（横の表示）
+            val w = r - l
+            val musicH = (w * LANDSCAPE_H_PER_W).coerceIn(areaB * 0.30f, areaB * 0.45f)
+            val div = dividerWidth(density)
+            val my = areaB - musicH
+            return DualFrame(
+                layout,
+                music = Box(l, my, r, areaB),
+                highway = Box(l, highwayTop.coerceIn(0f, my * 0.25f), r, my - div),
+                bar = bar,
+                divider = Box(l, my - div, r, my),
+                stacked = true
+            )
+        }
         return arrange(layout, l, r, areaB, highwayTop.coerceIn(0f, areaB * 0.25f), bar, density)
     }
 

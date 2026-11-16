@@ -39,7 +39,11 @@ object FacilityExtractor {
         val inferredMergeDist: Double = 260.0,
         /** 道路外にあるオービスを道路に付ける最大距離 */
         val cameraRadius: Double = 40.0,
-        val userCameraRadius: Double = 80.0
+        val userCameraRadius: Double = 80.0,
+        /** IC の地点が出口か入口かを、この距離以内の分岐・合流で決める（v2.17） */
+        val rampNearDist: Double = 60.0,
+        /** 入口側の地点と同じ IC の出口を、同じ車線の前後この距離まで探す（v2.17。前方経路の重複の判定と同じ 3km） */
+        val entrancePairDist: Double = 3000.0
     )
 
     private class Occ(val edge: Int, val index: Int)
@@ -118,6 +122,10 @@ object FacilityExtractor {
         }
         assignPois(data, areas, areaFacility, params)
 
+        // 名前の末尾が「入口」「出口」の分岐（v2.17: 入口側の地点の見分けに使う）
+        val entranceNamed = HashSet<String>()
+        val exitNamed = HashSet<String>()
+
         // 名称つき分岐の一覧（名称の無い分岐・推定出口の名前探しに使う）
         val named = ArrayList<NamedJunction>()
         for (n in data.junctions.values) {
@@ -183,6 +191,10 @@ object FacilityExtractor {
             f.directionNote = parsed.direction
             f.typeInferred = parsed.type == null || inferredByName
             f.nameIsDestination = nameIsDestination
+            when (parsed.entryWord) {
+                "入口" -> entranceNamed.add(f.id)
+                "出口" -> exitNamed.add(f.id)
+            }
             if (type == FacilityType.JCT && f.destination == null) f.destination = exit?.otherRoadName
 
             if (type.isRestArea) {
@@ -199,6 +211,9 @@ object FacilityExtractor {
 
         // ---- 出口分岐ノードが登録されていないランプ分岐を「推定出口」として追加
         addInferredExits(graph, data, areas, areaFacility, named, perEdge, params)
+
+        // ---- IC の入口側（ランプが合流する地点）に付いた同じ IC の名前を整理する（v2.17）
+        resolveEntrances(graph, perEdge, entranceNamed, exitNamed, params)
 
         // ---- 片方向にしか出口の無い IC を、反対車線にも「出口なし」として並べる
         addNoExitCounterparts(graph, perEdge)
@@ -241,6 +256,109 @@ object FacilityExtractor {
                 a.centerLat, a.centerLon, maxOf(areaExtent(a), 150.0) + 80.0,
                 FacilityRefName(areaFacility[a.key]?.displayName ?: "SA/PA")
             )
+        }
+    }
+
+    // ------------------------------------------------------------------ IC の入口側（v2.17）
+
+    private const val RAMP_UNKNOWN = 0
+    private const val RAMP_EXIT = 1
+    private const val RAMP_ENTRANCE = 2
+
+    /**
+     * IC の入口側（一般道からのランプが本線に合流する地点）に付いた施設を整理する（v2.17）。
+     *
+     * OSM では、出口の分岐点のほかに、入口の合流点にも同じ IC の名前（「○○IC」「○○IC入口」）の分岐ノードが
+     * 登録されていることがある。そのままだと、近づくと出口が出て、出口を過ぎると入口側が同じ IC としてもう一度出る
+     * （利用者の報告: バイパスで、IC を過ぎて消えたはずの IC がもう一度出た）。
+     *  - IC・スマート IC の地点ごとに、近く（[Params.rampNearDist] 以内）の分岐・合流から、出口（本線からランプが分かれる）か
+     *    入口（ランプが合流するだけ）かを決める。決まらなければ名前の「出口」「入口」で決める
+     *  - 入口、または決められない地点は、同じ車線の前後 [Params.entrancePairDist] に同じ IC の出口があれば出さない
+     *    （その IC は、走行車線側の出口で表す）
+     *  - 入口で、同じ車線に同じ IC の出口が無ければ（入口だけのハーフ IC）、「出口なし」として出す
+     */
+    private fun resolveEntrances(
+        graph: RoadGraph,
+        perEdge: Array<MutableList<FacilityAnchor>>,
+        entranceNamed: Set<String>,
+        exitNamed: Set<String>,
+        params: Params
+    ) {
+        // 地点（アンカー）ごとの種類。アンカーは同じ施設でも車線ごとに別なので、アンカーで覚える
+        val kinds = java.util.IdentityHashMap<FacilityAnchor, Int>()
+        for (e in graph.edges) {
+            if (e.attr.isLink) continue
+            for (a in perEdge[e.id]) {
+                val f = a.facility
+                if (f.type != FacilityType.IC && f.type != FacilityType.SIC) continue
+                if (f.noExit || f.baseName.isEmpty() || f.baseName in GENERIC) continue
+                kinds[a] = rampKind(graph, e, a.offset, f.id in entranceNamed, f.id in exitNamed, params.rampNearDist)
+            }
+        }
+        val drop = java.util.IdentityHashMap<FacilityAnchor, Boolean>()
+        val replace = java.util.IdentityHashMap<FacilityAnchor, FacilityAnchor>()
+        for ((a, kind) in kinds) {
+            if (kind == RAMP_EXIT) continue
+            val f = a.facility
+            var exitNear = false
+            walkRoad(graph, a.edgeId, a.offset, params.entrancePairDist) { eid, from, to ->
+                for (x in perEdge[eid]) {
+                    if (x === a || x.offset < from - 1e-6 || x.offset > to + 1e-6) continue
+                    if (x.facility.baseName != f.baseName) continue
+                    if (kinds[x] == RAMP_EXIT) exitNear = true
+                }
+            }
+            if (exitNear) {
+                drop[a] = true
+            } else if (kind == RAMP_ENTRANCE) {
+                // 入口だけ（この向きには出口が無い）: 「出口なし」として出す（同じ施設を別の車線で出口として使っていることがあるので写しを作る）
+                val g = Facility(
+                    id = f.id + "e", type = f.type, baseName = f.baseName, rawName = f.rawName,
+                    lat = f.lat, lon = f.lon, etcOnly = f.etcOnly, etcReason = f.etcReason,
+                    exitRef = null, destination = null
+                )
+                g.noExit = true
+                g.typeInferred = f.typeInferred
+                g.directionNote = f.directionNote
+                replace[a] = FacilityAnchor(g, a.edgeId, a.offset)
+            }
+        }
+        if (drop.isEmpty() && replace.isEmpty()) return
+        for (list in perEdge) {
+            if (list.isEmpty()) continue
+            val it = list.listIterator()
+            while (it.hasNext()) {
+                val a = it.next()
+                if (drop.containsKey(a)) it.remove() else replace[a]?.let { r -> it.set(r) }
+            }
+        }
+    }
+
+    /**
+     * IC の地点 (e, offset) が、この車線の出口か入口か。地点の近くの頂点で、本線から分かれるランプがあれば出口、
+     * 合流するランプだけなら入口。どちらも無ければ（分岐ノードがランプから離れて登録されている）名前で決める
+     */
+    private fun rampKind(graph: RoadGraph, e: Edge, offset: Double, namedEntrance: Boolean, namedExit: Boolean, near: Double): Int {
+        var diverge = false
+        var merge = false
+        fun look(v: Int) {
+            for (id in graph.outEdges(v)) {
+                if (id == e.id || id == e.twin) continue
+                if (graph.edges[id].attr.isLink) diverge = true
+            }
+            for (id in graph.inEdges(v)) {
+                if (id == e.id || id == e.twin) continue
+                if (graph.edges[id].attr.isLink) merge = true
+            }
+        }
+        if (offset <= near) look(e.from)
+        if (e.length - offset <= near) look(e.to)
+        return when {
+            diverge -> RAMP_EXIT
+            namedExit -> RAMP_EXIT
+            merge -> RAMP_ENTRANCE
+            namedEntrance -> RAMP_ENTRANCE
+            else -> RAMP_UNKNOWN
         }
     }
 

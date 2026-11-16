@@ -7,7 +7,7 @@
 - Android アプリ「Spectrum ハイウェイ」。スマホと Android Auto（車の画面）に対応。
 - 音楽プレーヤー表示とスペクトラムアナライザーの **Spectrum** と、高速道路の前方の IC / JCT / SA / PA までの距離・到着予定時刻を出す **ハイウェイモード** を 1 つにしたもの。
 - 高速道路の外では Spectrum を全画面表示。高速道路に入ると自動で 2 画面（左 Spectrum : 右ハイウェイ = 4 : 5）。
-- 現在の版は **v2.16.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
+- 現在の版は **v2.17.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
 
 ## 利用者について
 
@@ -30,7 +30,9 @@
 
 ### 押さえておくべき設計
 
-- **Android Auto**：Car App Library 1.7.0、`NavigationTemplate` ＋ Surface に自前で描画（`DualCarScreen`）。
+- **Android Auto**：Car App Library 1.8.0-rc01（v2.17 で 1.7.0 から更新）、`NavigationTemplate` ＋ Surface に自前で描画（`DualCarScreen`）。
+  - **「アップデートを確認」（v2.17）**：利用者の報告「Android Auto で、左上に常に『アップデートを確認』と出て、メニュー・画面切替のボタンが出ない」。右上（右ハンドルの車では左上）のボタンは Android Auto が描く場所で、この文字はアプリのものではない。Car App Library 1.8.0-rc01（2026-08-26）に「セキュリティの修正。古い版なら更新を」とあり、Android Auto が古いライブラリのアプリにボタンの代わりにこれを出していると推測して更新した（**確証は無い**。この環境から Google の Maven につながらないので、ライブラリの API の変化は GitHub Actions のビルドで確かめた）。あわせて、**下部の切替バーを車の画面でもいつも出し、右端に［≡］メニュー**（`ModeBarRenderer.showMenuButton`・`menuAsLines`。押すと `CarMenuScreen`）を付けた（ボタンが出ない車でも画面のタッチで操作できるように）。開発者向け設定の「車の画面の表示範囲（確認用）」の 1 行目に、取り決めた Car App API レベル（`carContext.carAppApiLevel`）を出す。まだ出ると言われたら、その値と Android Auto の版をもらう。
+  - **画面の大きさ（v2.17）**：`DualGeometry.car` は、安定した範囲（`onStableAreaChanged`）の下端が上がっていればその上にバーを出し（高さの 60% 以上のときだけ）、縦長の画面（幅が高さの 0.9 倍未満）の 2 画面はスマホの縦画面と同じく上下（上にハイウェイ、下に音楽）。音楽の画面は 800×480・1024×600・1280×720・1920×720 の大きさで描いて確かめた（作業用フォルダの `preview` の `screen_car*`）。
   - 描画は専用スレッド（THREAD_PRIORITY_DISPLAY）で、30fps（一時停止中 15fps、ハイウェイだけのとき 10fps。下のバーの曲名を流している間は 30fps）。
   - **画面へ出す時刻をそろえる（v2.15）**：出す時刻（`postAtNs`。System.nanoTime）は 33.33ms ごとの決まった時刻。描くのにかかる時間の見積もり（`drawCostNs`。最近の最大に近い値）＋余裕だけ前から描き始め（`waitUntil`）、描き終えたら決まった時刻まで待ってから `unlockCanvasAndPost`。Handler は 1ms 刻みなので、少し早めに起こしてもらって `LockSupport.parkNanos` で合わせる。利用者の報告「Android Auto でスペアナがときどきカクつく」への対策（出す時刻のぶれで、スマホの中の画面の合成の区切りをまたぐフレームが出る）。まだカクつくと言われたら、`DRAW_MARGIN_NS`・`drawCostNs` の決め方、解析の間隔（`SpectrumEngine.READ_PERIOD_NS`）を見直す。
   - ハイウェイモードの画面の記録（RenderNode）は、すぐ反映したいとき（`panelInvalid`：操作・区画の変更）だけその場で描き直し、新しい位置情報・1 秒ごとの描き直し（`panelStale`）は**フレームを出した直後の空き時間**に行う（`refreshPanelNode`）。
@@ -88,7 +90,12 @@
   - 色は `SpectrumStyle.colorsFor`（帯ごとの下・上の色）→ `painter.setColors`。決まった色は `fixedColors`、ジャケットの色・カラーコードは `gradientFor`（その色を中ほどに、下を濃く・上を明るく、色合いを少しずらす）。ジャケットの代表色は `ArtPalette.dominant`（色合い 24 区分の重み付き。白黒は銀色）をジャケットの別スレッドで求めます。
   - 保存する番号（色 `bar_theme` の 0〜5、表示 `bar_visual`）は前の版と互換にしてあります。番号を並べ替えないでください（選ぶ画面の並びは `PICKER_ORDER`）。
   - 音楽の画面でスペアナを長押し（`PlayerView.onSpectrumLongPress`）すると表示の種類を順に切り替えます（20 回タップの数には入れない）。
-- **音楽の画面の配置（v2.6）**：スマホの縦画面（`portraitLayout`）と車の 2 画面の縦長の区画（`splitLayout` の stacked）は、**ジャケットの下にスペアナを置き、重ねません**（v2.5 まではジャケットの下半分に重ねていて、表示窓・消えている段がジャケットに被った）。ジャケットの大きさは区画の高さの約 56%。
+- **音楽の画面の配置（v2.6）**：スマホの縦画面（`portraitLayout`）は、**ジャケットの下にスペアナを置き、重ねません**（v2.5 まではジャケットの下半分に重ねていて、表示窓・消えている段がジャケットに被った）。ジャケットの大きさは区画の高さの約 56%。
+- **2 画面の音楽の側（v2.17 で作り直し。`splitLayout(vh, guide, overlay)`）**：利用者の報告「2 画面でマップの案内を出すと、スペアナも案内の帯もとても小さい（特に Android Auto）」と参考の写真（車載のオーディオの表示: ジャケットに幅の広いバーを重ねる）。v2.16 までは 800×480 の車の 2 画面で、帯の文字が約 12px、スペアナの高さが約 80px だった。いまは:
+  - 案内の帯は区画のいちばん上に横いっぱい（`Layout.guide`。高さは区画の 19%・52〜104）。背の高い帯は `drawGuidanceTall`（距離を高さの 34%、案内の文を 20.5% で 2 行まで。空白で折り返す）。案内中は曲の文字を 2 行（曲名・アーティスト名）、横長の区画では曲名だけ。
+  - スペアナはジャケットの上から `OVERLAY_FROM`（32%）の位置から下へ、横いっぱい・操作ボタンの上まで（`Layout.overlay`）。重なる部分のジャケットは下へ行くほど少し暗くする（`drawArtShade`。最大 43%。枠・板は描かない）。縦長の区画（`vh` ≥ 380。車の 2 画面）はジャケットを中央に（区画の中段の 78%・300 まで）、横長の区画はジャケットを左（170 まで）・文字を右。
+  - アナログメーター（`SpectrumStyle.isMeter`）は重ねない（v2.16 までの並び。案内の帯の扱いだけ新しい）。
+  - 案内の有無・メーターかどうかで 4 通りの配置を `splitCaches` に持つ。全画面（`landscapeLayout`・`portraitLayout`）は今までどおり、スペアナの区画の上を帯にする（`guideSplit`）。
 - **Google マップのナビ連携（v2.5）**：`MediaListenerService`（通知へのアクセス）が受け取った通知を `NotificationHooks` で `nav/NavNotifications` へ渡し、Google マップの「実行中」の通知から文字（extras と独自の表示 RemoteViews を組み立てた文字）を集めて `NavText.parse` で距離と案内の文にします（1.5 秒にまとめて読む。読み取り待ちは通知ごとに最新の 1 件）。
   - **案内中だけ・ほかのナビアプリ（v2.16）**：利用者の報告「Android Auto につなぐと、案内を始めていないのに『Google マップは運転モード』の帯が出る」。`NavText`（v2.16 から `:core` の `route/`）が案内かどうか（`Parsed.guidance`）も決める：案内地点までの距離が読めれば案内（題名・距離だけの部品・距離で始まる部品「300m先 …」）。読めなければ、曲がる方向・出口・分岐・方面・○○IC/JCT などの言葉（`MANEUVER`・`ROAD_POINT`）があり、案内を始めていないときの言葉（`NOT_GUIDANCE`：運転モード・ナビを開始・ダウンロード・位置情報を共有 など）が無いときだけ案内。案内でない通知は使わず、案内中だった通知（`activeKey`）が案内でなくなったら `CLEAR_AFTER_MS` 6 秒で消す。読む通知は、`NavNotifications.APPS`（Google マップ・Google マップ Go・Yahoo!カーナビ `jp.co.yahoo.android.apps.navi`・moviLink `jp.co.toyotaconnected.tlbsapp`・カーナビタイム `com.navitime.local.carnavitime`・ドライブサポーター `com.navitime.local.navitimedrive`・トラックカーナビ・COCCHi `jp.pioneer.cocchi.android`・Yahoo!マップ・Waze）か、通知の種類が `CATEGORY_NAVIGATION` の「実行中」の通知（このアプリ自身の通知は除く）。案内中のアプリの通知が `KEEP_ACTIVE_MS` 15 秒以内に更新されていれば、ほかのアプリの案内には切り替えない。帯・施設の詳細・設定の状態にはアプリの名前（`Guidance.source`・`NavView.source`）を出し、帯のタップはそのアプリを開く。**Google マップ以外のアプリが案内中にどんな通知を出すかは未確認**（パッケージ名は Web の情報で確かめただけ）。開発者向け設定の「ナビアプリの連携（確認用）」に、アプリの名前・判定（案内として扱ったか・理由）が出るので、報告があればそのコピーで `NavText` の言葉を直す。
   - `EngineHost.setNavInstruction` → `HighwayEngine.setNavInstruction`。案内の文が変わったら前方経路を作り直し、`buildRoute` で `NavGuide.plan`（JCT の乗り換え先を `NavForkChooser` で選び直す）→ `NavGuide.match`（降りる IC）。降りる IC より先の施設は一覧に出しません。結果は `FacilityView.navExit` / `navNote` と `HighwaySnapshot.nav`（`NavView`）。
@@ -109,9 +116,10 @@
 
 ## ビルドとテスト
 
-- テスト：`./gradlew :core:test`（JVM のみ。v2.16 時点で 104 件すべて成功）。
+- テスト：`./gradlew :core:test`（JVM のみ。v2.17 時点で 108 件すべて成功）。
 - アプリ：`./gradlew :app:assembleRelease`（Android SDK が必要）。CI（`.github/workflows/build-app.yml`）は `:core:test :app:assembleRelease`（署名鍵があれば `:app:bundleRelease` も）を実行します。
 - 地図データ：`.github/workflows/build-data.yml`（build-hwdb）が毎週作って `hwdb-latest` リリースに公開します。build-app はそれを同梱します。
+- **IC の入口側（v2.17。`FacilityExtractor.resolveEntrances`）**：利用者の報告「バイパスで、IC の出口を過ぎて消えたあと、同じ IC の合流側（下道からの入口）をもう一度 IC として表示した」。原因は OSM の IC の名前の付いた分岐ノードが入口の合流点にもある（「○○IC」「○○IC入口」。`FacilityNameParser` は「入口」を外して同じ IC として読む）こと。IC・SIC の地点ごとに、60m（`Params.rampNearDist`）以内の頂点に本線から出るランプがあれば出口、合流するランプだけなら入口、どちらも無ければ名前の「出口」「入口」（`Parsed.entryWord`）で決め、入口・不明の地点は、同じ車線の前後 3km（`entrancePairDist`。`walkRoad`）に同じ IC の出口があれば消す。入口だけなら「出口なし」の写し（id + "e"）にする。エンジンでも、通過した IC（いちばん近い前方の IC が一覧から消え、その位置を走り過ぎた）と同じ種別・名前の IC を、同じ向き（90° 以内）で 3km（`REPASS_SUPPRESS_M`）走るまで出さない（`passedIcs`・`notePassedIc`）。テストは `IcEntranceTest`（直す前のコードでは「豊川IC→見附IC→豊川IC→…」と繰り返し出ることを確かめた）。
 - **主要バイパスの判定（v2.15 で作り直し。`core/graph/BypassClassifier`）**：利用者の報告「バイパスでない一般道が、5km 先のバイパスの IC の延長として対象になった」（国道 23 号の名四国道）。いまの決まり：①信号・横断歩道・踏切のノード（`OsmDataSet.barrierNodes`。データ作成ツールの `OsmXmlLoader`・Overpass の取得の両方で読む）と、国道どうしの平面交差を「区切り」にする（反対車線にも写し、ウェイの途中なら分ける `prepare`）、②IC の間（10km 以内）・前後 1.5km を候補にする（区切りはまたがない）、③区切り無しでつながったひと続きの区間に、出口の IC が 2 か所以上・長さ 3km 以上のときだけ採用、④自動車専用・有料の区間どうしの間（道のりが両端の距離の 1.3 倍＋300m 以内。峠の旧道を除くため）と、そこから続く IC のある区間は採用。
   - 判定を変えたら、**確認用のワークフロー check-bypass**（`.github/workflows/check-bypass.yml`。`claude/**` のブランチで判定・datatool を変えて push すると自動で動く。全国のデータで判定して一覧を出すだけで、公開はしない）の結果を見る。一覧は記録（ログ）の最後に、名前ごとにまとめて出る（`BypassClassifier.summary`）。この作業環境からは記録のファイルを直接取れない（保存先のホストが許可されていない）ので、GitHub の MCP の `get_job_logs`（`return_content: true`・`tail_lines` は 170 くらい）で読む。細かい一覧は Artifacts の `bypass-report`。
   - v2.15 の確認結果（2026-11-12 の全国データ）：信号・横断歩道・踏切は約 10.3 万か所、採用 93 区間・921km（上下線を別々に数えた合計）。名四国道は対象外、名豊道路（151km・IC 36）・衣浦豊田道路・静清バイパス・新潟の各バイパスなどは採用。IC が 1 か所以下しか登録されていないバイパス（松永道路・豊田南バイパスなど）は対象外（表示する IC が無いので、そのままにしている）。
@@ -131,9 +139,16 @@
 - 改行コードは `.gitattributes` で LF に統一しています（`*.bat` / `*.cmd` だけ CRLF）。
 - 新しい権限を追加したり、取得するデータを変えたりしたら、`docs/PRIVACY.md` も更新してください。
 
-## 実機で未確認の点（v2.16 時点）
+## 実機で未確認の点（v2.17 時点）
 
 利用者の実機での確認待ちです。報告があればここから調べてください。
+
+v2.17 で入れたもの:
+
+- Car App Library 1.8.0-rc01 で、左上の「アップデートを確認」が消えて、右上（左上）のボタンが出るようになったか（推測による対策。出なければ「車の画面の表示範囲（確認用）」の Car App API レベルと、Android Auto の版をもらう）。1.8.0-rc01 にしたことで、ほかの画面（メニュー・スペアナの表示・施設一覧・動作状態）が変わっていないか。
+- 車の画面の下のバー（いつも表示）と［≡］メニューが押せるか（画面のタッチ `onClick` が届くか）。高速道路の外でバーを出したことで、音楽の画面が狭く見えないか。
+- 2 画面のスペアナをジャケットに重ねた見え方（ジャケットの色によって見にくくないか）、案内の帯の大きさ・2 行の案内の文、車の画面の 30fps での重さ。
+- バイパスの IC が 2 回出なくなったか。いつも通る IC が消えていないか（入口側だけに名前のある IC を入口とみなして消しすぎていないか）。
 
 v2.16 で入れたもの:
 

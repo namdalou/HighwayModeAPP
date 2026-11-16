@@ -47,6 +47,8 @@ class PlayerRenderer {
          * バーの動き（v2.10、v2.12 で速く）: 上がるときは時定数 [RISE_TAU] 秒ですぐ目標へ、下がるときは一定の速さ [FALL_PER_SEC]
          * （解析の値/秒。画面の高さでは毎秒約 4 本分）で落ちる。拍でパッと上がって、上がるよりは少しゆっくり落ちる
          */
+        /** 2 画面でスペアナを重ねるとき、ジャケットの上からこの割合の位置からスペアナを始める（v2.17） */
+        private const val OVERLAY_FROM = 0.32f
         private const val RISE_TAU = 0.012f
         private const val FALL_PER_SEC = 4.0f
 
@@ -170,7 +172,10 @@ class PlayerRenderer {
         val gain: Float,          // 表示上の伸び。大きいほどバーが高く上がる
         val noiseFloor: Float,    // これ以下の小さな値は 0 とみなす(下の段のちらつき防止)
         val boldTitle: Boolean = false,
-        val timeMargin: Float = 8f // 再生時間・残り時間の文字の、画面の端からの位置
+        val timeMargin: Float = 8f, // 再生時間・残り時間の文字の、画面の端からの位置
+        // ---- v2.17（2 画面）----
+        val guide: RectF? = null,      // カーナビの案内の帯の専用の場所（null なら、スペアナの区画の上を帯にする）
+        val overlay: Boolean = false   // スペアナをジャケットの下の部分に重ねる（参考の車載の表示のように）
     )
 
     /**
@@ -245,46 +250,99 @@ class PlayerRenderer {
      * 2 画面（車の画面・スマホ横画面の左側。Spectrum 4 : ハイウェイ 5）用: 幅 400 固定、高さは区画の比率に合わせる。
      * 上に曲名・アルバム名・アーティスト名（アイコン付き。運転中でも読めるよう大きく）、
      * 中段にジャケットとスペアナ、下に操作ボタンとシーク。
-     * 中段に高さがあるとき（縦長の区画）は、ジャケットを上に、その下にスペアナを置く（v2.6 から重ねない）。
+     *
+     * v2.17: 利用者の報告「2 画面でマップの案内を出すと、スペアナも案内の帯もとても小さい（特に Android Auto）」。
+     * v2.16 までは、ジャケットの横（縦長の区画では下）の残りにスペアナを置き、案内の帯もその上の一部を使っていたので、
+     * 車の 800×480 では帯の文字が約 12px、スペアナの高さが約 80px しかなかった。参考の車載の表示（ジャケットに大きなバーを重ねる）にならって:
+     *  - 案内の帯は区画のいちばん上に横いっぱい・大きく（[guide]。区画の高さの約 19%）。案内中は文字を 2 行（曲名・アーティスト名）に減らす
+     *  - スペアナはジャケットの下の部分に重ねて、横いっぱい・下は操作ボタンの上まで使う（[overlay]。表示窓・消えている段は描かない）
+     *  - 縦長の区画（車の 2 画面など）: ジャケットを中央に大きく、文字はその上
+     *  - 横長の区画（スマホの横画面の 2 画面など）: ジャケットを左に、文字はその右、スペアナは文字の下に横いっぱい
+     *  - アナログメーターは針の板でジャケットが隠れるので重ねない（v2.16 までと同じ並び。案内の帯の扱いだけ新しくする）
      */
-    private fun splitLayout(vh: Float): Layout {
+    private fun splitLayout(vh: Float, guide: Boolean, overlay: Boolean): Layout {
+        val m = 12f
+        val right = 400f - m
         val roomy = vh >= 290f
         val titleSize = if (roomy) 27f else 24f
         val subSize = if (roomy) 20f else 18f
-        val titleY = if (roomy) 33f else 30f
-        val albumY = titleY + subSize + (if (roomy) 9f else 8f)
-        val artistY = albumY + subSize + (if (roomy) 8f else 7f)
-        val textBottom = artistY + subSize * 0.5f
+        val gap = if (roomy) 8.5f else 7.5f
 
         val seekY = vh - 12f
         val playH = if (roomy) 50f else 44f
         val ctrlCy = seekY - 17f - playH / 2
         val side = playH * 0.92f
-        val midTop = textBottom + 6f
         val midBottom = ctrlCy - playH / 2 - 9f
-        val midH = midBottom - midTop
+
+        // 案内の帯（ナビ中）: いちばん上に横いっぱい
+        val g = if (guide) RectF(m, 8f, right, 8f + (vh * 0.19f).coerceIn(52f, 104f)) else null
+        val top0 = g?.let { it.bottom + 6f } ?: 0f
+        val stacked = vh >= 380f
 
         val art: RectF
         val spec: RectF
-        val stacked = midH >= 230f
-        if (stacked) {
-            // 縦長: ジャケットを上の中央に、その下にスペアナ（重ねない）
-            val a = ((midH - 10f) * 0.56f).coerceIn(90f, 210f)
-            art = RectF(200f - a / 2, midTop, 200f + a / 2, midTop + a)
-            spec = RectF(12f, midTop + a + 10f, 388f, midBottom)
+        val iconX: Float
+        val textX: Float
+        val titleY: Float
+        var albumY: Float
+        var artistY: Float
+        if (stacked || !overlay) {
+            // 文字は上に横いっぱい（案内中は曲名・アーティスト名の 2 行）
+            iconX = 16f
+            textX = 46f
+            titleY = top0 + titleSize * 1.22f
+            if (guide) {
+                albumY = -1f
+                artistY = titleY + subSize + gap
+            } else {
+                albumY = titleY + subSize + gap
+                artistY = albumY + subSize + gap - 0.5f
+            }
+            val midTop = artistY + subSize * 0.5f + 6f
+            val midH = midBottom - midTop
+            if (overlay) {
+                // 縦長: ジャケットを中央に大きく、スペアナはジャケットの下の部分に重ねて横いっぱい
+                val a = (midH * 0.78f).coerceIn(80f, 300f).coerceAtMost(midH)
+                art = RectF(200f - a / 2, midTop, 200f + a / 2, midTop + a)
+                spec = RectF(m, midTop + a * OVERLAY_FROM, right, midBottom)
+            } else if (midH >= 230f) {
+                // メーター（重ねない）: 縦長はジャケットの下に
+                val a = ((midH - 10f) * 0.56f).coerceIn(90f, 210f)
+                art = RectF(200f - a / 2, midTop, 200f + a / 2, midTop + a)
+                spec = RectF(m, midTop + a + 10f, right, midBottom)
+            } else {
+                // メーター（重ねない）: 横長は左にジャケット、右にメーター
+                val a = min(midH, 172f).coerceAtLeast(40f)
+                val at = midTop + (midH - a) / 2
+                art = RectF(m, at, m + a, at + a)
+                spec = RectF(m + a + 16f, midTop, right, midBottom)
+            }
         } else {
-            // 横長: 左にジャケット、右にスペアナ
-            val a = min(midH, 172f).coerceAtLeast(40f)
-            val at = midTop + (midH - a) / 2
-            art = RectF(12f, at, 12f + a, at + a)
-            spec = RectF(12f + a + 16f, midTop, 388f, midBottom)
+            // 横長で重ねる: ジャケットは左に中段の高さいっぱい、文字はその右、スペアナは文字の下に横いっぱい
+            val midTop = top0 + (if (guide) 2f else 10f)
+            // 曲名の幅を残すため、ジャケットは幅の約 4 割（170）まで
+            val a = (midBottom - midTop).coerceIn(40f, 170f)
+            art = RectF(m, midTop, m + a, midTop + a)
+            iconX = art.right + 12f
+            textX = iconX + 30f
+            titleY = midTop + titleSize * 1.02f
+            if (guide) {
+                // 案内中は曲名だけ（高さをスペアナに回す）
+                albumY = -1f
+                artistY = -1f
+            } else {
+                albumY = titleY + subSize + gap
+                artistY = albumY + subSize + gap - 0.5f
+            }
+            val textBottom = (if (artistY > 0f) artistY else titleY) + subSize * 0.5f
+            spec = RectF(m, max(textBottom + 6f, midTop + a * OVERLAY_FROM), right, midBottom)
         }
         return Layout(
             vw = 400f, vh = vh,
             art = art,
             spec = spec,
-            specOnly = RectF(12f, 40f, 388f, midBottom),
-            textX = 46f, textRight = 388f, iconX = 16f,
+            specOnly = RectF(m, top0 + 40f, right, midBottom),
+            textX = textX, textRight = right, iconX = iconX,
             titleY = titleY, albumY = albumY, artistY = artistY,
             titleSize = titleSize, subSize = subSize,
             prev = RectF(130f - side * 1.55f, ctrlCy - side / 2, 130f - side * 0.55f, ctrlCy + side / 2),
@@ -297,10 +355,13 @@ class PlayerRenderer {
             segUnit = 5.5f,
             gain = 1.0f,
             noiseFloor = 0.03f,
-            boldTitle = true
+            boldTitle = true,
+            guide = g,
+            overlay = overlay
         )
     }
-    private var splitCache: Layout? = null
+    /** 2 画面の表示（案内の有無・重ねるかどうかの組み合わせごと） */
+    private val splitCaches = arrayOfNulls<Layout>(4)
 
     /** 2 画面（左右に並べたとき）の表示にする */
     var large = false
@@ -520,11 +581,16 @@ class PlayerRenderer {
         updateBarColors()
 
         val aspect = if (h > 0) w.toFloat() / h else 1f
+        // カーナビの案内（ナビ中）
+        guideShown = Guidance.active
         lay = if (large && aspect in 0.62f..1.75f) {
-            // 2 画面: 区画の比率に合わせた表示（曲名・アルバム名・アーティスト名を大きく）
+            // 2 画面: 区画の比率に合わせた表示（曲名・アルバム名・アーティスト名を大きく）。
+            // 案内の有無・メーターかどうかで並びが変わる（v2.17）
             val vh = (400f / aspect).coerceIn(250f, 600f)
-            val sc = splitCache
-            if (sc != null && sc.vh == vh) sc else splitLayout(vh).also { splitCache = it }
+            val overlay = !SpectrumStyle.isMeter(style)
+            val k = (if (guideShown) 1 else 0) + (if (overlay) 2 else 0)
+            val sc = splitCaches[k]
+            if (sc != null && sc.vh == vh) sc else splitLayout(vh, guideShown, overlay).also { splitCaches[k] = it }
         } else if (h > w) {
             val vh = (240f * h / w).coerceIn(380f, 560f)
             val pc = portraitCache
@@ -542,10 +608,10 @@ class PlayerRenderer {
         c.save()
         c.translate(ox, oy)
         c.scale(scale, scale)
-        // カーナビの案内（ナビ中）: スペアナの区画の上の部分に帯を出す（一般道でも）
-        guideShown = Guidance.active
+        // カーナビの案内（ナビ中）: 2 画面は専用の場所（いちばん上）、ほかはスペアナの区画の上の部分に帯を出す（一般道でも）
         if (NowPlaying.hasInfo) {
             drawArt(c)
+            if (lay.overlay) drawArtShade(c)
             drawSpectrum(c, guideSplit(lay.spec))
             drawTexts(c)
             drawControls(c)
@@ -573,9 +639,13 @@ class PlayerRenderer {
     private var gkTwo = false
     private var gkSize = -1f
 
-    /** 案内を出すときは、スペアナの区画の上を帯に使い、残りをスペアナにする */
+    /** 案内を出すときは、スペアナの区画の上を帯に使い、残りをスペアナにする（2 画面は専用の場所があるので、スペアナはそのまま） */
     private fun guideSplit(spec: RectF): RectF {
         if (!guideShown) return spec
+        lay.guide?.let {
+            guideRect.set(it)
+            return spec
+        }
         val bh = (spec.height() * 0.3f).coerceIn(28f, 40f)
         guideRect.set(spec.left, spec.top, spec.right, spec.top + bh)
         guideSpec.set(spec.left, spec.top + bh + 5f, spec.right, spec.bottom)
@@ -589,9 +659,12 @@ class PlayerRenderer {
         c.drawRoundRect(r, 6f, 6f, shape)
         shape.color = Color.argb(40, 255, 255, 255)
         c.drawRect(r.left + 5f, r.top + 0.8f, r.right - 5f, r.top + 1.5f, shape)
+        // 背の高い帯（2 画面の専用の場所。v2.17）は、距離と 2 行の案内の文で描く
+        val tall = r.height() >= 70f && r.width() / r.height() < 6f
         // 矢印（ナビアプリの画像。無ければ案内の文から描く）
-        val ih = r.height() - 8f
-        iconRect.set(r.left + 5f, r.top + 4f, r.left + 5f + ih, r.bottom - 4f)
+        val ih = if (tall) r.height() * 0.74f else r.height() - 8f
+        val iy = r.centerY() - ih / 2f
+        iconRect.set(r.left + (if (tall) 8f else 5f), iy, r.left + (if (tall) 8f else 5f) + ih, iy + ih)
         val icon = Guidance.icon
         if (icon != null && !icon.isRecycled) {
             artSrc.set(0, 0, icon.width, icon.height)
@@ -601,6 +674,11 @@ class PlayerRenderer {
         }
         val x = iconRect.right + 7f
         val avail = r.right - 6f - x
+        // 背の高い帯: 1 行目に距離を大きく、その下に案内の文を 2 行まで
+        if (tall) {
+            drawGuidanceTall(c, r, x, avail)
+            return
+        }
         // 2 段（距離の下に案内の文）にするか: 区画が横に長くなければ 2 段
         val two = r.width() / r.height() < 7.5f
         val big = r.height() * (if (two) 0.40f else 0.5f)
@@ -645,6 +723,60 @@ class PlayerRenderer {
             c.drawText(gkLine, xx, base, text)
         }
         text.typeface = Typeface.DEFAULT
+    }
+
+    private var gtVersion = -1
+    private var gtAvail = -1f
+    private var gtSize = -1f
+    private var gtDist = ""
+    private var gtLine1 = ""
+    private var gtLine2 = ""
+
+    /** 背の高い案内の帯（2 画面の専用の場所。v2.17）: 距離（大きく）と、案内の文（2 行まで。収まらなければ末尾を省く） */
+    private fun drawGuidanceTall(c: Canvas, r: RectF, x: Float, avail: Float) {
+        val h = r.height()
+        val big = h * 0.34f
+        val small = h * 0.205f
+        if (Guidance.version != gtVersion || avail != gtAvail || small != gtSize) {
+            gtVersion = Guidance.version
+            gtAvail = avail
+            gtSize = small
+            gtDist = Guidance.distanceM?.let { Guidance.distanceLabel(it) } ?: Guidance.source
+            text.typeface = Typeface.DEFAULT
+            text.textSize = small
+            val s = Guidance.text.orEmpty().trim()
+            // 1 行目に収まるところで折り返す（日本語は区切りが無いので、文字単位で測る。二分探索）
+            var cut = s.length
+            if (text.measureText(s, 0, cut) > avail) {
+                var lo = 0
+                var hi = s.length
+                while (hi - lo > 1) {
+                    val mid = (lo + hi) / 2
+                    if (text.measureText(s, 0, mid) <= avail) lo = mid else hi = mid
+                }
+                cut = lo
+            }
+            if (cut >= s.length) {
+                gtLine1 = s
+                gtLine2 = ""
+            } else {
+                // 空白で切れるなら、その位置で切る（地名の途中で切らないように）
+                val sp = s.lastIndexOf(' ', cut - 1)
+                if (sp > cut / 2) cut = sp
+                gtLine1 = s.substring(0, cut).trimEnd()
+                gtLine2 = TextUtils.ellipsize(s.substring(cut).trimStart(), text, avail.coerceAtLeast(10f), TextUtils.TruncateAt.END).toString()
+            }
+        }
+        text.textAlign = Paint.Align.LEFT
+        text.color = Color.WHITE
+        text.typeface = BOLD
+        text.textSize = big
+        c.drawText(gtDist, x, r.top + h * 0.38f, text)
+        text.typeface = Typeface.DEFAULT
+        text.textSize = small
+        text.color = Color.rgb(222, 245, 230)
+        c.drawText(gtLine1, x, r.top + h * 0.66f, text)
+        if (gtLine2.isNotEmpty()) c.drawText(gtLine2, x, r.top + h * 0.89f, text)
     }
 
     /** 白い矢印（Guidance.ARROW_*）を box の中に描く */
@@ -795,6 +927,25 @@ class PlayerRenderer {
     }
 
     /**
+     * スペアナを重ねる 2 画面（v2.17）: ジャケットのうちスペアナが重なる部分を、下へ行くほど少し暗くする
+     * （明るいジャケットでもバーが見えるように。枠や板は描かない。上は元のジャケットのまま）
+     */
+    private fun drawArtShade(c: Canvas) {
+        val a = lay.art
+        val top = max(a.top, lay.spec.top)
+        if (a.bottom - top < 4f) return
+        if (top != shadeTop || a.bottom != shadeBottom) {
+            shadeTop = top
+            shadeBottom = a.bottom
+            shadePaint.shader = LinearGradient(0f, top, 0f, a.bottom, Color.argb(0, 0, 0, 0), Color.argb(110, 0, 0, 0), Shader.TileMode.CLAMP)
+        }
+        c.drawRect(a.left, top, a.right, a.bottom, shadePaint)
+    }
+    private val shadePaint = Paint()
+    private var shadeTop = Float.NaN
+    private var shadeBottom = Float.NaN
+
+    /**
      * バーの高さを目標（解析の値）へ動かす。上がるのは速く（[RISE_TAU]）、下がるのは一定の速さ（[FALL_PER_SEC]）。
      * v2.9 はばねでなめらかにしたが、遅くてほとんど動いて見えなかったので、v2.10 で上がり・下がりを別にした
      */
@@ -896,22 +1047,28 @@ class PlayerRenderer {
             c.drawText("♪", ix, lay.titleY, text)
 
             shape.color = ICON
-            shape.style = Paint.Style.STROKE
-            shape.strokeWidth = 1.6f
-            val dy = lay.albumY - 5f * k
-            c.drawCircle(cx, dy, 7f * k, shape)
+            if (lay.albumY >= 0f) {
+                shape.style = Paint.Style.STROKE
+                shape.strokeWidth = 1.6f
+                val dy = lay.albumY - 5f * k
+                c.drawCircle(cx, dy, 7f * k, shape)
+                shape.style = Paint.Style.FILL
+                c.drawCircle(cx, dy, 2f * k, shape)
+            }
             shape.style = Paint.Style.FILL
-            c.drawCircle(cx, dy, 2f * k, shape)
-            c.drawCircle(cx, lay.artistY - 10f * k, 3.2f * k, shape)
-            iconRect.set(cx - 6.5f * k, lay.artistY - 6f * k, cx + 6.5f * k, lay.artistY + 8f * k)
-            c.drawArc(iconRect, 180f, 180f, true, shape)
+            if (lay.artistY >= 0f) {
+                c.drawCircle(cx, lay.artistY - 10f * k, 3.2f * k, shape)
+                iconRect.set(cx - 6.5f * k, lay.artistY - 6f * k, cx + 6.5f * k, lay.artistY + 8f * k)
+                c.drawArc(iconRect, 180f, 180f, true, shape)
+            }
         }
 
         text.typeface = if (lay.boldTitle) BOLD else null
         marqueeText(c, 0, NowPlaying.title, lay.titleY, lay.titleSize, Color.WHITE)
         text.typeface = null
+        // 案内中の 2 画面などでは、アルバム名・アーティスト名を出さない（位置が負）
         if (lay.albumY >= 0f) marqueeText(c, 1, NowPlaying.album, lay.albumY, lay.subSize, SUB_TEXT)
-        marqueeText(c, 2, NowPlaying.artist, lay.artistY, lay.subSize, SUB_TEXT)
+        if (lay.artistY >= 0f) marqueeText(c, 2, NowPlaying.artist, lay.artistY, lay.subSize, SUB_TEXT)
     }
 
     /**

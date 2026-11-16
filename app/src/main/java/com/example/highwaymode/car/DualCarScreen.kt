@@ -57,8 +57,9 @@ import kotlin.math.max
  *
  *  - 高速道路の外: Spectrum を全画面（従来の Spectrum と同じ）
  *  - 高速道路の対象エリアに入ると自動で 2 画面（左: Spectrum の縦レイアウト / 右: ハイウェイモード）
- *  - 対象エリア内は下部に切替バー（音楽 / 2画面 / ハイウェイ）
- *  - タッチ操作のできない車でも使えるよう、同じ切替を右上のボタン（画面切替）にも置く
+ *  - 下部に切替バー（音楽 / 2画面 / ハイウェイ / ≡ メニュー）。v2.17 から高速道路の外でもいつも出す
+ *    （右上のボタンの代わりに「アップデートを確認」しか出ない車があった。右上のボタンが出なくても、画面のタッチで操作できるように）
+ *  - タッチ操作のできない車でも使えるよう、同じ切替を右上のボタン（画面切替・メニュー）にも置く
  *
  * 描画は専用スレッド（表示用の優先度）で、決まった間隔で行う。
  * Spectrum が再生中で見えている間は 30fps（Android Auto の映像と同じ程度）、一時停止中は 15fps、
@@ -151,12 +152,19 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         showClock = false
         displayMode = prefs.displayMode
     }
-    private val bar = ModeBarRenderer(1f)
+    private val bar = ModeBarRenderer(1f).apply {
+        // 右上のボタンが出ない車でも、メニュー（画面の切替・スペアナの表示・設定）を開けるように（v2.17）
+        showMenuButton = true
+        menuAsLines = true
+        idleHint = "高速道路に入ると自動で 2 画面になります"
+    }
     private val dividerPaint = Paint().apply { color = Color.rgb(24, 38, 50) }
     private val fadePaint = Paint()
 
     // ---- 描画面（描画スレッドとメインスレッドで共有）
     @Volatile private var surface: Surface? = null
+    /** Android Auto と取り決めた Car App API のレベル（確認用。読めなければ -1） */
+    @Volatile private var hostApiLevel = -1
     @Volatile private var width = 0
     @Volatile private var height = 0
     @Volatile private var density = 1f
@@ -436,6 +444,11 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         height = surfaceContainer.height
         val dpi = surfaceContainer.dpi
         density = if (dpi > 0) (dpi / 160f).coerceIn(0.75f, 3f) else 1f
+        hostApiLevel = try {
+            carContext.carAppApiLevel
+        } catch (e: Exception) {
+            -1
+        }
         panel.density = density
         bar.density = density
         // 表示範囲は新しい描画面に合わせて改めて通知されるので、古い値は捨てる
@@ -526,6 +539,7 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
                 ModeBarRenderer.Target.SPLIT, ModeBarRenderer.Target.OPEN_SPLIT -> DualMode.select(DualLayout.SPLIT)
                 ModeBarRenderer.Target.HIGHWAY -> DualMode.select(DualLayout.HIGHWAY)
                 ModeBarRenderer.Target.PLAY_PAUSE -> NowPlaying.playPause()
+                ModeBarRenderer.Target.MENU -> screenManager.push(CarMenuScreen(carContext))
                 else -> {}
             }
             requestFrame()
@@ -640,12 +654,15 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
             panelStale = true
         }
         music.large = layout == DualLayout.SPLIT
+        // 下部の切替バーは、v2.17 から車の画面ではいつも出す（右上のボタンが出ない車でも、メニュー・画面の切替ができるように）
         val f = DualGeometry.car(
             w, h,
             left = if (horiz.isEmpty) 0f else horiz.left.toFloat(),
             right = if (horiz.isEmpty) w else horiz.right.toFloat(),
             highwayTop = 0f,
-            layout = layout, barVisible = DualMode.barVisible, density = density
+            layout = layout, barVisible = true, density = density,
+            // 下端は「安定した範囲」だけで決める（表示範囲は一時的な表示で上下するので、バーが跳ねないように）
+            bottom = if (sCopy.isEmpty) h else sCopy.bottom.toFloat()
         )
         // 右上のボタン（Android Auto が描く）が出ている間だけ、その部分を空ける（ハイウェイ側の右上）。
         // ボタンは操作すると出て、約 10 秒操作が無いと隠れる。隠れても表示範囲を元に戻さない車があるので、
@@ -680,7 +697,7 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         val shifting = shiftH != targetH
         if (now - areaInfoAt > 1000L) {
             areaInfoAt = now
-            areaInfo = "画面 ${w.toInt()}×${h.toInt()}・密度 ${"%.2f".format(density)}\n" +
+            areaInfo = "画面 ${w.toInt()}×${h.toInt()}・密度 ${"%.2f".format(density)}・Car App API レベル ${if (hostApiLevel > 0) hostApiLevel else "不明"}\n" +
                 "表示範囲 ${if (v.isEmpty) "（知らせなし）" else "${v.left},${v.top},${v.right},${v.bottom}"}\n" +
                 "安定した範囲 ${if (sCopy.isEmpty) "（知らせなし）" else "${sCopy.left},${sCopy.top},${sCopy.right},${sCopy.bottom}"}\n" +
                 "ボタン ${if (stripUp) "表示中" else "隠れている"}・一覧を下げる量 ${targetH.toInt()}px（見積もり ${stripBottomEstimate().toInt()}px）"
