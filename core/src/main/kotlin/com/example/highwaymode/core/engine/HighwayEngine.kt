@@ -8,6 +8,7 @@ import com.example.highwaymode.core.eta.RouteProfile
 import com.example.highwaymode.core.eta.SpeedLimitModel
 import com.example.highwaymode.core.eta.TrafficTracker
 import com.example.highwaymode.core.facility.Amenity
+import com.example.highwaymode.core.facility.Facility
 import com.example.highwaymode.core.facility.FacilityType
 import com.example.highwaymode.core.geo.Geo
 import com.example.highwaymode.core.graph.RoadGraph
@@ -24,6 +25,7 @@ import com.example.highwaymode.core.route.NavMatch
 import com.example.highwaymode.core.route.RouteAhead
 import com.example.highwaymode.core.route.RouteAheadBuilder
 import com.example.highwaymode.core.route.RouteEnd
+import com.example.highwaymode.core.route.UpcomingFacility
 import com.example.highwaymode.core.speed.ForwardAxisEstimator
 import com.example.highwaymode.core.speed.SpeedFilter
 import com.example.highwaymode.core.traffic.EdgeTraffic
@@ -71,6 +73,15 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
     val driver = DriverProfile()
     val eta = EtaPredictor(driver)
     private val etaSmoother = EtaSmoother()
+
+    // ---- 通過した IC（v2.17）: 同じ IC の入口側などが、通過した直後にもう一度出ないように
+    private class PassedIc(val key: String, val odometer: Double, val bearing: Double)
+    private val passedIcs = ArrayList<PassedIc>()
+    /** いちばん近い前方の IC（id・名前・距離・そのときの積算距離）。次の更新で消えていて、その位置を過ぎていたら通過とみなす */
+    private var approachIcId: String? = null
+    private var approachIcKey = ""
+    private var approachIcDist = 0.0
+    private var approachIcOdo = 0.0
     private val traffic = TrafficTracker()
     private val routeBuilder = RouteAheadBuilder(config.maxRouteLength, 60)
 
@@ -202,6 +213,32 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         navHint = h
         navHintT = t
         if (prev == null || prev.norm != h.norm) route = null
+    }
+
+    /** 通過した IC を覚えるときの名前（種別と名前。出口なしの写しも同じ名前になる） */
+    private fun passKey(f: Facility): String = f.type.name + "|" + f.baseName
+
+    /**
+     * いちばん近い前方の IC を覚えておき、次の更新でそれが一覧から消えていて、その位置を走り過ぎていたら「通過した」とみなす（v2.17）。
+     * 経路の作り直しなどで一時的に消えただけ（まだ手前）のときは通過にしない
+     */
+    private fun notePassedIc(nearest: UpcomingFacility?, shownIds: Set<String>, progress: Double, bearing: Double) {
+        val prevId = approachIcId
+        if (prevId != null && prevId !in shownIds && approachIcDist < 1000.0 &&
+            odometerM - approachIcOdo >= approachIcDist - 80.0
+        ) {
+            passedIcs.removeAll { it.key == approachIcKey }
+            passedIcs.add(PassedIc(approachIcKey, odometerM, bearing))
+            approachIcId = null
+        }
+        if (nearest != null) {
+            approachIcId = nearest.facility.id
+            approachIcKey = passKey(nearest.facility)
+            approachIcDist = nearest.distance - progress
+            approachIcOdo = odometerM
+        } else if (approachIcId != null && approachIcId !in shownIds && odometerM - approachIcOdo > approachIcDist + 500.0) {
+            approachIcId = null
+        }
     }
 
     /** 新しい案内（10 分以上更新されない案内は使わない） */
@@ -892,6 +929,10 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         val ids = HashSet<String>()
         var prevDist = progress
         val nm = navMatch
+        // 通過した IC（同じ IC・同じ向きで、通過してから REPASS_SUPPRESS_M の間）は出さない
+        val passBearing = graph.edges[r.edge].smoothBearingAt(r.offset)
+        passedIcs.removeAll { odometerM - it.odometer > REPASS_SUPPRESS_M }
+        var nearestIc: UpcomingFacility? = null
         // カーナビで降りる IC が分かれば、その先の施設は出さない
         val navExitDist = nm?.exitDistance
         for (uf in rt.facilities) {
@@ -899,6 +940,11 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
             if (navExitDist != null && uf.distance > navExitDist + 5.0) break
             if (!RouteAheadBuilder.isDisplayable(uf.facility)) continue
             val f = uf.facility
+            if (f.type == FacilityType.IC || f.type == FacilityType.SIC) {
+                val key = passKey(f)
+                if (passedIcs.any { it.key == key && abs(Geo.diffDeg(passBearing, it.bearing)) < 90.0 }) continue
+                if (nearestIc == null) nearestIc = uf
+            }
             val isCam = f.type == FacilityType.CAMERA
             if (isCam) {
                 if (cams.size >= 5 || uf.distance - progress > 30_000.0) continue
@@ -943,6 +989,7 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
             }
         }
         etaSmoother.retain(ids)
+        notePassedIc(nearestIc, ids, progress, passBearing)
 
         val e = graph.edges[r.edge]
         val lim = SpeedLimitModel.limitFor(e.attr)
@@ -1156,6 +1203,8 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         private const val REST_HOLD_NANOS = 2L * 3600L * 1_000_000_000L
         /** カーナビの案内が更新されないまま、この時間が過ぎたら使わない（10 分） */
         private const val NAV_STALE_NANOS = 10L * 60L * 1_000_000_000L
+        /** 通過した IC と同じ IC（入口側など）を、通過してからこの距離を走るまで出さない [m]（v2.17） */
+        private const val REPASS_SUPPRESS_M = 3000.0
 
         fun fmtKm(km: Double): String =
             if (km < 10) String.format(Locale.US, "%.1fkm", km) else String.format(Locale.US, "%.0fkm", km)

@@ -46,8 +46,11 @@ class ModeBarRenderer(var density: Float) {
 
     class Hit(val rect: RectF, val target: Target)
 
-    /** スマホ: 右端に設定のボタン（［⋮］） */
+    /** 右端にメニューのボタン（スマホは［⋮］設定、車は［≡］メニュー。v2.17 から車にも出す） */
     var showMenuButton = false
+
+    /** メニューのボタンを「≡」（3 本線）で描く（車の画面。右上のボタンの「メニュー」と同じ形）。false なら「⋮」 */
+    var menuAsLines = false
 
     /** 対象エリア外で音楽だけを表示しているときの案内（スマホ横画面など） */
     var idleHint: String? = null
@@ -171,8 +174,18 @@ class ModeBarRenderer(var density: Float) {
             c.drawRoundRect(rect, segH * 0.22f, segH * 0.22f, stroke)
             fill.color = cText
             val cx = rect.centerX()
-            val rr = segH * 0.065f
-            for (k in -1..1) c.drawCircle(cx, rect.centerY() + k * segH * 0.2f, rr, fill)
+            if (menuAsLines) {
+                // ≡（車の画面: Android Auto の右上の「メニュー」と同じ形）
+                val lw = segH * 0.44f
+                val lh = max(dp(2f), segH * 0.075f)
+                for (k in -1..1) {
+                    val cy = rect.centerY() + k * segH * 0.18f
+                    c.drawRoundRect(cx - lw / 2, cy - lh / 2, cx + lw / 2, cy + lh / 2, lh / 2, lh / 2, fill)
+                }
+            } else {
+                val rr = segH * 0.065f
+                for (k in -1..1) c.drawCircle(cx, rect.centerY() + k * segH * 0.2f, rr, fill)
+            }
             hits.add(Hit(RectF(x, t, x + menuW, b), Target.MENU))
         }
 
