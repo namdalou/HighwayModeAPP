@@ -370,6 +370,9 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
                 toast("リセットしました")
             }
         }
+        ui.actionRow(ot, "プライバシーポリシー", "このアプリが使う情報と、その扱い（ブラウザで開きます）") {
+            SettingsDialogs.openPrivacyPolicy(this)
+        }
         ui.actionRow(ot, "このアプリについて", null) { showAbout() }.value("版 ${BuildConfig.VERSION_NAME}", SettingsUi.C_SUB)
     }
 
@@ -817,6 +820,7 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
             .setTitle(getString(R.string.app_name) + "　版 " + BuildConfig.VERSION_NAME)
             .setMessage(msg)
             .setPositiveButton("閉じる", null)
+            .setNeutralButton("プライバシーポリシー") { _, _ -> SettingsDialogs.openPrivacyPolicy(this) }
             .show()
     }
 

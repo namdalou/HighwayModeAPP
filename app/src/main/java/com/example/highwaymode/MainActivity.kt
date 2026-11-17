@@ -22,11 +22,13 @@ import com.example.highwaymode.car.AutoDiagnostics
 import com.example.highwaymode.core.dual.DualLayout
 import com.example.highwaymode.core.engine.FacilityView
 import com.example.highwaymode.data.AppSettings
+import com.example.highwaymode.data.LocalState
 import com.example.highwaymode.data.Prefs
 import com.example.highwaymode.dual.DualMode
 import com.example.highwaymode.engine.EngineHost
 import com.example.highwaymode.engine.RunDiagnostics
 import com.example.highwaymode.nav.NavNotifications
+import com.example.highwaymode.play.PlayFeatures
 import com.example.highwaymode.ui.DevAccess
 import com.example.highwaymode.ui.DualView
 import com.example.highwaymode.ui.FacilityDetailDialog
@@ -137,6 +139,8 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, ModeBarView.Callbac
         maybeShowBackgroundHint()
         // 更新・入れ直しで「音声の読み取り」（Shizuku で許可した DUMP 権限）が外れていたら取り直す（v2.19）
         ShizukuHelper.restoreIfNeeded(this) { SettingsDialogs.showDumpLost(this) }
+        // Google Play のアプリ内アップデート・アプリ内レビュー（v2.20。運転中は出さない）
+        PlayFeatures.onStart(this, prefs)
     }
 
     override fun onResume() {
@@ -156,6 +160,7 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, ModeBarView.Callbac
     }
 
     override fun onStop() {
+        PlayFeatures.onStop()
         EngineHost.removeListener(listener)
         DualMode.removeListener(this)
         DualMode.detach()
@@ -195,10 +200,48 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, ModeBarView.Callbac
         if (Build.VERSION.SDK_INT >= 33 && !has(Manifest.permission.POST_NOTIFICATIONS)) {
             need.add(Manifest.permission.POST_NOTIFICATIONS)
         }
+        val local = LocalState(this)
         if (need.isNotEmpty()) {
-            requestPermissions(need.toTypedArray(), REQ_PERMS)
+            // 権限の確認の前に、使う情報と権限の説明を出す（v2.20。Google Play の「目立つ開示」）
+            if (local.disclosureVersion >= DISCLOSURE_VERSION) requestPermissions(need.toTypedArray(), REQ_PERMS)
+            else if (!disclosureDeferred) showDisclosure(need.toTypedArray())
+        } else if (local.disclosureVersion < DISCLOSURE_VERSION) {
+            // 前の版から更新して、もう許可済み: 説明は出さない
+            local.disclosureVersion = DISCLOSURE_VERSION
         }
         if (has(Manifest.permission.ACCESS_FINE_LOCATION)) startTracking()
+    }
+
+    /** 説明で「あとで」を選んだ（この起動の間はもう出さない。下の権限のボタンからは許可できる） */
+    private var disclosureDeferred = false
+    private var disclosureDialog: AlertDialog? = null
+
+    /**
+     * このアプリが使う情報と権限の説明（v2.20）。同意したら権限の確認を出す。
+     * 位置情報は画面を消している間・Android Auto だけで使っている間も使うこと、マイクの権限は録音には使わないこと、
+     * 通知の内容（曲名・ナビの案内）を読むことを、権限の確認より前に知らせる。
+     */
+    private fun showDisclosure(perms: Array<String>) {
+        if (disclosureDialog?.isShowing == true || isFinishing) return
+        val msg = "Spectrum ハイウェイは、次の情報と権限を使います。どれも端末の中だけで使い、開発者に送ることはありません。\n\n" +
+            "・位置情報（正確な位置）: 走っている道路の判定と、IC・SA/PA までの距離・到着予定の計算に使います。" +
+            "画面を消しているときや Android Auto だけで使っているときも、常駐サービス（通知に表示）で位置情報を使います。\n\n" +
+            "・マイク: 再生中の音楽の音を解析して、スペクトラムアナライザーを表示するために Android が求める権限です。" +
+            "マイクで録音・保存・送信はしません。\n\n" +
+            "・通知: 走行中の次の施設などを通知に出します。\n\n" +
+            "・通知へのアクセス（あとで設定画面で許可）: 再生中の曲名・ジャケットと、カーナビのアプリの次の案内を読み取ります。\n\n" +
+            "渋滞情報を使う設定にしたときだけ、前方の道路の位置を、選んだ渋滞情報の提供元へ送ります。"
+        disclosureDialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("このアプリが使う情報と権限")
+            .setMessage(msg)
+            .setPositiveButton("同意して続ける") { _, _ ->
+                LocalState(this).disclosureVersion = DISCLOSURE_VERSION
+                requestPermissions(perms, REQ_PERMS)
+            }
+            .setNegativeButton("あとで") { _, _ -> disclosureDeferred = true }
+            .setNeutralButton("プライバシーポリシー") { _, _ -> SettingsDialogs.openPrivacyPolicy(this) }
+            .setOnCancelListener { disclosureDeferred = true }
+            .show()
     }
 
     /** 権限ボタンから。以前に「許可しない」が続いていて確認が出ない場合は、設定画面へ案内する */
@@ -357,5 +400,7 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, ModeBarView.Callbac
     companion object {
         private const val REQ_PERMS = 10
         private const val REQ_BUTTON = 11
+        /** 最初の説明（使う情報と権限）の版。説明の内容を変えたら上げる（同意済みの人にも、許可が足りなければもう一度出す） */
+        private const val DISCLOSURE_VERSION = 1
     }
 }

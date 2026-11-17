@@ -7,7 +7,7 @@
 - Android アプリ「Spectrum ハイウェイ」。スマホと Android Auto（車の画面）に対応。
 - 音楽プレーヤー表示とスペクトラムアナライザーの **Spectrum** と、高速道路の前方の IC / JCT / SA / PA までの距離・到着予定時刻を出す **ハイウェイモード** を 1 つにしたもの。
 - 高速道路の外では Spectrum を全画面表示。高速道路に入ると自動で 2 画面（左 Spectrum : 右ハイウェイ = 4 : 5）。
-- 現在の版は **v2.19.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
+- 現在の版は **v2.20.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
 
 ## 利用者について
 
@@ -117,6 +117,13 @@
   - ②設定の書き出し・読み込み：設定画面の「設定の引き継ぎ」（`SettingsActivity.buildBackup`）→ `data/SettingsBackup`（`collect`・`write`・`read`・`apply`）→ `core/backup/SettingsArchive`（JSON。`{"app":"spectrum-highway","format":1,...,"prefs":{ファイル:{項目:{type,value}}},"cameras":CSV}`。値は型つき、小数は文字列。知らない項目は読み飛ばし、新しい `format` は読まない）。API キーは書き出すときに含めないこともできる（`withoutSecrets`）。読み込みは、設定はファイルの内容に置き換え（ファイルに API キーが無ければ、いまのキーを残す）、オービスは足す（同じ地点は足さない）。端末ごとの一時的な項目（`SettingsBackup.LOCAL_ONLY`：`hwdb_last_check`・`hwdb_available`・`auto_hint_shown_for`・`dump_notice_shown_for`）は書き出さない。**設定の項目の名前を変えるときは、古いファイル・バックアップからの読み込みでも困らないようにする**（古い名前も読む）。テストは `SettingsArchiveTest`。
   - ③Shizuku の「音声の読み取り」（DUMP 権限）：許可できたら `spectrum` の `dump_wanted` を立てる（バックアップ・書き出しにも入る）。起動時（`MainActivity.onStart`・`HighwayCarAppService.onCreate`）に `ShizukuHelper.restoreIfNeeded`：DUMP が外れていて、Shizuku が動いていて、このアプリの Shizuku の許可が残っていれば、黙って `pm grant` で取り直す（Shizuku の接続は遅れて届くので 0.5・3・8 秒後に確かめる）。取り直せず、以前に許可していたら、スマホの画面で `SettingsDialogs.showDumpLost`（同じ版では 1 回だけ。`dump_notice_shown_for`）。Shizuku の許可そのものはファイル・バックアップで移せない（入れ直すと消える）。
   - Play ストアの版に上書きできる APK が要るときは、Play Console の App Bundle Explorer の「署名済みのユニバーサル APK」（README の「更新と設定の引き継ぎ」）。build-app の APK どうしは同じアップロード鍵なので上書きで更新できる（鍵が無いとデバッグ鍵になり、ビルドのたびに変わる）。
+- **Google Play での公開の準備（v2.20）**：利用者の指示「参考の記事（新規アプリを Google Play で公開するまでの流れ）を見て、公開にあたって追加・修正したほうがいい点を直して（難読化など）。プライバシーポリシーの URL とデータ セーフティの申告も」。Play Console に入力する内容と公開の流れは **`docs/PLAY_CONSOLE.md`**（データ セーフティの回答・常駐サービスの申告の文・コンテンツのレーティング・ストアの説明文の下書き・個人アカウントの 12 人／14 日のテスト・Android Auto の審査）。
+  - R8：公開版は前から `isMinifyEnabled = true`。v2.20 で `isShrinkResources = true`、`proguard-rules.pro` で `Log.v/d/i` を消す（`-assumenosideeffects`。警告・エラーは残す）・行番号を残す。`mapping.txt` は AAB に入り（Play Console が自動で使う）、build-app の成果物にも入れる。リソースを名前で探す処理（`getIdentifier`）は使っていない。反射は Shizuku の `newProcess` だけ（規則で残す）。
+  - 目立つ開示：`MainActivity.showDisclosure`。足りない権限があり、`LocalState.disclosureVersion` が `DISCLOSURE_VERSION` 未満なら、権限の確認の前に「このアプリが使う情報と権限」を出す（「同意して続ける」で確認へ、「あとで」でこの起動の間は出さない）。前の版から更新して権限がそろっている人には出さない。**説明の内容を変えたら `DISCLOSURE_VERSION` を上げる**。`LocalState`（SharedPreferences `local_state`）はこのインストールだけの状態で、バックアップ・書き出しに入れない。
+  - プライバシーポリシー：`BuildConfig.PRIVACY_POLICY_URL`（Gradle の `-Papp.privacyUrl`。build-app・build-hwdb はリポジトリ変数 `PRIVACY_URL`、無ければ `https://github.com/<リポジトリ>/blob/main/docs/PRIVACY.md`）を `SettingsDialogs.openPrivacyPolicy` で開く（設定の「その他」・最初の説明・「このアプリについて」）。`docs/PRIVACY.md` を変えたら最終更新日も直す。**新しく端末の外へ送る情報・権限を増やしたら、PRIVACY.md と `docs/PLAY_CONSOLE.md` のデータ セーフティの回答も直す**。
+  - アプリ内アップデート・レビュー（`play/PlayFeatures`。`com.google.android.play:app-update`・`review`）：`MainActivity.onStart` から少し待って確かめる。アップデートは Google Play に新しい版が出て `UPDATE_STALE_DAYS`（2）日たったら FLEXIBLE で勧め（1 日 1 回）、ダウンロードが終わったら再起動して更新するかを聞く。レビューは高速道路に入った回数（`Prefs.highwayTrips`。`DualMode` が数える）が 3 回以上・使い始めて 3 日以上で 1 回、次は 120 日後（`Prefs.reviewAskedMs`）。どちらも画面にフォーカスがあり（ほかの案内が出ていない）、車につながっておらず、高速道路を走っておらず、10km/h 未満のときだけ。Google Play 以外から入れたときは黙って何もしない。この作業環境では Google の Maven につながらないので、作業用の小さなビルドには代用品（stubs）を置き、実物の API は GitHub Actions のビルドで確かめる。
+  - 入れなかったもの：Firebase（解析・クラッシュの収集。プライバシーの方針と合わない）・広告（AdMob・UMP）・課金。クラッシュは Play Console の Android Vitals で見る。
+  - **Android Auto の審査**：「ナビ」の分類（`androidx.car.app.category.NAVIGATION`）のアプリには、品質の決まりでターンバイターンの道案内（NF-1）が求められ、このアプリには無い。製品版・クローズド テストで Android Auto に配布するときの審査で認められない可能性が高い（内部テストは審査なし）。進め方の案は `docs/PLAY_CONSOLE.md` の 8 章。利用者と方針を決めてから作り直す。
 - **公開向けの文言（v2.19）**：利用者の指示「開発向けの文言・ポップアップを、公開しても違和感のないように」。起動時に一度出る Android Auto の案内（`AutoDiagnostics.maybeShowOnce`。Google Play 以外から入れていて Android Auto 17.7 以降のとき）は、利用者向けの短い案内（Google Play から入れ直す・その前に設定を書き出す）にした。調べた内容（インストール元・版など）を出す `AutoDiagnostics.show` は開発者向け設定から。通知へのアクセスの一覧に出る名前（`MediaListenerService` の label）はアプリの名前。スマホの縦画面のハイウェイ側の「方位 ±°」は出さない。地図データの版は日付で出す（`SettingsDialogs.formatVersion`）。**利用者の目に入る文言に、内部テスト・README・ビルド・確認用・版の経緯などを書かない**（確認用の表示は開発者向け設定へ）。
 - **設定画面（v2.4、v2.5 で項目を追加）**：スマホの下部バーの［⋮］で `ui/SettingsActivity`（1 画面にまとめたもの。部品は `ui/SettingsUi`、ダイアログは `ui/SettingsDialogs`）。値は `data/Prefs` に保存し、選んだらすぐ反映（保存ボタンなし）。
   - v2.5 で、音声の読み取り（Shizuku。手順つき `SettingsDialogs.showShizukuGuide`）・渋滞情報（取得元・API キー・取り方の手順 `showKeyGuide`・キーの確認 `testKey`。おすすめは TomTom）・地図データの版（`mapVersion`）・Google マップのナビ連携を通常の設定画面に入れました。
@@ -150,9 +157,16 @@
 - 改行コードは `.gitattributes` で LF に統一しています（`*.bat` / `*.cmd` だけ CRLF）。
 - 新しい権限を追加したり、取得するデータを変えたりしたら、`docs/PRIVACY.md` も更新してください。
 
-## 実機で未確認の点（v2.19 時点）
+## 実機で未確認の点（v2.20 時点）
 
 利用者の実機での確認待ちです。報告があればここから調べてください。
+
+v2.20 で入れたもの:
+
+- リソースの縮小（`isShrinkResources`）で、画面・アイコン・車の画面のボタン・通知のアイコンが欠けていないか（使っている画像が消されていないか）。
+- 最初の説明（使う情報と権限）が、新しく入れたとき・権限が足りないときに出て、「同意して続ける」で権限の確認が出るか。前の版から更新した人（権限がそろっている）には出ないか。
+- 設定の「プライバシーポリシー」でページが開くか。
+- アプリ内アップデート（Google Play で新しい版を出して 2 日後。内部テストでも動く）・アプリ内レビュー（条件を満たしたとき 1 回）。運転中・車につないでいる間に出ないか。
 
 v2.19 で入れたもの:
 

@@ -97,6 +97,8 @@ jobs:
           UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
           UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
           UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+          # プライバシーポリシーのページ（build-app と同じ）
+          PRIVACY_URL: ${{ vars.PRIVACY_URL || format('https://github.com/{0}/blob/main/docs/PRIVACY.md', github.repository) }}
         run: |
           mkdir -p app/src/main/assets/hwdb
           cp out/japan-highways.hwdb app/src/main/assets/hwdb/
@@ -104,7 +106,7 @@ jobs:
           if [ "$SIGNED" = true ]; then TASKS="$TASKS :app:bundleRelease"; fi
           ./gradlew --no-daemon $TASKS \
             -Phwdb.manifestUrl=https://github.com/${{ github.repository }}/releases/download/hwdb-latest/hwdb-manifest.json \
-            -Papp.id=$APP_ID -Papp.versionCode=$VERSION_CODE
+            -Papp.id=$APP_ID -Papp.versionCode=$VERSION_CODE -Papp.privacyUrl="$PRIVACY_URL"
           cp app/build/outputs/apk/release/app-release.apk out/HighwayMode-$TAG.apk
           if [ "$SIGNED" = true ]; then
             cp app/build/outputs/bundle/release/app-release.aab out/HighwayMode-$TAG.aab

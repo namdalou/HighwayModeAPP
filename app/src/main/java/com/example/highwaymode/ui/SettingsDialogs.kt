@@ -57,6 +57,18 @@ object SettingsDialogs {
 
     private fun Activity.scroll(v: View): ScrollView = ScrollView(this).apply { addView(v) }
 
+    // ================================================================== プライバシーポリシー
+
+    /** プライバシーポリシーのページをブラウザで開く（v2.20。URL は BuildConfig.PRIVACY_POLICY_URL） */
+    fun openPrivacyPolicy(a: Activity) {
+        val url = com.example.highwaymode.BuildConfig.PRIVACY_POLICY_URL
+        try {
+            a.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+        } catch (e: Exception) {
+            Toast.makeText(a, "ブラウザを開けませんでした: $url", Toast.LENGTH_LONG).show()
+        }
+    }
+
     // ================================================================== 地図データ
 
     /** 端末内の地図データの短い説明（設定画面の行用。別スレッドで調べて、メインスレッドで [done] を呼ぶ） */
