@@ -127,6 +127,8 @@ object DualMode {
         val changed = presence.update(s.status, lastSnapshotAt / 1000.0)
         if (!changed) return
         highwayActive = presence.active
+        // 高速道路に入った回数（v2.20。アプリ内レビューを頼むかどうかに使う）
+        if (highwayActive) prefs?.let { it.highwayTrips = it.highwayTrips + 1 }
         if (prefs?.autoSwitch != false) {
             setLayout(if (highwayActive) highwayDefault() else DualLayout.MUSIC)
         }

@@ -4,6 +4,7 @@
 #  - できたファイルは、この実行の「Artifacts」（HighwayMode-app）からダウンロードできる:
 #      HighwayMode.aab … Google Play Console の内部テストへ上げるファイル（アップロード鍵を登録したときだけ）
 #      HighwayMode.apk … スマホへ直接入れる APK（Android Auto では表示されない）
+#      mapping.txt     … 難読化（R8）の対応表。クラッシュの記録を元の名前に戻すときに使う（AAB の中にも入っている）
 #  - 署名の鍵・アプリ ID・Play への自動公開の設定は build-data.yml の先頭の説明と同じ。
 name: build-app
 
@@ -65,14 +66,19 @@ jobs:
           UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.UPLOAD_KEYSTORE_PASSWORD }}
           UPLOAD_KEY_ALIAS: ${{ secrets.UPLOAD_KEY_ALIAS }}
           UPLOAD_KEY_PASSWORD: ${{ secrets.UPLOAD_KEY_PASSWORD }}
+          # プライバシーポリシーのページ（アプリの設定画面から開く。Play Console にも同じ URL を載せる）。
+          # リポジトリ変数 PRIVACY_URL があればそれ、無ければこのリポジトリの docs/PRIVACY.md
+          PRIVACY_URL: ${{ vars.PRIVACY_URL || format('https://github.com/{0}/blob/main/docs/PRIVACY.md', github.repository) }}
         run: |
           chmod +x gradlew
           TASKS=":core:test :app:assembleRelease"
           if [ "$SIGNED" = true ]; then TASKS="$TASKS :app:bundleRelease"; fi
-          ./gradlew --no-daemon $TASKS -Phwdb.manifestUrl="$MANIFEST_URL" -Papp.id=$APP_ID -Papp.versionCode=$VERSION_CODE
+          ./gradlew --no-daemon $TASKS -Phwdb.manifestUrl="$MANIFEST_URL" -Papp.id=$APP_ID -Papp.versionCode=$VERSION_CODE -Papp.privacyUrl="$PRIVACY_URL"
           mkdir -p out
           cp app/build/outputs/apk/release/app-release.apk out/HighwayMode.apk
           if [ "$SIGNED" = true ]; then cp app/build/outputs/bundle/release/app-release.aab out/HighwayMode.aab; fi
+          # 難読化の対応表（クラッシュの記録を元の名前に戻すためのもの。AAB の中にも入っていて、Play Console は自動で使う）
+          if [ -f app/build/outputs/mapping/release/mapping.txt ]; then cp app/build/outputs/mapping/release/mapping.txt out/mapping.txt; fi
           rm -f "$RUNNER_TEMP/upload.jks"
           ls -lh out
 

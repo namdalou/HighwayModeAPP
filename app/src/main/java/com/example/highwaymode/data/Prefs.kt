@@ -213,6 +213,21 @@ class Prefs(context: Context) {
         get() = sp.getBoolean(KEY_CAR_USED, false)
         set(v) = sp.edit().putBoolean(KEY_CAR_USED, v).apply()
 
+    /** 使い始めた時刻（v2.20。アプリ内レビューを頼むかどうかに使う。0 = まだ） */
+    var firstUseMs: Long
+        get() = sp.getLong(KEY_FIRST_USE, 0L)
+        set(v) = sp.edit().putLong(KEY_FIRST_USE, v).apply()
+
+    /** 高速道路の対象エリアに入った回数（v2.20。アプリ内レビューを頼むかどうかに使う） */
+    var highwayTrips: Int
+        get() = sp.getInt(KEY_HIGHWAY_TRIPS, 0)
+        set(v) = sp.edit().putInt(KEY_HIGHWAY_TRIPS, v).apply()
+
+    /** アプリ内レビューを最後に頼んだ時刻（v2.20。0 = まだ） */
+    var reviewAskedMs: Long
+        get() = sp.getLong(KEY_REVIEW_ASKED, 0L)
+        set(v) = sp.edit().putLong(KEY_REVIEW_ASKED, v).apply()
+
     /** 「Android Auto だけで使うための設定」の案内を表示済み */
     var backgroundHintShown: Boolean
         get() = sp.getBoolean(KEY_BG_HINT, false)
@@ -254,6 +269,9 @@ class Prefs(context: Context) {
         private const val KEY_NAV_BANNER = "nav_banner_music"
         private const val KEY_STRIP_EXTRA = "car_strip_extra"
         private const val KEY_CAR_TOUCH = "car_touch_seen"
+        private const val KEY_FIRST_USE = "first_use_ms"
+        private const val KEY_HIGHWAY_TRIPS = "highway_trips"
+        private const val KEY_REVIEW_ASKED = "review_asked_ms"
 
         val DEFAULT_ENDPOINTS: List<String> = OverpassHttp.DEFAULT_ENDPOINTS
 

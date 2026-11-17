@@ -31,11 +31,15 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = appVersionCode
-        versionName = "2.19.0"
+        versionName = "2.20.0"
         // 地図データ（HWDB）の配布目録。GitHub Actions では自動で設定される:
         //   ./gradlew :app:assembleRelease -Phwdb.manifestUrl=https://github.com/<user>/<repo>/releases/download/hwdb-latest/hwdb-manifest.json
         val manifestUrl = (project.findProperty("hwdb.manifestUrl") as String?) ?: ""
         buildConfigField("String", "HWDB_MANIFEST_URL", "\"" + manifestUrl.replace("\"", "") + "\"")
+        // プライバシーポリシーのページ（v2.20。設定画面・最初の説明から開く。Play Console にも同じ URL を載せる）。
+        // GitHub Actions ではリポジトリ変数 PRIVACY_URL、無ければ GitHub のリポジトリの docs/PRIVACY.md
+        val privacyUrl = prop("app.privacyUrl") ?: "https://github.com/namdalou/HighwayModeAPP/blob/main/docs/PRIVACY.md"
+        buildConfigField("String", "PRIVACY_POLICY_URL", "\"" + privacyUrl.replace("\"", "") + "\"")
     }
 
     buildFeatures {
@@ -61,7 +65,11 @@ android {
 
     buildTypes {
         release {
+            // R8: コードの縮小・難読化（名前を短い記号に置き換える）・最適化。v2.20 から使っていないリソースも取り除く。
+            // 難読化の対応表（mapping.txt）は AAB に入るので、Play Console のクラッシュの記録は元の名前で読める
+            // （build-app の成果物にも mapping.txt を入れる）
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // アップロード鍵があればそれで署名（Google Play 用）。無ければデバッグ鍵（APK を直接入れる個人利用向け）
             signingConfig = if (uploadKeystore != null) signingConfigs.getByName("upload") else signingConfigs.getByName("debug")
@@ -91,4 +99,8 @@ dependencies {
     // Spectrum: パソコンなしで DUMP 権限(音声の番号の読み取り用)を許可するため
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
+    // Google Play: アプリ内レビュー・アプリ内アップデート（v2.20。Google Play から入れたときだけ動く。どちらも Google Play が
+    // 表示・処理し、開発者に利用者の情報は届かない）
+    implementation("com.google.android.play:review:2.0.2")
+    implementation("com.google.android.play:app-update:2.1.0")
 }
