@@ -7,7 +7,7 @@
 - Android アプリ「Spectrum ハイウェイ」。スマホと Android Auto（車の画面）に対応。
 - 音楽プレーヤー表示とスペクトラムアナライザーの **Spectrum** と、高速道路の前方の IC / JCT / SA / PA までの距離・到着予定時刻を出す **ハイウェイモード** を 1 つにしたもの。
 - 高速道路の外では Spectrum を全画面表示。高速道路に入ると自動で 2 画面（左 Spectrum : 右ハイウェイ = 4 : 5）。
-- 現在の版は **v2.18.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
+- 現在の版は **v2.19.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
 
 ## 利用者について
 
@@ -22,7 +22,7 @@
 
 | モジュール | 内容 |
 |---|---|
-| `:core` | Android に依存しない演算（純粋な Kotlin/JVM）。地図データ（HWDB）、道路グラフ、マップマッチング、前方経路（カーナビの案内に合わせる `route/NavGuide`、ナビの通知の文字の読み取りと案内かどうかの判定 `route/NavText`。v2.16）、到着予測、渋滞、オービス、エンジン統合（`HighwayEngine`）、電池の節約の判定（`PowerPolicy`）、Android Auto の切断後に常駐を止める判定（`engine/DisconnectPolicy`）、画面の切替判定と区画割り（`dual/HighwayPresence`, `dual/DualGeometry`）、スペアナの解析（`audio/WaveStitcher`・`BandAnalyzer`・`SpectrumMapper`。v2.15。高さと曲の音量は v2.16 で作り直し）、主要バイパスの判定（`graph/BypassClassifier`）。**JVM 上でテストできる** |
+| `:core` | Android に依存しない演算（純粋な Kotlin/JVM）。地図データ（HWDB）、道路グラフ、マップマッチング、前方経路（カーナビの案内に合わせる `route/NavGuide`、ナビの通知の文字の読み取りと案内かどうかの判定 `route/NavText`。v2.16）、到着予測、渋滞、オービス、エンジン統合（`HighwayEngine`）、電池の節約の判定（`PowerPolicy`）、Android Auto の切断後に常駐を止める判定（`engine/DisconnectPolicy`）、画面の切替判定と区画割り（`dual/HighwayPresence`, `dual/DualGeometry`）、スペアナの解析（`audio/WaveStitcher`・`BandAnalyzer`・`SpectrumMapper`。v2.15。高さと曲の音量は v2.16 で作り直し）、主要バイパスの判定（`graph/BypassClassifier`）、設定の書き出し・読み込みのファイルの形（`backup/SettingsArchive`。v2.19）。**JVM 上でテストできる** |
 | `:app` | Android アプリ。`com.example.spectrum`（Spectrum：音声解析 `SpectrumEngine`、音声の自動探索 `SessionProber`、描画 `PlayerRenderer` / `PlayerView`、スペアナの表示の種類ごとの描画 `SpectrumPainter`、昔のカーオーディオの 3 つの表示 `CarAudioPainter`、ジャケットの色 `ArtPalette`、見た目の設定 `SpectrumStyle`、通知の受け渡し `NotificationHooks`、音楽の画面に出すカーナビの案内 `Guidance`）と `com.example.highwaymode`（スマホ画面、常駐サービス、`engine/EngineHost`、`car/DualCarScreen`（Android Auto）、`ui/PanelRenderer`（ハイウェイ側の描画）、`ui/SettingsActivity`（設定画面）・`ui/DevSettingsActivity`（開発者向け設定）・`ui/SpectrumPickers`（スペアナの見本・選ぶ画面）、`nav/NavNotifications`（ナビのアプリ（Google マップなど）の通知の読み取り）、`car/CarTemplates`（車の画面の決まりと共通の部品）、`CarAutoStop`（切断後に常駐を止める）） |
 | `:datatool` | PC・CI 用の地図データ（HWDB）作成ツール |
 
@@ -111,6 +111,13 @@
 - **Android Auto の切断後の常駐（v2.15）**：`HighwaySession.onDestroy`（最後の接続が終わったとき）→ `CarAutoStop.onCarDisconnected`。判定時間（`Prefs.carStopAfter`：3 分・10 分・終了しない）たっても、車がつながり直さず、スマホの画面（`AppPresence.phoneVisible`。Activity の数を数える）でも開いていなければ、`TrackingService.stop` とエンジンの停止。判定は `core` の `DisconnectPolicy`（高速道路を 20km/h 以上で走行中は待つ）。時間は、メインスレッドのタイマー・エンジンの状態が届くたび（`TrackingService` の `listener`）・アラーム（`setAndAllowWhileIdle`。`TrackingService` が受信）の 3 通りで確かめる（スマホが眠るとタイマーが進まないため）。車のメニューの電源のボタンは `CarAutoStop.exitRequested` を立ててから `finishCarApp()`（すぐ止める）。確認用：開発者向け設定の「接続が切れたあとの終了（確認用）」。
 - **再生ボタン（v2.11）**：`NowPlaying.playPause` の再生は `requestPlay`：送ったあと 0.7 秒で再生が始まったか確かめ（`playingNow`：覚えているセッション・`MediaTracker.anyPlaying`・`AudioManager.isMusicActive`）、始まっていなければ ① `MediaTracker.pick` して送り直す＋メディアキーの PLAY → ② 通知の「再生」ボタン（`MediaListenerService.pressPlayAction`。名前で「再生」を探し「一時停止」は押さない）→ ③ `MediaResumer.play(resumeOnly = true)`。どれも「再生」だけ（切り替えを送らない）。一時停止を押したら `playRequest` を進めて確かめをやめる。`MediaTracker` はセッションが終わったら通知の控え（`notifControllers`）からも外す。利用者の報告：一時停止してしばらくたつと再生ボタンが効かない（曲情報は出たまま、通知からは再生できる）。
 - **電池**：`PowerPolicy` が GPS の間隔とセンサーの ON/OFF を決めます（高速道路上・近く・デモ・設定で節約オフのときは常に毎秒）。
+- **更新と設定の引き継ぎ（v2.19）**：利用者の指示「Play ストアで公開するので、Play ストアと APK のどちらで入れて更新しても、API キー・オービスのファイル・Shizuku の権限・スペアナなどの設定が引き継がれるように」。
+  - 保存場所：設定は SharedPreferences の `highway_mode`（`Prefs`。API キー `traffic_key_<取得元>` もここ）と `spectrum`（`SpectrumStyle`・`ShizukuHelper`・`MediaResumer` など）、登録したオービスは `files/user_cameras.csv`（`UserCameraStore`）。地図データ（`files/hwdb`）・キャッシュ（`files/tiles`）・`spectrum_audio_sessions` は端末ごと。**同じアプリ ID・同じ署名の更新では全部残る**。消えるのはアンインストール（Play ストアの版はアプリ署名鍵、build-app の APK はアップロード鍵で署名されるので、両者の切り替えはアンインストールが要る）。
+  - ①自動バックアップ：`android:allowBackup="true"`（v2.18 までは false）、`res/xml/backup_rules.xml`（Android 11 以前）・`data_extraction_rules.xml`（12 以降。クラウドと機種変更の移行）で、上の 2 つの設定ファイルと `user_cameras.csv` だけを入れる（ほかは入れない）。**端末内に新しく保存するものを増やしたら、ここに入れるか決める**。
+  - ②設定の書き出し・読み込み：設定画面の「設定の引き継ぎ」（`SettingsActivity.buildBackup`）→ `data/SettingsBackup`（`collect`・`write`・`read`・`apply`）→ `core/backup/SettingsArchive`（JSON。`{"app":"spectrum-highway","format":1,...,"prefs":{ファイル:{項目:{type,value}}},"cameras":CSV}`。値は型つき、小数は文字列。知らない項目は読み飛ばし、新しい `format` は読まない）。API キーは書き出すときに含めないこともできる（`withoutSecrets`）。読み込みは、設定はファイルの内容に置き換え（ファイルに API キーが無ければ、いまのキーを残す）、オービスは足す（同じ地点は足さない）。端末ごとの一時的な項目（`SettingsBackup.LOCAL_ONLY`：`hwdb_last_check`・`hwdb_available`・`auto_hint_shown_for`・`dump_notice_shown_for`）は書き出さない。**設定の項目の名前を変えるときは、古いファイル・バックアップからの読み込みでも困らないようにする**（古い名前も読む）。テストは `SettingsArchiveTest`。
+  - ③Shizuku の「音声の読み取り」（DUMP 権限）：許可できたら `spectrum` の `dump_wanted` を立てる（バックアップ・書き出しにも入る）。起動時（`MainActivity.onStart`・`HighwayCarAppService.onCreate`）に `ShizukuHelper.restoreIfNeeded`：DUMP が外れていて、Shizuku が動いていて、このアプリの Shizuku の許可が残っていれば、黙って `pm grant` で取り直す（Shizuku の接続は遅れて届くので 0.5・3・8 秒後に確かめる）。取り直せず、以前に許可していたら、スマホの画面で `SettingsDialogs.showDumpLost`（同じ版では 1 回だけ。`dump_notice_shown_for`）。Shizuku の許可そのものはファイル・バックアップで移せない（入れ直すと消える）。
+  - Play ストアの版に上書きできる APK が要るときは、Play Console の App Bundle Explorer の「署名済みのユニバーサル APK」（README の「更新と設定の引き継ぎ」）。build-app の APK どうしは同じアップロード鍵なので上書きで更新できる（鍵が無いとデバッグ鍵になり、ビルドのたびに変わる）。
+- **公開向けの文言（v2.19）**：利用者の指示「開発向けの文言・ポップアップを、公開しても違和感のないように」。起動時に一度出る Android Auto の案内（`AutoDiagnostics.maybeShowOnce`。Google Play 以外から入れていて Android Auto 17.7 以降のとき）は、利用者向けの短い案内（Google Play から入れ直す・その前に設定を書き出す）にした。調べた内容（インストール元・版など）を出す `AutoDiagnostics.show` は開発者向け設定から。通知へのアクセスの一覧に出る名前（`MediaListenerService` の label）はアプリの名前。スマホの縦画面のハイウェイ側の「方位 ±°」は出さない。地図データの版は日付で出す（`SettingsDialogs.formatVersion`）。**利用者の目に入る文言に、内部テスト・README・ビルド・確認用・版の経緯などを書かない**（確認用の表示は開発者向け設定へ）。
 - **設定画面（v2.4、v2.5 で項目を追加）**：スマホの下部バーの［⋮］で `ui/SettingsActivity`（1 画面にまとめたもの。部品は `ui/SettingsUi`、ダイアログは `ui/SettingsDialogs`）。値は `data/Prefs` に保存し、選んだらすぐ反映（保存ボタンなし）。
   - v2.5 で、音声の読み取り（Shizuku。手順つき `SettingsDialogs.showShizukuGuide`）・渋滞情報（取得元・API キー・取り方の手順 `showKeyGuide`・キーの確認 `testKey`。おすすめは TomTom）・地図データの版（`mapVersion`）・Google マップのナビ連携を通常の設定画面に入れました。
   - 描画で毎回使う設定（到着予定の表示 `Formats.etaRemaining`、スペアナの色・高さ `SpectrumStyle`）は `data/AppSettings.apply` で変数に写します。設定を変えたら `AppSettings.changed` を呼ぶと `version` が増え、表示中の車の画面が 2 秒以内に読み直します（`DualCarScreen.reloadSettings`）。
@@ -120,7 +127,7 @@
 
 ## ビルドとテスト
 
-- テスト：`./gradlew :core:test`（JVM のみ。v2.18 時点で 109 件すべて成功）。
+- テスト：`./gradlew :core:test`（JVM のみ。v2.19 時点で 114 件すべて成功）。
 - アプリ：`./gradlew :app:assembleRelease`（Android SDK が必要）。CI（`.github/workflows/build-app.yml`）は `:core:test :app:assembleRelease`（署名鍵があれば `:app:bundleRelease` も）を実行します。
 - 地図データ：`.github/workflows/build-data.yml`（build-hwdb）が毎週作って `hwdb-latest` リリースに公開します。build-app はそれを同梱します。
 - **IC の入口側（v2.17。`FacilityExtractor.resolveEntrances`）**：利用者の報告「バイパスで、IC の出口を過ぎて消えたあと、同じ IC の合流側（下道からの入口）をもう一度 IC として表示した」。原因は OSM の IC の名前の付いた分岐ノードが入口の合流点にもある（「○○IC」「○○IC入口」。`FacilityNameParser` は「入口」を外して同じ IC として読む）こと。IC・SIC の地点ごとに、60m（`Params.rampNearDist`）以内の頂点に本線から出るランプがあれば出口、合流するランプだけなら入口、どちらも無ければ名前の「出口」「入口」（`Parsed.entryWord`）で決め、入口・不明の地点は、同じ車線の前後 3km（`entrancePairDist`。`walkRoad`）に同じ IC の出口があれば消す（入口の地点は、不明の地点（出口の分岐ノードが分岐から離れて登録されたもの）も出口とみなす）。入口だけなら「出口なし」の写し（id + "e"）にする。エンジンでも、通過した IC（いちばん近い前方の IC が一覧から消え、その位置を走り過ぎた）と同じ種別・名前の IC を、同じ向き（90° 以内）で 3km（`REPASS_SUPPRESS_M`）走るまで出さない（`passedIcs`・`notePassedIc`）。テストは `IcEntranceTest`（直す前のコードでは「豊川IC→見附IC→豊川IC→…」と繰り返し出ることを確かめた）。
@@ -143,9 +150,16 @@
 - 改行コードは `.gitattributes` で LF に統一しています（`*.bat` / `*.cmd` だけ CRLF）。
 - 新しい権限を追加したり、取得するデータを変えたりしたら、`docs/PRIVACY.md` も更新してください。
 
-## 実機で未確認の点（v2.18 時点）
+## 実機で未確認の点（v2.19 時点）
 
 利用者の実機での確認待ちです。報告があればここから調べてください。
+
+v2.19 で入れたもの:
+
+- 設定の書き出し・読み込み：保存先を選ぶ画面（Google ドライブ・ダウンロードなど）で書き出せるか、読み込みで設定・スペアナ・API キー・オービスが戻るか（読み込んだあと設定画面が開き直り、車の画面にも反映されるか）。Play ストアの版 ⇔ APK の切り替え（アンインストール → 入れ直し → 読み込み）。
+- 自動バックアップ：入れ直したときに設定が戻るか（端末のバックアップがオンで、バックアップが作られたあと。すぐには作られない）。
+- Shizuku：更新のあと「音声の読み取り」が許可済みのままか、外れていたら自動で取り直すか（Shizuku が動いているとき）。取り直せないときの案内が 1 回だけ出るか。
+- 開発向けの文言を直した画面（Android Auto の案内・通知へのアクセスの一覧の名前・地図データの更新のお知らせ）の見え方。
 
 v2.18 で入れたもの:
 

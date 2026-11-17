@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 12 以降の自動バックアップ（Google アカウント）と、機種変更のときのデータの移行（v2.19）。
+  対象は backup_rules.xml と同じ 3 つ（設定・スペアナの見た目・登録したオービス）。地図データ・キャッシュは含めない。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="sharedpref" path="highway_mode.xml" />
+        <include domain="sharedpref" path="spectrum.xml" />
+        <include domain="file" path="user_cameras.csv" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="sharedpref" path="highway_mode.xml" />
+        <include domain="sharedpref" path="spectrum.xml" />
+        <include domain="file" path="user_cameras.csv" />
+    </device-transfer>
+</data-extraction-rules>

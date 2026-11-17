@@ -136,7 +136,8 @@ class DataSyncService : Service() {
         val keep = files.map { it.name }.toSet()
         HwdbManager.downloadDir(this).listFiles()?.forEach { if (it.name.endsWith(".hwdb") && it.name !in keep) it.delete() }
         HwdbManager.notifyChanged()
-        return "更新しました（版 ${m.dataVersion}, ${String.format(Locale.US, "%.1f", m.totalBytes / 1e6)} MB）"
+        val made = com.example.highwaymode.ui.SettingsDialogs.formatVersion(m.dataVersion)?.let { "$it 作成" } ?: m.dataVersion
+        return "更新しました（$made・${String.format(Locale.US, "%.1f", m.totalBytes / 1e6)} MB）"
     }
 
     private fun doBuild(spec: String, token: CancelToken): String {

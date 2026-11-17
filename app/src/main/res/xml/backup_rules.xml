@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 11 以前の自動バックアップ（Google アカウント。v2.19）。
+  アプリの入れ直し・機種変更のときに、設定・登録したオービスを戻すため（アプリの更新では端末内にそのまま残る）。
+  バックアップするのは次の 3 つだけ（地図データ・キャッシュは大きく、ダウンロードし直せるので含めない）:
+   - highway_mode.xml … 設定（表示・音声・渋滞情報の取得元と API キー・Android Auto など）と運転のくせの学習
+   - spectrum.xml     … スペアナの見た目・音声の読み取り（Shizuku）を使うか
+   - user_cameras.csv … 自分で登録・取り込みしたオービス
+  Android 12 以降は data_extraction_rules.xml を使う（中身は同じ）。
+-->
+<full-backup-content>
+    <include domain="sharedpref" path="highway_mode.xml" />
+    <include domain="sharedpref" path="spectrum.xml" />
+    <include domain="file" path="user_cameras.csv" />
+</full-backup-content>

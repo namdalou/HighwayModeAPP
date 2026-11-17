@@ -12,6 +12,9 @@ plugins {
 //  版番号: Play へ上げるたびに増やす必要がある（Actions ではビルド時刻から自動で決まる）
 //  署名: 環境変数 UPLOAD_KEYSTORE_FILE / UPLOAD_KEYSTORE_PASSWORD / UPLOAD_KEY_ALIAS / UPLOAD_KEY_PASSWORD
 //    があればその鍵（アップロード鍵）で署名する。無ければデバッグ鍵（Play には上げられない）。
+//    APK を上書きで更新して設定を引き継ぐには、いつも同じ鍵で署名すること（デバッグ鍵はビルドする PC・CI ごとに変わる）。
+//    Play ストアの版は Google のアプリ署名鍵で署名されるので、アップロード鍵の APK とは上書きし合えない（v2.19 の
+//    「設定の引き継ぎ」で書き出し → 入れ直し → 読み込み。README の「更新と設定の引き継ぎ」）。
 fun prop(name: String): String? = (project.findProperty(name) as String?)?.trim()?.takeIf { it.isNotEmpty() }
 fun env(name: String): String? = System.getenv(name)?.trim()?.takeIf { it.isNotEmpty() }
 
@@ -28,7 +31,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = appVersionCode
-        versionName = "2.18.0"
+        versionName = "2.19.0"
         // 地図データ（HWDB）の配布目録。GitHub Actions では自動で設定される:
         //   ./gradlew :app:assembleRelease -Phwdb.manifestUrl=https://github.com/<user>/<repo>/releases/download/hwdb-latest/hwdb-manifest.json
         val manifestUrl = (project.findProperty("hwdb.manifestUrl") as String?) ?: ""

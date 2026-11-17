@@ -69,8 +69,8 @@ object SettingsDialogs {
             }
             val national = list.filter { it.coverage == "all" }.maxByOrNull { it.version }
             val text = when {
-                national != null -> "全国　版 ${national.version}（${national.kind.label}）"
-                list.isNotEmpty() -> "一部の地方　版 ${list.maxOf { it.version }}"
+                national != null -> "全国（${formatVersion(national.version) ?: national.version}・${national.kind.label}）"
+                list.isNotEmpty() -> list.maxOf { it.version }.let { v -> "一部の地方（${formatVersion(v) ?: v}）" }
                 else -> "端末内に地図データがありません（通信で取得します）"
             }
             a.runOnUiThread { if (!a.isFinishing) done(text) }
@@ -265,9 +265,11 @@ object SettingsDialogs {
                 if (have == null || m.dataVersion > have) {
                     a.runOnUiThread {
                         if (a.isFinishing) return@runOnUiThread
+                        val newText = formatVersion(m.dataVersion) ?: m.dataVersion
+                        val haveText = have?.let { formatVersion(it) ?: it } ?: "なし"
                         AlertDialog.Builder(a, THEME)
                             .setTitle("新しい地図データがあります")
-                            .setMessage(String.format(Locale.JAPAN, "版 %s（%.1f MB）\n現在: %s\n\n更新しますか？（Wi-Fi 推奨）", m.dataVersion, m.totalBytes / 1e6, have ?: "なし"))
+                            .setMessage(String.format(Locale.JAPAN, "%s 作成（%.1f MB）\nいまの地図データ: %s\n\n更新しますか？（Wi-Fi での更新をおすすめします）", newText, m.totalBytes / 1e6, haveText))
                             .setPositiveButton("更新") { _, _ -> DataSyncService.download(a) }
                             .setNegativeButton("あとで", null)
                             .show()
@@ -466,6 +468,31 @@ object SettingsDialogs {
         b.show()
     }
 
+    /**
+     * 更新・入れ直しで「音声の読み取り」（DUMP 権限）が外れていて、黙って取り直せなかったときの案内（v2.19）。
+     * 以前に許可していたときだけ、同じ版では 1 回だけ出す。
+     */
+    fun showDumpLost(a: Activity) {
+        if (a.isFinishing || a.isDestroyed) return
+        if (!com.example.spectrum.ShizukuHelper.takeNotice(a, com.example.highwaymode.BuildConfig.VERSION_CODE)) return
+        AlertDialog.Builder(a, THEME)
+            .setTitle("音声の読み取りの許可")
+            .setMessage(
+                "アプリの更新・入れ直しのため、Shizuku で許可した「音声の読み取り」が外れています。" +
+                    "スペアナが動かない音楽アプリがあるときは、Shizuku を開始してから「許可する」を押してください" +
+                    "（設定の「音楽（スペアナ）」→「音声の読み取り（Shizuku）」からも許可できます）。"
+            )
+            .setPositiveButton("許可する") { _, _ ->
+                com.example.spectrum.ShizukuHelper.grantDump(a) { ok, m ->
+                    Toast.makeText(a, m, Toast.LENGTH_LONG).show()
+                    if (!ok && !com.example.spectrum.ShizukuHelper.isRunning()) com.example.spectrum.ShizukuHelper.openShizuku(a)
+                }
+            }
+            .setNeutralButton("使わない") { _, _ -> com.example.spectrum.ShizukuHelper.setWanted(a, false) }
+            .setNegativeButton("あとで", null)
+            .show()
+    }
+
     // ================================================================== オービス（登録した地点）
 
     interface CameraFileActions {
@@ -516,7 +543,7 @@ object SettingsDialogs {
                 .show()
         })
         col.addView(a.label(
-            "走行中に登録すると、その地点と進行方向を記録します（Android Auto の画面右上の「オービス登録」でも登録できます）。\n" +
+            "走行中に登録すると、その地点と進行方向を記録します（Android Auto では、高速道路を走行中に画面右上のカメラのボタンでも登録できます）。\n" +
                 "CSV 形式: 緯度,経度,進行方位(度),制限速度,名称（1 行 1 件、見出し行は任意）。進行方位を入れると、その向きの車線だけに付きます。",
             12f, color = 0xFF8D96A3.toInt()
         ).apply { gravity = Gravity.START })

@@ -39,6 +39,7 @@ import com.example.spectrum.MediaListenerService
 import com.example.spectrum.MediaTracker
 import com.example.spectrum.NowPlaying
 import com.example.spectrum.PlayerView
+import com.example.spectrum.ShizukuHelper
 import com.example.spectrum.SpectrumEngine
 import com.example.spectrum.SpectrumStyle
 
@@ -98,9 +99,9 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, ModeBarView.Callbac
         bar.callbacks = this
         dual = DualView(this, player, panel, bar)
 
-        locBtn = smallButton("位置情報を許可(ハイウェイ用)") { requestRuntime(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
-        micBtn = smallButton("マイク権限を許可(スペアナ用)") { requestRuntime(arrayOf(Manifest.permission.RECORD_AUDIO)) }
-        accessBtn = smallButton("通知アクセスを許可(曲情報用)") { openNotificationAccess() }
+        locBtn = smallButton("位置情報を許可（ハイウェイ用）") { requestRuntime(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)) }
+        micBtn = smallButton("マイクを許可（スペアナ用）") { requestRuntime(arrayOf(Manifest.permission.RECORD_AUDIO)) }
+        accessBtn = smallButton("通知へのアクセスを許可（曲情報用）") { openNotificationAccess() }
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             for (b in listOf(locBtn, micBtn, accessBtn)) addView(b, LinearLayout.LayoutParams(0, -2, 1f))
@@ -134,6 +135,8 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, ModeBarView.Callbac
         SettingsDialogs.checkUpdateOnStart(this)
         AutoDiagnostics.maybeShowOnce(this, prefs)
         maybeShowBackgroundHint()
+        // 更新・入れ直しで「音声の読み取り」（Shizuku で許可した DUMP 権限）が外れていたら取り直す（v2.19）
+        ShizukuHelper.restoreIfNeeded(this) { SettingsDialogs.showDumpLost(this) }
     }
 
     override fun onResume() {

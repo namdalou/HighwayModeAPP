@@ -12,7 +12,7 @@ if [ -n "${UPLOAD_KEYSTORE_BASE64:-}" ]; then
   echo "アップロード鍵で署名します"
 else
   echo "SIGNED=false" >> "$GITHUB_ENV"
-  echo "::notice::アップロード鍵（UPLOAD_KEYSTORE_BASE64）が未登録のため、デバッグ鍵の APK だけを作ります（Google Play には上げられません）"
+  echo "::notice::アップロード鍵（UPLOAD_KEYSTORE_BASE64）が未登録のため、デバッグ鍵の APK だけを作ります（Google Play には上げられません。デバッグ鍵はビルドのたびに変わるので、前の APK に上書きで更新できず、設定も引き継げません）"
 fi
 
 if [ -n "${APP_ID_VAR:-}" ]; then

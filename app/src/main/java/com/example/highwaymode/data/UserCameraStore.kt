@@ -50,6 +50,29 @@ class UserCameraStore(context: Context) {
         return added to parsed.skipped
     }
 
+    /** 登録の CSV（設定の書き出し用。登録が無ければ null） */
+    fun csvText(): String? {
+        val list = load()
+        return if (list.isEmpty()) null else UserCameras.toCsv(list)
+    }
+
+    /**
+     * CSV の登録を、いまの登録に足す（同じ地点・同じ向きは足さない。設定の読み込み用）。
+     * @return 足した件数
+     */
+    fun mergeCsv(text: String): Int {
+        val parsed = UserCameras.parse(text)
+        val list = load().toMutableList()
+        val ids = list.map { it.id }.toHashSet()
+        var added = 0
+        for (e in parsed.entries) if (ids.add(e.id)) {
+            list.add(e)
+            added++
+        }
+        if (added > 0) save(list)
+        return added
+    }
+
     fun export(uri: Uri) {
         ctx.contentResolver.openOutputStream(uri, "wt")?.use { it.write(UserCameras.toCsv(load()).toByteArray(Charsets.UTF_8)) }
             ?: throw IllegalStateException("ファイルに書き込めません")

@@ -12,7 +12,6 @@ import com.example.highwaymode.core.engine.HighwaySnapshot
 import com.example.highwaymode.core.facility.FacilityType
 import com.example.highwaymode.core.traffic.TrafficKind
 import com.example.highwaymode.core.vehicle.TollCardState
-import java.util.Locale
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -1321,10 +1320,7 @@ class PanelRenderer(var density: Float) {
             if (s.vehicle?.connected == true) {
                 chips.add((if (s.vehicle?.speedSignal == true) "車速信号" else "車両接続") to 0xFF1565C0.toInt())
             }
-            val hs = s.headingSigmaDeg
-            if (s.headingDeg != null && hs != null) {
-                chips.add(String.format(Locale.US, "方位 %s ±%.1f°", s.headingSource, hs) to 0xFF546E7A.toInt())
-            }
+            // 方位の推定の確からしさ（「方位 GPS ±3.2°」）は確認用の情報なので、v2.19 から出さない
             if (s.status == EngineStatus.ON_HIGHWAY && s.matchConfidence < 0.8) chips.add("車線判定中" to cOrange)
         }
         var x = l
