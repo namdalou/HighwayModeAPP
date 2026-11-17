@@ -12,12 +12,13 @@ import com.example.highwaymode.nav.NavNotifications
 import com.example.spectrum.MediaListenerService
 import com.example.spectrum.MediaTracker
 import com.example.spectrum.NowPlaying
+import com.example.spectrum.ShizukuHelper
 import com.example.spectrum.SpectrumEngine
 
 /**
  * Android Auto（車載ディスプレイ）用の入口。ナビアプリとして登録し、地図面（Surface）に
  * Spectrum（音楽）とハイウェイモードを描く（音楽アプリは画面に自由に描画できないため、描画が許されているナビの枠を使う）。
- * Android Auto 17.7 以降は Google Play（内部テスト配布を含む）からインストールしたものだけが一覧に出る。
+ * Android Auto 17.7 以降は Google Play からインストールしたもの（テスト版の配布を含む）だけが一覧に出る。
  */
 class HighwayCarAppService : CarAppService() {
 
@@ -32,6 +33,8 @@ class HighwayCarAppService : CarAppService() {
         MediaTracker.start(this)
         // Google マップのナビの通知を読む（音楽の画面の案内の帯・前方の経路合わせ）
         NavNotifications.install(this)
+        // 更新で「音声の読み取り」（Shizuku で許可した DUMP 権限）が外れていたら、黙って取り直す（v2.19。案内はスマホの画面で）
+        ShizukuHelper.restoreIfNeeded(this)
         if (!NowPlaying.listenerConnected) {
             try {
                 NotificationListenerService.requestRebind(ComponentName(this, MediaListenerService::class.java))

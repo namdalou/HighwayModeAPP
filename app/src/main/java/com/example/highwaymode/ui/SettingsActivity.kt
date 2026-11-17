@@ -16,11 +16,13 @@ import com.example.highwaymode.BuildConfig
 import com.example.highwaymode.R
 import com.example.highwaymode.TrackingService
 import com.example.highwaymode.alerts.AlertManager
+import com.example.highwaymode.core.backup.SettingsArchive
 import com.example.highwaymode.core.dual.DualLayout
 import com.example.highwaymode.core.engine.EngineStatus
 import com.example.highwaymode.data.AppSettings
 import com.example.highwaymode.data.DataSyncState
 import com.example.highwaymode.data.Prefs
+import com.example.highwaymode.data.SettingsBackup
 import com.example.highwaymode.data.UserCameraStore
 import com.example.highwaymode.dual.DualMode
 import com.example.highwaymode.engine.EngineHost
@@ -29,6 +31,7 @@ import com.example.highwaymode.nav.NavNotifications
 import android.view.View
 import android.view.ViewGroup
 import com.example.spectrum.SessionScanner
+import com.example.spectrum.ShizukuHelper
 import com.example.spectrum.SpectrumEngine
 import com.example.spectrum.SpectrumStyle
 import kotlin.concurrent.thread
@@ -355,6 +358,9 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
             if (notify != null && Build.VERSION.SDK_INT >= 33) mark(notify, has(Manifest.permission.POST_NOTIFICATIONS))
         }
 
+        // ---- 設定の引き継ぎ（v2.19）
+        buildBackup(c)
+
         // ---- その他
         val ot = ui.section(c, "その他")
         ui.actionRow(ot, "到着予定の学習をリセット", "運転のくせ（速さ）の学習を最初からやり直します（別の人が運転するときなど）") {
@@ -440,6 +446,158 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
             }
             status.value(text, SettingsUi.C_SUB)
         }
+    }
+
+    /**
+     * 設定の引き継ぎ（v2.19）: 設定・スペアナ・登録したオービス・API キーを 1 つのファイルに書き出す／読み込む。
+     * アプリの更新では何もしなくても引き継がれる。機種変更・入れ直しで、端末のバックアップから戻らないときに使う。
+     */
+    private fun buildBackup(c: android.widget.LinearLayout) {
+        val bk = ui.section(
+            c, "設定の引き継ぎ",
+            "アプリを更新しても、設定・登録したオービス・API キーはそのまま引き継がれます。" +
+                "機種変更やアプリの入れ直しのときは、端末のバックアップ（Google アカウント）がオンなら自動で戻ります。" +
+                "戻らないときは、ここで書き出したファイルを、入れ直したあとに読み込んでください。"
+        )
+        ui.actionRow(bk, "設定を書き出す", "設定・スペアナの見た目・登録したオービス・渋滞情報の API キーを、1 つのファイルに保存します") {
+            askExport()
+        }
+        ui.actionRow(bk, "設定を読み込む", "書き出したファイルから、設定を戻します") { openBackupFile() }
+    }
+
+    /** 書き出す前に、API キーを含めるかを聞く */
+    private fun askExport() {
+        val hasKey = SettingsDialogs.PROVIDERS.any { (p, _) -> p != "none" && prefs.trafficKey(p).isNotBlank() }
+        if (!hasKey) {
+            exportSecrets = false
+            createBackupFile()
+            return
+        }
+        val box = android.widget.CheckBox(this).apply {
+            text = "渋滞情報の API キーも含める"
+            isChecked = true
+            setTextColor(0xFFD0D6DE.toInt())
+        }
+        val col = android.widget.LinearLayout(this).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(ui.dp(20), ui.dp(8), ui.dp(20), 0)
+            addView(box)
+            addView(android.widget.TextView(this@SettingsActivity).apply {
+                text = "API キーを含めたファイルは、ほかの人に渡さないでください（キーを使われると、利用の回数・料金が発生することがあります）。"
+                textSize = 12f
+                setTextColor(0xFF8D96A3.toInt())
+                setPadding(0, ui.dp(6), 0, 0)
+            })
+        }
+        AlertDialog.Builder(this, SettingsUi.DIALOG_THEME)
+            .setTitle("設定を書き出す")
+            .setView(col)
+            .setPositiveButton("保存先を選ぶ") { _, _ ->
+                exportSecrets = box.isChecked
+                createBackupFile()
+            }
+            .setNegativeButton("キャンセル", null)
+            .show()
+    }
+
+    /** 書き出すときに API キーを含めるか（保存先を選ぶ画面から戻ったときに使う） */
+    private var exportSecrets = true
+
+    private fun createBackupFile() {
+        val i = Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("application/json")
+            .putExtra(Intent.EXTRA_TITLE, SettingsBackup.fileName())
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(i, REQ_BACKUP_EXPORT)
+        } catch (e: Exception) {
+            toast("ファイルを選ぶ画面を開けませんでした")
+        }
+    }
+
+    private fun openBackupFile() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*")
+            .putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/json", "text/plain", "application/octet-stream"))
+        try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(i, REQ_BACKUP_IMPORT)
+        } catch (e: Exception) {
+            toast("ファイルを選ぶ画面を開けませんでした")
+        }
+    }
+
+    /** 書き出す（保存先を選んだあと） */
+    private fun exportBackup(uri: Uri) {
+        val secrets = exportSecrets
+        thread(name = "settings-export") {
+            val msg = try {
+                val a = SettingsBackup.collect(this, secrets)
+                SettingsBackup.write(this, uri, a)
+                val cams = a.camerasCsv?.let { com.example.highwaymode.core.camera.UserCameras.parse(it).entries.size } ?: 0
+                "書き出しました（設定 ${a.settingCount()} 項目・登録したオービス $cams 件" +
+                    (if (a.secretCount() > 0) "・API キー" else "") + "）"
+            } catch (e: Exception) {
+                "書き出せませんでした（${e.message ?: e.javaClass.simpleName}）"
+            }
+            runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+        }
+    }
+
+    /** 読み込む（ファイルを選んだあと）: 中身を確かめてから、置き換えてよいかを聞く */
+    private fun importBackup(uri: Uri) {
+        thread(name = "settings-import") {
+            val result: Result<SettingsArchive> = try {
+                Result.success(SettingsBackup.read(this, uri))
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                val a = result.getOrElse { e ->
+                    val why = if (e is SettingsArchive.ArchiveException) e.message else "ファイルを読めませんでした（${e.message ?: e.javaClass.simpleName}）"
+                    AlertDialog.Builder(this, SettingsUi.DIALOG_THEME)
+                        .setTitle("設定を読み込めませんでした")
+                        .setMessage(why)
+                        .setPositiveButton("閉じる", null)
+                        .show()
+                    return@runOnUiThread
+                }
+                val cams = a.camerasCsv?.let { com.example.highwaymode.core.camera.UserCameras.parse(it).entries.size } ?: 0
+                val whenText = SettingsDialogs.formatCreated(a.exportedAt)?.removeSuffix(" 作成") ?: a.exportedAt.ifBlank { "不明" }
+                val msg = "書き出した日時: $whenText（版 ${a.appVersion.ifBlank { "不明" }}）\n" +
+                    "設定 ${a.settingCount()} 項目・登録したオービス $cams 件・API キー ${if (a.secretCount() > 0) "あり" else "なし"}\n\n" +
+                    "いまの設定は、ファイルの内容に置き換わります" +
+                    (if (a.secretCount() == 0) "（API キーは、いまのものを残します）" else "") +
+                    "。登録したオービスは、いまの登録に足します。"
+                AlertDialog.Builder(this, SettingsUi.DIALOG_THEME)
+                    .setTitle("設定を読み込む")
+                    .setMessage(msg)
+                    .setPositiveButton("読み込む") { _, _ -> applyBackup(a) }
+                    .setNegativeButton("キャンセル", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun applyBackup(a: SettingsArchive) {
+        val r = try {
+            SettingsBackup.apply(this, a)
+        } catch (e: Exception) {
+            toast("読み込めませんでした（${e.message ?: e.javaClass.simpleName}）")
+            return
+        }
+        // 音声の読み取り（Shizuku）を使っていた設定なら、許可を取り直す（Shizuku の許可が残っていれば黙って）
+        ShizukuHelper.restoreIfNeeded(this)
+        val needShizuku = ShizukuHelper.isWanted(this) && !SessionScanner.hasPermission(this)
+        val msg = "設定 ${r.settings} 項目を読み込みました" +
+            (if (r.secrets > 0) "（API キーを含む）" else "") + "。" +
+            (if (r.camerasInFile > 0) "\n登録したオービス: ${r.camerasAdded} 件を追加しました（同じ地点 ${r.camerasInFile - r.camerasAdded} 件は登録済み）。" else "") +
+            (if (needShizuku) "\n\n音声の読み取り（Shizuku）は、許可を移せません。必要なら「音楽（スペアナ）」→「音声の読み取り（Shizuku）」で、もう一度許可してください。" else "")
+        AlertDialog.Builder(this, SettingsUi.DIALOG_THEME)
+            .setTitle("設定を読み込みました")
+            .setMessage(msg)
+            .setPositiveButton("閉じる") { _, _ -> recreate() }
+            .setOnCancelListener { recreate() }
+            .show()
     }
 
     private fun layoutIndex(): Int = when {
@@ -602,6 +760,16 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
         super.onActivityResult(requestCode, resultCode, data)
         val uri = data?.data ?: return
         if (resultCode != RESULT_OK) return
+        when (requestCode) {
+            REQ_BACKUP_EXPORT -> {
+                exportBackup(uri)
+                return
+            }
+            REQ_BACKUP_IMPORT -> {
+                importBackup(uri)
+                return
+            }
+        }
         val store = UserCameraStore(this)
         thread(name = "camera-csv") {
             val msg = try {
@@ -656,6 +824,8 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
         private const val REQ_PERMISSIONS = 30
         private const val REQ_IMPORT = 20
         private const val REQ_EXPORT = 21
+        private const val REQ_BACKUP_EXPORT = 22
+        private const val REQ_BACKUP_IMPORT = 23
     }
 }
 

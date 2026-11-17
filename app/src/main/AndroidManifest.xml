@@ -52,8 +52,12 @@
         <package android:name="com.google.android.apps.mapslite" />
     </queries>
 
+    <!-- 自動バックアップ（v2.19）: 入れ直し・機種変更のときに、設定・登録したオービスを Google アカウントのバックアップから戻す。
+         対象は res/xml の backup_rules.xml（Android 11 以前）・data_extraction_rules.xml（Android 12 以降）で、設定とオービスだけ -->
     <application
-        android:allowBackup="false"
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
@@ -107,7 +111,7 @@
         <service
             android:name="com.example.spectrum.MediaListenerService"
             android:exported="true"
-            android:label="Spectrum media listener"
+            android:label="@string/app_name"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />

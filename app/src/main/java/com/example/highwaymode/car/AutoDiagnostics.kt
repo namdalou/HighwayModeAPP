@@ -17,11 +17,14 @@ import android.widget.Toast
  * Android Auto はアプリ一覧（ランチャーのカスタマイズを含む）に出す前に、アプリを検証する。
  * Android Auto 17.7 以降（2026 年秋〜）は、Car App Library のアプリ（このアプリのような
  * テンプレート型のナビアプリ）を「提供元不明のアプリ」の設定では通さなくなり、
- * Google Play からインストールしたもの（内部テスト配布を含む）だけを表示する。
+ * Google Play からインストールしたもの（テスト版の配布を含む）だけを表示する。
  * マニフェストが正しくても、APK を直接インストールした場合は表示されない。
  *
  * ここでは端末側で分かること（インストール元・Android Auto の版・宣言の有無）を調べて、
  * どの対処が必要かを表示する。
+ *  - [maybeShowOnce]: Google Play 以外から入れていて Android Auto が新しい版のとき、起動時に一度だけ、利用者向けの短い案内を出す
+ *  - [show]: 開発者向け設定の「Android Auto の状態」。調べた内容（インストール元・版など）と対処を出す
+ * v2.19: 公開に向けて、案内から開発向けの内容（内部テスト・README・Desktop Head Unit・ビルド）を除いた。
  */
 object AutoDiagnostics {
 
@@ -135,31 +138,31 @@ object AutoDiagnostics {
                 append("Android Auto アプリが見つかりません。Google Play で「Android Auto」をインストール・更新してください。")
             }
             r.carServices == 0 || !r.hasCarMeta -> {
-                append("このビルドには Android Auto 用の宣言が含まれていません。正しくビルドされていない可能性があります（同梱の README の手順で作り直してください）。")
+                append("このアプリの Android Auto 用の情報を読み込めませんでした。Google Play からアプリを入れ直してください。")
             }
             r.fromPlay -> {
-                append("Google Play からインストールされているので、Android Auto の一覧に出せる状態です。\n\n")
-                append("表示されないときは:\n")
-                append("・スマホの Android Auto の設定 →「ランチャーのカスタマイズ」で「ハイウェイモード」をオンにする\n")
+                append("Google Play からインストールされているので、Android Auto で使えます。\n\n")
+                append("車の画面に出ないときは:\n")
+                append("・スマホの Android Auto の設定 →「ランチャーのカスタマイズ」で「Spectrum ハイウェイ」をオンにする\n")
                 append("・一度 Android Auto の接続を切ってつなぎ直す（車・ケーブル・ワイヤレス）\n")
                 append("・Android Auto と Google Play 開発者サービスを最新にする")
             }
-            else -> {
-                append("Google Play 以外からインストールされています。")
-                if (r.autoIsNewValidator) append("この Android Auto（${r.autoVersion}）は")
-                else append("Android Auto 17.7 以降は")
-                append("、Google Play 以外から入れたナビ型（Car App Library）のアプリを、「提供元不明のアプリ」をオンにしても一覧に出しません（Android Auto 側の仕様で、アプリの作りでは回避できません）。\n\n")
-                append("対処（どちらか）:\n")
-                append("① Google Play Console の「内部テスト」で自分あてに配布し、Play ストアからインストールし直す（審査なし・数分で配信。README の手順を参照）\n")
-                append("② パソコンの Desktop Head Unit（Google 公式の Android Auto エミュレーター）で動作確認する\n\n")
-                append("①の場合は、いま入っているこのアプリを先にアンインストールしてください。")
-            }
+            else -> append(notFromPlayAdvice(r))
         }
     }
 
+    /** Google Play 以外から入れたときの案内（利用者向け） */
+    private fun notFromPlayAdvice(r: Report): String = buildString {
+        append("このアプリは Google Play 以外からインストールされているため、")
+        append(if (r.autoIsNewValidator) "この Android Auto（${r.autoVersion}）" else "Android Auto 17.7 以降")
+        append("では車の画面に表示されません（Android Auto の仕様です）。スマホの画面ではこのまま使えます。\n\n")
+        append("車の画面で使うには、いまのアプリをアンインストールしてから、Google Play ストアからインストールしてください。")
+        append("アンインストールの前に、設定 →「設定の引き継ぎ」→「設定を書き出す」で保存しておくと、入れ直したあとに「設定を読み込む」で戻せます。")
+    }
+
     /**
-     * Play 以外から入れていて、Android Auto が新しい検証をする版のときだけ、最初に一度案内する。
-     * （インストール元が変わったら、また一度だけ出す）
+     * Play 以外から入れていて、Android Auto が新しい検証をする版のときだけ、最初に一度案内する（利用者向けの短い案内）。
+     * （インストール元・アプリの版が変わったら、また一度だけ出す）
      */
     fun maybeShowOnce(a: Activity, prefs: com.example.highwaymode.data.Prefs) {
         val r = try {
@@ -171,7 +174,25 @@ object AutoDiagnostics {
         val key = "${r.installer}/${r.appVersion}"
         if (prefs.autoHintShownFor == key) return
         prefs.autoHintShownFor = key
-        show(a)
+        AlertDialog.Builder(a, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Android Auto で使うには")
+            .setMessage(notFromPlayAdvice(r))
+            .setPositiveButton("閉じる", null)
+            .setNeutralButton("Google Play を開く") { _, _ -> openStorePage(a, a.packageName) }
+            .show()
+    }
+
+    /** Google Play のアプリのページを開く */
+    private fun openStorePage(a: Activity, pkg: String) {
+        try {
+            a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$pkg")))
+        } catch (e: Exception) {
+            try {
+                a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$pkg")))
+            } catch (e2: Exception) {
+                Toast.makeText(a, "Google Play を開けませんでした", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     fun show(a: Activity) {
@@ -187,13 +208,7 @@ object AutoDiagnostics {
                 Toast.makeText(a, "コピーしました", Toast.LENGTH_SHORT).show()
             }
         if (r.autoVersion == null) {
-            b.setNegativeButton("Play ストアで開く") { _, _ ->
-                try {
-                    a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$ANDROID_AUTO_PACKAGE")))
-                } catch (e: Exception) {
-                    a.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://play.google.com/store/apps/details?id=$ANDROID_AUTO_PACKAGE")))
-                }
-            }
+            b.setNegativeButton("Play ストアで開く") { _, _ -> openStorePage(a, ANDROID_AUTO_PACKAGE) }
         }
         b.show()
     }

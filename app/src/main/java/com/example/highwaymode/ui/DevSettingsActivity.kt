@@ -158,7 +158,7 @@ class DevSettingsActivity : Activity() {
         val c = ui.page("開発者向け設定", "公開版の設定画面には出さない項目です") { finish() }
 
         // ---- Spectrum（音楽）
-        val sp = ui.section(c, "Spectrum（音楽）", "音声の読み取り（Shizuku）は v2.5 から通常の設定（音楽）に移しました。")
+        val sp = ui.section(c, "Spectrum（音楽）", "音声の読み取り（Shizuku）は、通常の設定の「音楽（スペアナ）」にあります。")
         ui.actionRow(sp, "Spectrum の診断画面", "曲情報の取得元の選択・音声の解析の状態") {
             startActivity(Intent(this, DiagnosticsActivity::class.java))
         }
