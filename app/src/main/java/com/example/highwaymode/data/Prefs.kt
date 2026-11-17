@@ -164,6 +164,15 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putInt(KEY_STRIP_EXTRA, v.coerceIn(0, 2)).apply()
 
     /**
+     * 車の画面にタッチ操作（画面のタップ）が届いたことがあるか（v2.18）。届いたことがあれば、右上のボタン（Android Auto が出す）を
+     * 1 つだけにする（画面の切替・メニューは下部バーで操作できるため）。一度も届いていない車（タッチのできない車・ダイヤル操作の車）では、
+     * 右上のボタンに画面切替・メニューを残す
+     */
+    var carTouch: Boolean
+        get() = sp.getBoolean(KEY_CAR_TOUCH, false)
+        set(v) = sp.edit().putBoolean(KEY_CAR_TOUCH, v).apply()
+
+    /**
      * Android Auto との接続が切れたあと、常駐（位置情報・通知）を止めるまでの時間の選択（v2.15）。
      * 0 = 3 分（標準）、1 = 10 分、2 = 止めない
      */
@@ -244,6 +253,7 @@ class Prefs(context: Context) {
         private const val KEY_NAV_SYNC = "nav_sync_google_maps"
         private const val KEY_NAV_BANNER = "nav_banner_music"
         private const val KEY_STRIP_EXTRA = "car_strip_extra"
+        private const val KEY_CAR_TOUCH = "car_touch_seen"
 
         val DEFAULT_ENDPOINTS: List<String> = OverpassHttp.DEFAULT_ENDPOINTS
 

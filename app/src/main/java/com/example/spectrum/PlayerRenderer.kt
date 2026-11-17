@@ -267,12 +267,18 @@ class PlayerRenderer {
      *  - 縦長の区画（車の 2 画面）: 文字を 3 行に戻す（ジャケットとスペアナが少し小さくなるだけで足りる）
      *  - 横長の区画（スマホの横画面の 2 画面など）: 縦に並べると足りないので、全画面の横の配置と同じく
      *    「文字は左下・操作ボタンは右下」にする（[splitWideGuide]）
+     *
+     * v2.18: 2 画面の下部バーをハイウェイ側の下だけにして、音楽側は下端まで使うようになった（利用者の車 800×480 で
+     * 区画が 357×323 → 357×383。高さ 362 → 429）。高さ 380 以上（縦長の並び）でも、案内を出すときは 480 未満なら
+     * [splitWideGuide] を使う（縦長の並びに 2 行の帯と 3 行の文字を足すと、スペアナが約 105 しか残らない。
+     * [splitWideGuide] なら帯 2 行・ジャケット 195・スペアナ 183）。メーターの縦の並び（ジャケットの下にメーター）は、
+     * 中段の高さ 260 以上から（それより低いと、左にジャケット・右にメーター 2 つの方が大きく見える）。
      */
     private fun splitLayout(vh: Float, guide: Boolean, overlay: Boolean): Layout {
         val m = 12f
         val right = 400f - m
-        // 横長の区画で案内を出すときは、別の並び（文字と操作ボタンを横に並べる）
-        if (guide && vh < 380f) return splitWideGuide(vh, overlay)
+        // 案内を出すとき、縦長でない区画（高さ 480 未満）は別の並び（文字と操作ボタンを下に横並び）
+        if (guide && vh < 480f) return splitWideGuide(vh, overlay)
         val roomy = vh >= 290f
         val titleSize = if (roomy) 27f else 24f
         val subSize = if (roomy) 20f else 18f
@@ -310,7 +316,7 @@ class PlayerRenderer {
                 val a = (midH * 0.78f).coerceIn(80f, 300f).coerceAtMost(midH)
                 art = RectF(200f - a / 2, midTop, 200f + a / 2, midTop + a)
                 spec = RectF(m, midTop + a * OVERLAY_FROM, right, midBottom)
-            } else if (midH >= 230f) {
+            } else if (midH >= 260f) {
                 // メーター（重ねない）: 縦長はジャケットの下に
                 val a = ((midH - 10f) * 0.56f).coerceIn(90f, 210f)
                 art = RectF(200f - a / 2, midTop, 200f + a / 2, midTop + a)
@@ -367,14 +373,19 @@ class PlayerRenderer {
      *  - いちばん下に再生位置のバー
      * 縦に 3 行を足すとスペアナが約 50 しか残らないので、文字と操作ボタンを横に並べて高さを空けた
      * （スマホの横画面の 2 画面で、スペアナの高さは v2.17 の 84 とほぼ同じ 85）
+     *
+     * v2.18: 高さ 380〜480 の区画（下部バーをハイウェイ側だけにした車の 2 画面。利用者の車で 429）にも使う。
+     * 高さに余裕がある分（380 → 440 で 0 → 1）、帯を 2 行の大きさ（最大 80）、文字（22・17 → 24・18.5）、
+     * 操作ボタン、ジャケット（170 → 200 まで）を少しずつ大きくする。高さ 380 未満は v2.17.1 と同じ
      */
     private fun splitWideGuide(vh: Float, overlay: Boolean): Layout {
         val m = 12f
         val right = 400f - m
-        val titleSize = 22f
-        val subSize = 17f
-        val gap = 6f
-        val g = RectF(m, 6f, right, 6f + (vh * 0.155f).coerceIn(40f, 60f))
+        val k = ((vh - 380f) / 60f).coerceIn(0f, 1f)
+        val titleSize = 22f + 2f * k
+        val subSize = 17f + 1.5f * k
+        val gap = 6f + k
+        val g = RectF(m, 6f, right, 6f + (vh * (0.155f + 0.025f * k)).coerceIn(40f, 60f + 20f * k))
         // 下から: 再生位置のバー → 3 行の文字（左）と操作ボタン（右）
         val seekY = vh - 11f
         val artistY = seekY - 19f
@@ -382,16 +393,16 @@ class PlayerRenderer {
         val titleY = albumY - subSize - gap
         val textTop = titleY - titleSize * 0.92f
         val cy = (textTop + artistY + subSize * 0.25f) / 2f
-        val playH = 42f
-        val playW = 66f
-        val side = 36f
+        val playH = 42f + 4f * k
+        val playW = 66f + 6f * k
+        val side = 36f + 3f * k
         val next = RectF(right - side, cy - side / 2, right, cy + side / 2)
         val play = RectF(next.left - 8f - playW, cy - playH / 2, next.left - 8f, cy + playH / 2)
         val prev = RectF(play.left - 8f - side, cy - side / 2, play.left - 8f, cy + side / 2)
         // 中段: ジャケット（左）とスペアナ
         val midTop = g.bottom + 6f
         val midBottom = min(textTop, play.top) - 8f
-        val a = (midBottom - midTop).coerceIn(40f, 170f)
+        val a = (midBottom - midTop).coerceIn(40f, 170f + 30f * k)
         val art = RectF(m, midTop, m + a, midTop + a)
         val spec = if (overlay) RectF(m, midTop + a * OVERLAY_FROM_WIDE, right, midBottom)
         else RectF(art.right + 14f, midTop, right, midBottom)

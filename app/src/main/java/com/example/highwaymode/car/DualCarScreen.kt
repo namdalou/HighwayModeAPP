@@ -58,8 +58,11 @@ import kotlin.math.max
  *  - 高速道路の外: Spectrum を全画面（従来の Spectrum と同じ）
  *  - 高速道路の対象エリアに入ると自動で 2 画面（左: Spectrum の縦レイアウト / 右: ハイウェイモード）
  *  - 下部に切替バー（音楽 / 2画面 / ハイウェイ / ≡ メニュー）。v2.17 から高速道路の外でもいつも出す
- *    （右上のボタンの代わりに「アップデートを確認」しか出ない車があった。右上のボタンが出なくても、画面のタッチで操作できるように）
- *  - タッチ操作のできない車でも使えるよう、同じ切替を右上のボタン（画面切替・メニュー）にも置く
+ *    （右上のボタンの代わりに「アップデートを確認」しか出ない車があった。右上のボタンが出なくても、画面のタッチで操作できるように）。
+ *    v2.18 から、2 画面のときはハイウェイモード側の下だけに置き、Spectrum 側は下端まで使う
+ *  - 右上のボタン（Android Auto が出す。1 つは必ず要る）は v2.18 から、画面にタッチ操作が届いたことのある車では 1 つだけ（アイコン）:
+ *    高速道路では「オービス登録」、外では「スペアナの表示」。画面の切替・メニューは下部バーと重複するので出さない（利用者の指示）。
+ *    タッチ操作が一度も届いていない車（タッチのできない車・ダイヤル操作の車）では、今までどおり画面切替・メニューも出す
  *
  * 描画は専用スレッド（表示用の優先度）で、決まった間隔で行う。
  * Spectrum が再生中で見えている間は 30fps（Android Auto の映像と同じ程度）、一時停止中は 15fps、
@@ -194,8 +197,25 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     private var drawCostNs = DRAW_COST_START_NS
     /** いまのフレームを描き終えた（出せるようになった）時刻 [ns]。描かなかったら 0（描画スレッド専用） */
     private var frameReadyNs = 0L
-    /** テンプレート（右上のボタン）を最後に作ったときの状態 */
-    private var templateBarVisible: Boolean? = null
+    /** 右上のボタンの組み合わせ（v2.18） */
+    private enum class StripKind {
+        /** タッチ操作が届いていない車・音楽だけ（高速道路の外）: ハイウェイ表示・メニュー */
+        FULL_MUSIC,
+        /** タッチ操作が届いていない車・2 画面など: 画面切替・施設・オービス登録・メニュー */
+        FULL_HIGHWAY,
+        /** タッチできる車・高速道路の外: スペアナの表示（アイコンだけ） */
+        TOUCH_MUSIC,
+        /** タッチできる車・高速道路: オービス登録（アイコンだけ） */
+        TOUCH_HIGHWAY
+    }
+
+    /**
+     * この車の画面にタッチ操作が届いたことがある（v2.18。設定に保存して次の接続でも使う）。
+     * 届いたことがあれば、画面の切替・メニューは下部バーで操作できるので、右上のボタンは 1 つだけにする
+     */
+    @Volatile private var touchSeen = prefs.carTouch
+    /** テンプレート（右上のボタン）を最後に作ったときの組み合わせ */
+    @Volatile private var templateStrip: StripKind? = null
     @Volatile private var snap: HighwaySnapshot? = EngineHost.latest
     @Volatile private var lastFrame: DualFrame? = null
     @Volatile private var panelInvalid = true
@@ -372,27 +392,40 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
             .build()
     }
 
+    /** いまの状態での右上のボタンの組み合わせ */
+    private fun stripKind(): StripKind = when {
+        !touchSeen -> if (DualMode.barVisible) StripKind.FULL_HIGHWAY else StripKind.FULL_MUSIC
+        DualMode.highwayActive -> StripKind.TOUCH_HIGHWAY
+        else -> StripKind.TOUCH_MUSIC
+    }
+
     private fun buildTemplate(): Template {
         // テンプレートを渡すと Android Auto は右上のボタンを出し直す（隠れるまでの時間を数え直す）
         stripTouched()
         val strip = ActionStrip.Builder()
-        templateBarVisible = DualMode.barVisible
-        if (!DualMode.barVisible) {
-            // 高速道路の外（Spectrum 全画面）
-            strip.addAction(action("ハイウェイ表示", R.drawable.ic_car_highway) {
-                val d = DualMode.highwayDefault()
-                DualMode.select(if (d == DualLayout.MUSIC) DualLayout.SPLIT else d)
+        val kind = stripKind()
+        templateStrip = kind
+        when (kind) {
+            // タッチできる車（v2.18）: 1 つだけ・アイコンだけ（画面を隠さないように）。
+            // NavigationTemplate は右上のボタンが 1 つは要るので、その画面で役に立つものを置く
+            StripKind.TOUCH_HIGHWAY -> strip.addAction(iconAction(R.drawable.ic_car_camera) { registerCamera() })
+            StripKind.TOUCH_MUSIC -> strip.addAction(iconAction(R.drawable.ic_car_spectrum) {
+                screenManager.push(CarSpectrumScreen(carContext))
             })
-            strip.addAction(action("メニュー", R.drawable.ic_car_menu) { screenManager.push(CarMenuScreen(carContext)) })
-        } else {
-            strip.addAction(action("画面切替", R.drawable.ic_car_split) { DualMode.cycle() })
-            strip.addAction(action("施設", R.drawable.ic_car_list) { screenManager.push(FacilityListScreen(carContext)) })
-            strip.addAction(action("オービス登録", R.drawable.ic_car_camera) {
-                EngineHost.registerCameraHere { ok ->
-                    CarToast.makeText(carContext, if (ok) "現在地をオービスとして登録しました" else "現在地が未取得です", CarToast.LENGTH_SHORT).show()
-                }
-            })
-            strip.addAction(action("メニュー", R.drawable.ic_car_menu) { screenManager.push(CarMenuScreen(carContext)) })
+            // タッチ操作が届いていない車: 画面の切替・メニューも右上に（下部バーを押せないため）
+            StripKind.FULL_MUSIC -> {
+                strip.addAction(action("ハイウェイ表示", R.drawable.ic_car_highway) {
+                    val d = DualMode.highwayDefault()
+                    DualMode.select(if (d == DualLayout.MUSIC) DualLayout.SPLIT else d)
+                })
+                strip.addAction(action("メニュー", R.drawable.ic_car_menu) { screenManager.push(CarMenuScreen(carContext)) })
+            }
+            StripKind.FULL_HIGHWAY -> {
+                strip.addAction(action("画面切替", R.drawable.ic_car_split) { DualMode.cycle() })
+                strip.addAction(action("施設", R.drawable.ic_car_list) { screenManager.push(FacilityListScreen(carContext)) })
+                strip.addAction(action("オービス登録", R.drawable.ic_car_camera) { registerCamera() })
+                strip.addAction(action("メニュー", R.drawable.ic_car_menu) { screenManager.push(CarMenuScreen(carContext)) })
+            }
         }
         return NavigationTemplate.Builder()
             .setActionStrip(strip.build())
@@ -405,14 +438,45 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         Action.Builder()
             .setTitle(title)
             .setIcon(CarIcon.Builder(IconCompat.createWithResource(carContext, icon)).build())
-            .setOnClickListener(CarTemplates.click {
-                // ボタンを押した後も、操作が無くなってから約 10 秒はボタンが出ている
-                stripTouched()
-                // 車の画面の操作のたびに、スマホ側の常駐（GPS・通信）が動いているか確かめる
-                CarRuntime.ensure(carContext)
-                onClick()
-            })
+            .setOnClickListener(actionClick(onClick))
             .build()
+
+    /** アイコンだけのボタン（v2.18。文字のボタンより小さく、画面を隠さない） */
+    private fun iconAction(icon: Int, onClick: () -> Unit): Action =
+        Action.Builder()
+            .setIcon(CarIcon.Builder(IconCompat.createWithResource(carContext, icon)).build())
+            .setOnClickListener(actionClick(onClick))
+            .build()
+
+    private fun actionClick(onClick: () -> Unit) = CarTemplates.click {
+        // ボタンを押した後も、操作が無くなってから約 10 秒はボタンが出ている
+        stripTouched()
+        // 車の画面の操作のたびに、スマホ側の常駐（GPS・通信）が動いているか確かめる
+        CarRuntime.ensure(carContext)
+        onClick()
+    }
+
+    /** 現在地をオービスとして登録する（右上のボタン） */
+    private fun registerCamera() {
+        EngineHost.registerCameraHere { ok ->
+            CarToast.makeText(carContext, if (ok) "現在地をオービスとして登録しました" else "現在地が未取得です", CarToast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
+     * 画面にタッチ操作が届いた（v2.18）: この車はタッチできる。右上のボタンを 1 つだけにする
+     * （初めて届いたときだけテンプレートを作り直す。次の接続からは最初から 1 つ）
+     */
+    private fun noteTouch() {
+        if (touchSeen) return
+        touchSeen = true
+        try {
+            prefs.carTouch = true
+        } catch (e: Exception) {
+            // 保存できなくても、この接続の間は 1 つにする
+        }
+        if (templateStrip != null && templateStrip != stripKind()) invalidate()
+    }
 
     /**
      * 右上のボタンが出た（または出たまま）とみなす。ここから [STRIP_HIDE_MS] 操作が無ければ、
@@ -428,7 +492,7 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         autoSwitch = prefs.autoSwitch
         // 右上のボタンの組み合わせが変わるときだけテンプレートを作り直す
         // （作り直すと Android Auto がボタンを表示し直すため、必要なとき以外は呼ばない）
-        if (templateBarVisible != DualMode.barVisible) invalidate()
+        if (templateStrip != stripKind()) invalidate()
         panelInvalid = true
         updateSpectrumUse()
         requestFrame()
@@ -521,6 +585,7 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     override fun onClick(x: Float, y: Float) {
         // 押したときの処理で例外が出ると、アプリごと落とされる（CarTemplates の決まり 5）
         try {
+            noteTouch()
             handleClick(x, y)
         } catch (e: Exception) {
             Log.w(TAG, "click failed: ${e.message}")
@@ -700,7 +765,8 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
             areaInfo = "画面 ${w.toInt()}×${h.toInt()}・密度 ${"%.2f".format(density)}・Car App API レベル ${if (hostApiLevel > 0) hostApiLevel else "不明"}\n" +
                 "表示範囲 ${if (v.isEmpty) "（知らせなし）" else "${v.left},${v.top},${v.right},${v.bottom}"}\n" +
                 "安定した範囲 ${if (sCopy.isEmpty) "（知らせなし）" else "${sCopy.left},${sCopy.top},${sCopy.right},${sCopy.bottom}"}\n" +
-                "ボタン ${if (stripUp) "表示中" else "隠れている"}・一覧を下げる量 ${targetH.toInt()}px（見積もり ${stripBottomEstimate().toInt()}px）"
+                "ボタン ${if (stripUp) "表示中" else "隠れている"}・一覧を下げる量 ${targetH.toInt()}px（見積もり ${stripBottomEstimate().toInt()}px）\n" +
+                "右上のボタン ${stripLabel(templateStrip)}（タッチ操作 ${if (touchSeen) "確認済み" else "まだ届いていない"}）"
         }
         if (reserveW != panel.headerRightReserve || shiftH != panel.topRightReserveH) {
             panel.headerRightReserve = reserveW
@@ -769,13 +835,26 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     private fun stripBottomEstimate(): Float = (STRIP_BOTTOM_DP + stripExtraDp) * density
 
     /**
-     * 右上のボタン列のおおよその幅。Android Auto は幅の広い画面では文字、狭い画面ではアイコンで出す
-     * （ボタン 1 つ: 文字なら約 104dp、アイコンなら約 58dp。高速道路の間は 4 つ、外は 2 つ）。
+     * 右上のボタン列のおおよその幅。
+     *  - タッチできる車（v2.18）: アイコンだけのボタン 1 つ（約 60dp の丸と、画面の端・すき間で約 72dp）
+     *  - タッチ操作が届いていない車: Android Auto は幅の広い画面では文字、狭い画面ではアイコンで出す
+     *    （ボタン 1 つ: 文字なら約 104dp、アイコンなら約 58dp。2 画面などは 4 つ、音楽だけは 2 つ）
      */
     private fun stripWidthEstimate(surfaceWidth: Float): Float {
+        val k = templateStrip ?: stripKind()
+        if (k == StripKind.TOUCH_MUSIC || k == StripKind.TOUCH_HIGHWAY) return 72f * density
         val wideScreen = surfaceWidth / density >= 900f
-        val count = if (DualMode.barVisible) 4 else 2
+        val count = if (k == StripKind.FULL_MUSIC) 2 else 4
         return (if (wideScreen) count * 104f else count * 58f) * density + 8f * density
+    }
+
+    /** 確認用の表示名 */
+    private fun stripLabel(k: StripKind?): String = when (k) {
+        StripKind.TOUCH_HIGHWAY -> "オービス登録（アイコン 1 つ）"
+        StripKind.TOUCH_MUSIC -> "スペアナの表示（アイコン 1 つ）"
+        StripKind.FULL_HIGHWAY -> "画面切替・施設・オービス登録・メニュー"
+        StripKind.FULL_MUSIC -> "ハイウェイ表示・メニュー"
+        null -> "まだ作っていない"
     }
 
     /**

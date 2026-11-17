@@ -14,7 +14,6 @@ import androidx.car.app.model.Toggle
 import androidx.core.graphics.drawable.IconCompat
 import com.example.highwaymode.CarAutoStop
 import com.example.highwaymode.R
-import com.example.highwaymode.core.dual.DualLayout
 import com.example.highwaymode.core.engine.EngineStatus
 import com.example.highwaymode.data.Prefs
 import com.example.highwaymode.dual.DualMode
@@ -23,8 +22,12 @@ import com.example.spectrum.SpectrumStyle
 
 /**
  * 車の画面のメニュー（6 項目まで。走行中も表示できる件数に収める）。
- * 画面切替・ハイウェイの表示の切替・スペアナの表示（v2.14）・再探索・一般道モード・自動切替。
+ * 前方の施設の一覧・ハイウェイの表示の切替・スペアナの表示（v2.14）・再探索・一般道モード・自動切替。
  * 「終了」は、v2.14 から右上の電源のボタン（6 項目に収めるため）。
+ *
+ * v2.18: 1 行目を「画面を切り替える」から「前方の施設の一覧」に替えた。画面の切替は下部バー（タッチできる車）か、
+ * 右上の「画面切替」（タッチ操作が届いていない車）でできて重複するため。施設の一覧は、タッチできる車では右上のボタンから
+ * 外したので（右上のボタンは 1 つだけにした）、ここから開く。
  *
  * v2.15: 行の題名はどれも変えない（[CarTemplates] の決まり 2。v2.14 までは「自動切替: オン／オフ」のように
  * 題名を書き換えていて、3 回切り替えると画面の段の上限に達して落ちた）。オン・オフはスイッチ、いまの状態は行の説明で見せる。
@@ -37,25 +40,14 @@ class CarMenuScreen(carContext: CarContext) : Screen(carContext) {
 
     override fun onGetTemplate(): Template = CarTemplates.safe("メニュー") {
         val list = ItemList.Builder()
-        val next = when (DualMode.layout) {
-            DualLayout.SPLIT -> DualLayout.HIGHWAY
-            DualLayout.HIGHWAY -> DualLayout.MUSIC
-            DualLayout.MUSIC -> DualLayout.SPLIT
-        }
+        // 前方の施設の一覧（v2.18。「画面を切り替える」は下部バーと重複するので、ここを施設の一覧にした）
         list.addItem(
             Row.Builder()
-                .setTitle("画面を切り替える")
-                .addText("いま: ${DualMode.label(DualMode.layout)} → 押すと「${DualMode.label(next)}」")
-                .setOnClickListener(CarTemplates.click {
-                    // 開いている間に画面が変わっていても、押したときの「次」へ
-                    val n = when (DualMode.layout) {
-                        DualLayout.SPLIT -> DualLayout.HIGHWAY
-                        DualLayout.HIGHWAY -> DualLayout.MUSIC
-                        DualLayout.MUSIC -> DualLayout.SPLIT
-                    }
-                    DualMode.select(n)
-                    finish()
-                }).build()
+                .setTitle("前方の施設の一覧")
+                .addText("IC・JCT・SA/PA などの距離と到着予定（選ぶと詳細）")
+                .setBrowsable(true)
+                .setOnClickListener(CarTemplates.click { screenManager.push(FacilityListScreen(carContext)) })
+                .build()
         )
         val modeLabel = when (prefs.displayMode) {
             1 -> "一覧"

@@ -210,6 +210,48 @@ class DualModeTest {
     }
 
     @Test
+    fun geometry_splitBarStaysOnHighwaySide() {
+        // v2.18: 2 画面（左右）の下部バーはハイウェイ側の下だけ。音楽側は表示範囲の下端まで
+        // 利用者の車（800x480・下に Android Auto の列。安定した範囲の下端 383）
+        val f = DualGeometry.car(800f, 480f, 0f, 800f, 0f, DualLayout.SPLIT, true, 1f, bottom = 383f)
+        val m = f.music!!
+        val hw = f.highway!!
+        val bar = f.bar!!
+        assertEquals("音楽側は一番下まで", 383f, m.b, 0.01f)
+        assertEquals("区切り線も一番下まで", 383f, f.divider!!.b, 0.01f)
+        assertTrue("バーは音楽側に掛からない $bar / $m", bar.l >= m.r)
+        assertEquals("バーはハイウェイ側の幅", hw.l, bar.l, 0.01f)
+        assertEquals(hw.r, bar.r, 0.01f)
+        assertEquals("バーはハイウェイ側のすぐ下", hw.b, bar.t, 0.01f)
+        assertEquals(383f, bar.b, 0.01f)
+        assertFalse(overlap(m, bar))
+        assertFalse(overlap(hw, bar))
+        // 音楽だけ・ハイウェイだけは、今までどおり横いっぱいのバー
+        for (lay in listOf(DualLayout.MUSIC, DualLayout.HIGHWAY)) {
+            val g = DualGeometry.car(800f, 480f, 0f, 800f, 0f, lay, true, 1f, bottom = 383f)
+            assertEquals(0f, g.bar!!.l, 0.01f)
+            assertEquals(800f, g.bar!!.r, 0.01f)
+            val area = (g.music ?: g.highway)!!
+            assertEquals(g.bar!!.t, area.b, 0.01f)
+        }
+        // 縦長の車の画面（上下の 2 画面）は、今までどおり下に横いっぱい
+        val tall = DualGeometry.car(720f, 1280f, 0f, 720f, 0f, DualLayout.SPLIT, true, 1.5f)
+        assertTrue(tall.stacked)
+        assertEquals(0f, tall.bar!!.l, 0.01f)
+        assertEquals(720f, tall.bar!!.r, 0.01f)
+        assertEquals(tall.bar!!.t, tall.music!!.b, 0.01f)
+        // スマホの横画面の 2 画面も同じ（バーはハイウェイ側の下だけ）
+        val land = DualGeometry.phone(2400f, 1080f, DualLayout.SPLIT, 2.75f)
+        assertEquals(1080f, land.music!!.b, 0.01f)
+        assertTrue(land.bar!!.l >= land.music!!.r)
+        assertEquals(land.highway!!.b, land.bar!!.t, 0.01f)
+        // スマホの縦画面の 2 画面は、今までどおり下に横いっぱい
+        val port = DualGeometry.phone(1080f, 2200f, DualLayout.SPLIT, 2.75f)
+        assertEquals(0f, port.bar!!.l, 0.01f)
+        assertEquals(1080f, port.bar!!.r, 0.01f)
+    }
+
+    @Test
     fun geometry_carModesAndVisibleArea() {
         // 高速道路外: バー無しで Spectrum 全画面（今までの Spectrum と同じ）
         val off = DualGeometry.car(1280f, 720f, 0f, 1280f, 0f, DualLayout.MUSIC, false, 1.25f)
