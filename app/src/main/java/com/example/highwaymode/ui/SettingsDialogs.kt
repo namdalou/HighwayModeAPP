@@ -69,6 +69,57 @@ object SettingsDialogs {
         }
     }
 
+    // ================================================================== 不具合の報告（v2.22）
+
+    /**
+     * 不具合の報告（設定の「その他」）。落ちたときの記録（[com.example.highwaymode.CrashLog]）・車の画面の動きの記録
+     * （[com.example.highwaymode.car.DualCarScreen.areaInfo]）・アプリと端末の版をまとめて見せ、利用者が選んだアプリ
+     * （メール・メッセージなど）で送る。クローズド テストのテスターが、開発者向け設定を開かずに送れるように。
+     * 位置情報・曲の情報などは含めない。アプリが自分で送ることはない（共有の画面で利用者が送り先を選ぶ）
+     */
+    fun shareProblemReport(a: Activity) {
+        val auto = try {
+            com.example.highwaymode.car.AutoDiagnostics.collect(a, withSigner = false)
+        } catch (e: Exception) {
+            null
+        }
+        val text = buildString {
+            append("【Spectrum ハイウェイ 不具合の報告】\n")
+            append("アプリ: ").append(com.example.highwaymode.BuildConfig.VERSION_NAME)
+                .append("（").append(com.example.highwaymode.BuildConfig.VERSION_CODE).append("）\n")
+            append("端末: ").append(android.os.Build.MANUFACTURER).append(' ').append(android.os.Build.MODEL)
+                .append("・Android ").append(android.os.Build.VERSION.RELEASE).append('\n')
+            if (auto != null) {
+                append("インストール元: ").append(if (auto.fromPlay) "Google Play" else "Google Play 以外").append('\n')
+                append("Android Auto: ").append(auto.autoVersion ?: "なし").append('\n')
+            }
+            append("\n■ 起きたこと（ここに書いてください）:\n\n\n")
+            append("■ 落ちたときの記録\n").append(com.example.highwaymode.CrashLog.report(a)).append('\n')
+            append("■ 車の画面の動き（最後に車の画面を出していたとき）\n").append(com.example.highwaymode.car.DualCarScreen.areaInfo).append('\n')
+        }
+        AlertDialog.Builder(a, SettingsUi.DIALOG_THEME)
+            .setTitle("不具合を報告する")
+            .setMessage("次の内容を送ります（位置情報・曲の情報は含みません）。送り先は次の画面で選べます。\n\n$text")
+            .setPositiveButton("送る") { _, _ ->
+                val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+                    .setType("text/plain")
+                    .putExtra(android.content.Intent.EXTRA_SUBJECT, "Spectrum ハイウェイ 不具合の報告（版 ${com.example.highwaymode.BuildConfig.VERSION_NAME}）")
+                    .putExtra(android.content.Intent.EXTRA_TEXT, text)
+                try {
+                    a.startActivity(android.content.Intent.createChooser(send, "不具合の報告を送る"))
+                } catch (e: Exception) {
+                    Toast.makeText(a, "送れるアプリが見つかりませんでした", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNeutralButton("コピー") { _, _ ->
+                val cm = a.getSystemService(android.content.ClipboardManager::class.java)
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("不具合の報告", text))
+                Toast.makeText(a, "コピーしました", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("閉じる", null)
+            .show()
+    }
+
     // ================================================================== 地図データ
 
     /** 端末内の地図データの短い説明（設定画面の行用。別スレッドで調べて、メインスレッドで [done] を呼ぶ） */

@@ -370,6 +370,9 @@ class SettingsActivity : Activity(), SettingsDialogs.CameraFileActions {
                 toast("リセットしました")
             }
         }
+        ui.actionRow(ot, "不具合を報告する", "落ちたときの記録・車の画面の動きの記録を、メールなどで送れます（送る前に内容を確認できます）") {
+            SettingsDialogs.shareProblemReport(this)
+        }
         ui.actionRow(ot, "プライバシーポリシー", "このアプリが使う情報と、その扱い（ブラウザで開きます）") {
             SettingsDialogs.openPrivacyPolicy(this)
         }
