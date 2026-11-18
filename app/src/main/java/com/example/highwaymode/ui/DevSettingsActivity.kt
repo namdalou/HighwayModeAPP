@@ -235,11 +235,12 @@ class DevSettingsActivity : Activity() {
         ui.actionRow(aa, "動作状態（詳細）", "常駐サービス・GPS・電池・通信・渋滞情報・曲情報") {
             SettingsDialogs.showRunStatus(this)
         }
-        ui.actionRow(aa, "車の画面の表示範囲（確認用）", "右上のボタンと一覧が重なるときの確認用（画面の大きさ・Android Auto が知らせた範囲・下げた量）") {
+        ui.actionRow(aa, "車の画面の表示範囲（確認用）", "右上のボタンと一覧が重なるとき・カクつくときの確認用（画面の大きさ・Android Auto が知らせた範囲・下げた量・描画の様子）") {
             val msg = com.example.highwaymode.car.DualCarScreen.areaInfo
             AlertDialog.Builder(this, SettingsUi.DIALOG_THEME)
                 .setTitle("車の画面の表示範囲")
-                .setMessage(msg + "\n\n右上のボタンを出した状態で開くと、ボタン表示中の値になります（車の画面を表示したままスマホで開く）。")
+                .setMessage(msg + "\n\n右上のボタンを出した状態で開くと、ボタン表示中の値になります（車の画面を表示したままスマホで開く）。" +
+                    "描画の様子は、開いたときの直前の約 1 秒の値です（カクつくときは、カクつく場面で開いてコピーしてください）。")
                 .setPositiveButton("閉じる", null)
                 .setNeutralButton("コピー") { _, _ ->
                     val cm = getSystemService(android.content.ClipboardManager::class.java)
@@ -247,6 +248,16 @@ class DevSettingsActivity : Activity() {
                     toast("コピーしました")
                 }
                 .show()
+        }
+
+        ui.switchRow(
+            aa, "車の画面を 60fps で描く（試験）",
+            "Android Auto の映像が 60fps の車（大きい画面のディスプレイオーディオなど）では、スペアナがなめらかになることがあります。" +
+                "映像が 30fps の車では変わらず、スマホの負担が増えるだけです（次に車の画面を開いたとき・設定を変えた約 2 秒後から）",
+            prefs.carFps60
+        ) {
+            prefs.carFps60 = it
+            com.example.highwaymode.data.AppSettings.changed(this)
         }
 
         ui.actionRow(aa, "接続が切れたあとの終了（確認用）", "Android Auto の切断後に常駐を止める仕組みが、最後に何をしたか") {
@@ -264,7 +275,37 @@ class DevSettingsActivity : Activity() {
                 .show()
         }
 
+        // ---- 不具合の記録（v2.21。端末の中だけ）
+        val cr = ui.section(c, "不具合の記録", "アプリが落ちたとき（車の画面の「予期せぬエラー」を含む）の記録です。端末の中だけに保存し、外部には送りません。")
+        val crashRow = ui.actionRow(cr, "最後に落ちたときの記録", "落ちた時刻・場所と、直前の失敗。不具合を知らせるときにコピーして送ってください") {
+            showCrashLog()
+        }
+        refreshers += {
+            val at = com.example.highwaymode.CrashLog.lastCrash(this)?.lineSequence()?.firstOrNull()?.removePrefix("落ちた時刻: ")
+            crashRow.value(at ?: "ありません", SettingsUi.C_SUB)
+        }
+
         ui.note(c, "戻ると閉じます。次に開くときは、音楽の画面の何もない場所を 20 回続けてタップして、パスワードを入力してください。")
+    }
+
+    /** 落ちたときの記録と、落ちずに済んだ失敗（確認用。v2.21） */
+    private fun showCrashLog() {
+        val msg = com.example.highwaymode.CrashLog.report(this)
+        AlertDialog.Builder(this, SettingsUi.DIALOG_THEME)
+            .setTitle("不具合の記録")
+            .setMessage(msg)
+            .setPositiveButton("閉じる", null)
+            .setNeutralButton("コピー") { _, _ ->
+                val cm = getSystemService(android.content.ClipboardManager::class.java)
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("不具合の記録", msg))
+                toast("コピーしました")
+            }
+            .setNegativeButton("消す") { _, _ ->
+                com.example.highwaymode.CrashLog.clear(this)
+                toast("消しました")
+                refreshAll()
+            }
+            .show()
     }
 
     /** ナビの通知の受信内容（確認用） */

@@ -17,6 +17,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.LockSupport
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * Visualizer で再生音を解析してバンド値(0..1)を配信する。
@@ -114,6 +115,19 @@ object SpectrumEngine {
     @Volatile private var scannedSessions: Map<String, Int> = emptyMap()
     /** 読み取りの間隔(ms) */
     private const val SCAN_MS = 2000L
+
+    /**
+     * 番号が分からないまま（または鳴らないまま）読み取りを続けるときの間隔 [ms]（v2.21）。
+     * v2.20 までは、見つかるまで 2 秒ごとに dumpsys audio を読んでいた。出力は数十〜数百 KB あり、読むたびに CPU と
+     * メモリーの掃除（GC）が走るので、一時停止中（再生中の音声が無いので、いつまでも見つからない）や、dumpsys に出てこない
+     * アプリでは、ずっと 2 秒ごとに重い処理が続き、スペアナがときどきカクつく原因になっていた。
+     * いまは、見つからないたびに 2 → 2 → 4 → 8 → 15 → 30 秒と間隔をあけ、一時停止中は読まない
+     * （再生が始まった・アプリが変わった・新しい番号が見つかったら、2 秒に戻す）
+     */
+    private val SCAN_BACKOFF_MS = longArrayOf(2_000L, 2_000L, 4_000L, 8_000L, 15_000L, 30_000L)
+    @Volatile private var scanMisses = 0
+    private var scanMissPkg = ""
+    private var scanWasPlaying = false
 
     /**
      * 保存しておいた音声セッション番号を読み込む。
@@ -275,11 +289,34 @@ object SpectrumEngine {
         val known = pkg.isNotEmpty() && scannedSessions.containsKey(pkg)
         if (known && !silentWhilePlaying && since < 30_000L) return
         if (pkg.isEmpty() && since < 10_000L) return
+        if (pkg.isNotEmpty()) {
+            // 再生が始まった・アプリが変わったら、間隔を最初（2 秒）に戻す（v2.21）
+            val playing = NowPlaying.isPlaying
+            if (pkg != scanMissPkg || (playing && !scanWasPlaying)) {
+                scanMissPkg = pkg
+                scanMisses = 0
+            }
+            scanWasPlaying = playing
+            // 一時停止中は読まない（dumpsys には再生中の音声しか出ないので、読んでも見つからない）
+            if (!playing) return
+            // 見つからない（鳴らない）ままなら、だんだん間隔をあける
+            if (!known || silentWhilePlaying) {
+                if (since < SCAN_BACKOFF_MS[min(scanMisses, SCAN_BACKOFF_MS.size - 1)]) return
+            }
+        }
         if (!scanning.compareAndSet(false, true)) return
+        val before = if (pkg.isNotEmpty()) scannedSessions[pkg] else null
         scanExecutor.execute {
             try {
-                scannedSessions = SessionScanner.scan(c)
+                val found = SessionScanner.scan(c)
+                scannedSessions = found
+                if (pkg.isNotEmpty()) {
+                    val now2 = found[pkg]
+                    // 新しい番号が見つかった → 次からは 2 秒。見つからない・同じ番号のまま → 間隔をあける
+                    scanMisses = if (now2 != null && now2 != before) 0 else scanMisses + 1
+                }
             } catch (_: Exception) {
+                scanMisses++
             } finally {
                 lastScanDone = SystemClock.uptimeMillis()
                 scanning.set(false)

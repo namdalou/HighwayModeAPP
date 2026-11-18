@@ -10,8 +10,10 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RadialGradient
 import android.graphics.RectF
+import android.graphics.RenderNode
 import android.graphics.Shader
 import android.graphics.Typeface
+import android.os.Build
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.exp
@@ -764,31 +766,19 @@ class SpectrumPainter(private val n: Int) {
             if (kotlin.math.abs(nd.vel) > 0.01f || kotlin.math.abs(nd.pos - tgt) > 0.01f || s > 0.004f) animating = true
         }
 
-        // 目盛り板（画像として 1 回だけ描く。区画・色・設定が変わったときだけ作り直す）
+        // 目盛り板（1 回だけ描いておく。区画・色・設定が変わったときだけ作り直す）
         val fw = ceil(mw * scale).toInt().coerceIn(8, 2048)
         val fh = ceil(mh * scale).toInt().coerceIn(8, 2048)
         val light = SpectrumStyle.meterLight
         val peakOn = SpectrumStyle.meterPeak
         val single = SpectrumStyle.meterSingle || oneMeter
         if (fw != fkW || fh != fkH || dark != fkDark || count != fkCount || colorsVersion != fkVer || light != fkLight ||
-            peakOn != fkPeak || single != fkSingle || faceBmp == null
+            peakOn != fkPeak || single != fkSingle
         ) {
             updateLook(dark)
             // 前の目盛り板は捨てるだけ（描いたばかりの画面がまだ使っていることがあるので recycle しない）
-            faceBmp = try {
-                Bitmap.createBitmap(fw, fh * count, Bitmap.Config.ARGB_8888).also { b ->
-                    val bc = Canvas(b)
-                    for (k in 0 until count) {
-                        bc.save()
-                        bc.translate(0f, (fh * k).toFloat())
-                        bc.scale(fw / mw, fh / mh)
-                        drawFace(bc, mw, mh, fh / mh, if (count == 2) (if (k == 0) "BASS" else "TREBLE") else null, peakOn)
-                        bc.restore()
-                    }
-                }
-            } catch (_: Throwable) {
-                null
-            }
+            faceBmp = null
+            faceNodesOk = false
             fkW = fw
             fkH = fh
             fkDark = dark
@@ -798,10 +788,41 @@ class SpectrumPainter(private val n: Int) {
             fkPeak = peakOn
             fkSingle = single
         }
+        // v2.21: ハードウェアで描く画面（車の画面・スマホの画面）では、画像ではなく描画の記録（RenderNode）に描く。
+        // 画像に描く（端末の CPU で塗る）と、大きい画面では画面を切り替えた直後のフレームが数十 ms 遅れていた。
+        // 記録は作るのが速く、拡大しても文字・線がにじまない
+        val hw = Build.VERSION.SDK_INT >= 29 && c.isHardwareAccelerated
+        if (hw) {
+            if (!faceNodesOk) {
+                recordFaces(mw, mh, fh / mh, count, peakOn)
+                faceNodesOk = true
+            }
+        } else if (faceBmp == null) {
+            faceBmp = try {
+                Bitmap.createBitmap(fw, fh * count, Bitmap.Config.ARGB_8888).also { b ->
+                    val bc = Canvas(b)
+                    for (k in 0 until count) {
+                        bc.save()
+                        bc.translate(0f, (fh * k).toFloat())
+                        bc.scale(fw / mw, fh / mh)
+                        drawFace(bc, mw, mh, fh / mh, faceLabel(count, k), peakOn)
+                        bc.restore()
+                    }
+                }
+            } catch (_: Throwable) {
+                null
+            }
+        }
         val face = faceBmp
         for (k in 0 until count) {
             val fr = faceRect[k]
-            if (face != null) {
+            val node = if (hw) faceNodes[k] else null
+            if (node != null) {
+                c.save()
+                c.translate(fr.left, fr.top)
+                drawFaceNode(c, node)
+                c.restore()
+            } else if (face != null) {
                 srcRect.set(0, fh * k, fw, fh * (k + 1))
                 c.drawBitmap(face, srcRect, fr, bmpPaint)
             } else {
@@ -811,6 +832,38 @@ class SpectrumPainter(private val n: Int) {
             }
             drawNeedle(c, fr, mw, mh, needles[k], peakOn)
         }
+    }
+
+    /** 目盛り板の記録（RenderNode。Android 9 以前で読み込まないよう Any で持つ） */
+    private val faceNodes = arrayOfNulls<Any>(2)
+    private var faceNodesOk = false
+
+    private fun faceLabel(count: Int, k: Int): String? = if (count == 2) (if (k == 0) "BASS" else "TREBLE") else null
+
+    /** 目盛り板を描画の記録に描く（Android 10 以降。目盛り板の座標＝区画の左上を原点にした仮想座標で） */
+    private fun recordFaces(mw: Float, mh: Float, pxPerUnit: Float, count: Int, peakOn: Boolean) {
+        if (Build.VERSION.SDK_INT < 29) return
+        val w = ceil(mw).toInt() + 1
+        val h = ceil(mh).toInt() + 1
+        for (k in 0 until 2) {
+            if (k >= count) {
+                faceNodes[k] = null
+                continue
+            }
+            val node = (faceNodes[k] as? RenderNode) ?: RenderNode("meter-face").also { faceNodes[k] = it }
+            node.setPosition(0, 0, w, h)
+            node.setClipToBounds(false)
+            val rc = node.beginRecording(w, h)
+            try {
+                drawFace(rc, mw, mh, pxPerUnit, faceLabel(count, k), peakOn)
+            } finally {
+                node.endRecording()
+            }
+        }
+    }
+
+    private fun drawFaceNode(c: Canvas, node: Any) {
+        if (Build.VERSION.SDK_INT >= 29 && node is RenderNode) c.drawRenderNode(node)
     }
 
     private val srcRect = android.graphics.Rect()

@@ -1,0 +1,3 @@
+HSPLcom/example/spectrum/**->**(**)**
+HSPLcom/example/highwaymode/**->**(**)**
+HSPLandroidx/car/app/**->**(**)**

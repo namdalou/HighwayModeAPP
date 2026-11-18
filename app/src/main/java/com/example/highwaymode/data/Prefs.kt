@@ -173,6 +173,15 @@ class Prefs(context: Context) {
         set(v) = sp.edit().putBoolean(KEY_CAR_TOUCH, v).apply()
 
     /**
+     * 車の画面を 60fps で描く（v2.21。開発者向け設定の試験の項目。既定は 30fps）。
+     * Android Auto の映像が 60fps の車（大きい画面のディスプレイオーディオなど）では、スペアナがなめらかになる可能性がある。
+     * 映像が 30fps の車では効果が無く、スマホの負担だけ増える
+     */
+    var carFps60: Boolean
+        get() = sp.getBoolean(KEY_CAR_FPS60, false)
+        set(v) = sp.edit().putBoolean(KEY_CAR_FPS60, v).apply()
+
+    /**
      * Android Auto との接続が切れたあと、常駐（位置情報・通知）を止めるまでの時間の選択（v2.15）。
      * 0 = 3 分（標準）、1 = 10 分、2 = 止めない
      */
@@ -269,6 +278,7 @@ class Prefs(context: Context) {
         private const val KEY_NAV_BANNER = "nav_banner_music"
         private const val KEY_STRIP_EXTRA = "car_strip_extra"
         private const val KEY_CAR_TOUCH = "car_touch_seen"
+        private const val KEY_CAR_FPS60 = "car_fps60"
         private const val KEY_FIRST_USE = "first_use_ms"
         private const val KEY_HIGHWAY_TRIPS = "highway_trips"
         private const val KEY_REVIEW_ASKED = "review_asked_ms"

@@ -2,8 +2,9 @@
 #  - Actions 画面の「build-app」→「Run workflow」で実行。数分で終わる。
 #  - 先に build-hwdb を一度成功させておくこと（hwdb-latest の目録から最新データを取ってくる）。
 #  - できたファイルは、この実行の「Artifacts」（HighwayMode-app）からダウンロードできる:
-#      HighwayMode.aab … Google Play Console の内部テストへ上げるファイル（アップロード鍵を登録したときだけ）
-#      HighwayMode.apk … スマホへ直接入れる APK（Android Auto では表示されない）
+#      HighwayMode.aab … Google Play Console の内部アプリ共有（v2.21 から。おすすめ）・内部テストへ上げるファイル（アップロード鍵を登録したときだけ）
+#      HighwayMode.apk … 内部アプリ共有へ上げてもよい（Google Play ストアから入るので Android Auto でも使える）。
+#                        スマホへ直接入れたときは Android Auto には表示されない
 #      mapping.txt     … 難読化（R8）の対応表。クラッシュの記録を元の名前に戻すときに使う（AAB の中にも入っている）
 #  - 署名の鍵・アプリ ID・Play への自動公開の設定は build-data.yml の先頭の説明と同じ。
 name: build-app

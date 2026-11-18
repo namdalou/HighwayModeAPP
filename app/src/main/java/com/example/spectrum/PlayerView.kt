@@ -14,7 +14,7 @@ import kotlin.math.abs
 /**
  * スマホの音楽画面。
  * 電池の節約のため、画面に見えている間だけ音声を解析し（アプリを裏にした・画面を消したら止める）、
- * 描き直しは再生中で約 60fps（高リフレッシュレートの画面でも 60fps まで）、一時停止中は約 15fps にする。
+ * 描き直しは再生中で約 60fps（高リフレッシュレートの画面でも 60fps まで。車の画面にも描いている間は 30fps）、一時停止中は約 15fps にする。
  */
 class PlayerView(context: Context) : View(context) {
 
@@ -27,6 +27,18 @@ class PlayerView(context: Context) : View(context) {
         private const val PLAYING_FRAME_MS = 15L
         /** 一時停止中の描き直しの間隔（曲名の流し表示用） */
         private const val PAUSED_FRAME_MS = 66L
+        /** アプリの中で隠してから音声の解析を止めるまで（v2.21。車の画面と同じ） */
+        private const val RELEASE_DELAY_MS = 30_000L
+        /** 車の画面にも描いている間の、再生中の描き直しの間隔（30fps。v2.21） */
+        private const val SHARED_FRAME_MS = 31L
+
+        /**
+         * 車の画面（Android Auto）にも描いている間は true（車の画面が設定する）。その間は、スマホの画面の描き直しを
+         * 30fps に下げて、車の画面の描画を優先する（v2.21。両方を描くとスマホの負担が大きく、車の画面がカクつく原因になる）
+         */
+        @Volatile
+        var carScreenActive = false
+        private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
     }
 
     private val renderer = PlayerRenderer().apply {
@@ -96,20 +108,39 @@ class PlayerView(context: Context) : View(context) {
     override fun onDetachedFromWindow() {
         removeCallbacks(redraw)
         removeCallbacks(longPress)
-        setSpectrumInUse(false)
+        releaseSpectrum()
         super.onDetachedFromWindow()
     }
 
+    /** 音声の解析を止める予定（v2.21） */
+    private val releaseLater = Runnable { releaseSpectrum() }
+
+    /**
+     * 音声の解析を使う・使わない。使わなくなったとき:
+     *  - アプリを裏にした・画面を消した（窓が見えない） → すぐ止める（電池のため）
+     *  - アプリの中で隠しただけ（ハイウェイだけの表示に切り替えた） → [RELEASE_DELAY_MS] 待ってから止める（v2.21。
+     *    すぐ音楽・2 画面に戻したときに、解析の付け直し・音量の慣らしからやり直さず、すぐ動くように）
+     */
     private fun setSpectrumInUse(use: Boolean) {
-        if (use == acquired) return
-        acquired = use
         if (use) {
+            mainHandler.removeCallbacks(releaseLater)
+            if (acquired) return
+            acquired = true
             SpectrumEngine.listeners.add(specListener)
             SpectrumEngine.acquire(context.applicationContext)
-        } else {
-            SpectrumEngine.listeners.remove(specListener)
-            SpectrumEngine.release()
+        } else if (acquired) {
+            mainHandler.removeCallbacks(releaseLater)
+            if (isAttachedToWindow && windowVisibility == View.VISIBLE) mainHandler.postDelayed(releaseLater, RELEASE_DELAY_MS)
+            else releaseSpectrum()
         }
+    }
+
+    private fun releaseSpectrum() {
+        mainHandler.removeCallbacks(releaseLater)
+        if (!acquired) return
+        acquired = false
+        SpectrumEngine.listeners.remove(specListener)
+        SpectrumEngine.release()
     }
 
     private var lastHeal = 0L
@@ -123,7 +154,11 @@ class PlayerView(context: Context) : View(context) {
         }
         // 次の描き直し（画面の更新に合わせて）
         removeCallbacks(redraw)
-        val delay = if (NowPlaying.isPlaying || renderer.animating) PLAYING_FRAME_MS else PAUSED_FRAME_MS
+        val delay = when {
+            !(NowPlaying.isPlaying || renderer.animating) -> PAUSED_FRAME_MS
+            carScreenActive -> SHARED_FRAME_MS
+            else -> PLAYING_FRAME_MS
+        }
         postOnAnimationDelayed(redraw, delay)
     }
 

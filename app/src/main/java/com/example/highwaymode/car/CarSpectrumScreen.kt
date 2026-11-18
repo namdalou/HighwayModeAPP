@@ -153,6 +153,23 @@ class CarSpectrumScreen(carContext: CarContext, private val group: Int = GROUP_T
         private val samples = HashMap<Int, Bitmap>()
         private var samplesVersion = -1
 
+        /**
+         * 見本の絵を先に作っておく（v2.21。車の画面を出してしばらくしてから、低い優先度の別のスレッドで）。
+         * メニューの「スペアナの表示」を開いたときに、絵を描く間（1 枚数〜十数 ms）待たせないように
+         */
+        fun prewarm() {
+            Thread({
+                try {
+                    for (v in SpectrumStyle.VISUAL_ORDER) sample(v)
+                } catch (_: Throwable) {
+                    // 作れなかった絵は、開いたときに作る
+                }
+            }, "car-samples").apply {
+                isDaemon = true
+                priority = Thread.MIN_PRIORITY
+            }.start()
+        }
+
         @Synchronized
         private fun sample(v: Int): Bitmap {
             if (samplesVersion != SpectrumStyle.version) {

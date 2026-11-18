@@ -17,7 +17,8 @@ import kotlin.math.abs
  * スマホの画面: Spectrum（音楽）・ハイウェイモード・下部の切替バーを、画面構成に合わせて並べる。
  *  - 音楽 / ハイウェイ … どちらか一方を全面に
  *  - 2画面 … 横画面は左右（左に Spectrum）、縦画面は上下（上にハイウェイモード）
- * Spectrum が見えていないときは音楽の View を外す（音声の解析を止める）。
+ * Spectrum が見えていないときは音楽の View を隠す（音声の解析は、しばらくしてから止める）。
+ * v2.20 までは外していて（removeView）、戻すたびに描画の準備と音声の解析をやり直し、切り替えがもたついた（v2.21）。
  */
 class DualView(
     context: Context,
@@ -43,33 +44,43 @@ class DualView(
         panel.visibility = View.GONE
     }
 
-    /** 画面構成を変える（新しく見える側は短くフェードイン） */
+    /**
+     * 画面構成を変える。animate なら新しく見える側を短くフェードインする（高速道路に入った・出たなどの自動の切替）。
+     * 利用者がボタンで選んだときは animate = false で、すぐ切り替える（v2.21。v2.20 までは 0.24 秒かけて薄い所から戻していた）
+     */
     fun setLayout(l: DualLayout, animate: Boolean) {
         if (l == layoutMode) return
         val before = layoutMode
         layoutMode = l
         bar.layoutMode = l
         val musicShown = l != DualLayout.HIGHWAY
-        if (musicShown && music.parent == null) addView(music)
-        if (!musicShown && music.parent != null) removeView(music)
+        music.visibility = if (musicShown) View.VISIBLE else View.GONE
         panel.visibility = if (l == DualLayout.MUSIC) View.GONE else View.VISIBLE
         requestLayout()
         invalidate()
+        for (v in arrayOf(music, panel)) {
+            v.animate().cancel()
+            v.alpha = 1f
+        }
         if (animate) {
-            val fadeIn = ArrayList<View>()
+            val fadeIn = ArrayList<View>(2)
             if (musicShown && before == DualLayout.HIGHWAY) fadeIn.add(music)
             if (l != DualLayout.MUSIC && before == DualLayout.MUSIC) fadeIn.add(panel)
             if (before == DualLayout.SPLIT || l == DualLayout.SPLIT) {
-                // 大きさが変わる側も、いったん薄くしてから戻す（並び替えが目で追いやすい）
+                // 大きさが変わる側も、いったん少し薄くしてから戻す（並び替えが目で追いやすい）
                 if (musicShown && !fadeIn.contains(music)) fadeIn.add(music)
                 if (l != DualLayout.MUSIC && !fadeIn.contains(panel)) fadeIn.add(panel)
             }
             for (v in fadeIn) {
-                v.animate().cancel()
-                v.alpha = 0.25f
-                v.animate().alpha(1f).setDuration(240L).start()
+                v.alpha = 0.5f
+                v.animate().alpha(1f).setDuration(FADE_MS).start()
             }
         }
+    }
+
+    private companion object {
+        /** 自動の切替のときのフェードの長さ（v2.21 で 240 → 160ms） */
+        const val FADE_MS = 160L
     }
 
     fun setSnapshot(s: HighwaySnapshot) {
@@ -84,7 +95,7 @@ class DualView(
         frame = f
         // 横画面の 2 画面では、左側の Spectrum を大きい表示（曲名・ボタンを大きく）にする
         (music as? com.example.spectrum.PlayerView)?.large = layoutMode == DualLayout.SPLIT && !f.stacked
-        if (music.parent != null) measureChild(music, f.music)
+        measureChild(music, f.music)
         measureChild(panel, f.highway)
         measureChild(bar, f.bar)
     }
@@ -102,7 +113,7 @@ class DualView(
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         val f = frame ?: return
-        if (music.parent != null) place(music, f.music)
+        place(music, f.music)
         place(panel, f.highway)
         place(bar, f.bar)
     }

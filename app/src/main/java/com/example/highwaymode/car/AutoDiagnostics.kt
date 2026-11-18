@@ -25,6 +25,11 @@ import android.widget.Toast
  *  - [maybeShowOnce]: Google Play 以外から入れていて Android Auto が新しい版のとき、起動時に一度だけ、利用者向けの短い案内を出す
  *  - [show]: 開発者向け設定の「Android Auto の状態」。調べた内容（インストール元・版など）と対処を出す
  * v2.19: 公開に向けて、案内から開発向けの内容（内部テスト・README・Desktop Head Unit・ビルド）を除いた。
+ *
+ * v2.21: 利用者は内部アプリ共有で使う。内部アプリ共有は、AAB でも APK でも Google Play ストアのアプリが入れるので
+ * 「Google Play から入れた」になる（APK を上げても APK の直接インストールにはならない）。Google が内部アプリ共有用の鍵で
+ * 署名し直すので、署名は内部テスト・build-app の APK と違う（上書きし合えない）。判定は次のどれかが Google Play のとき:
+ * インストールしたアプリ（installer）・インストールを始めたアプリ（initiator）・更新を受け持つアプリ（update owner。Android 14 以降）
  */
 object AutoDiagnostics {
 
@@ -38,7 +43,11 @@ object AutoDiagnostics {
         val appVersion: String,
         val installer: String?,
         val initiator: String?,
+        /** 更新を受け持つアプリ（Android 14 以降。分からなければ null） */
+        val updateOwner: String?,
         val fromPlay: Boolean,
+        /** このアプリの署名の証明書の SHA-256（内部アプリ共有・内部テスト・APK のどれで入れたかを見分ける。読めなければ null） */
+        val signer: String?,
         val autoVersion: String?,
         val autoVersionCode: Long,
         val carServices: Int,
@@ -57,7 +66,8 @@ object AutoDiagnostics {
 
         fun asText(): String = buildString {
             append("アプリ: ").append(packageName).append(" ").append(appVersion).append('\n')
-            append("インストール元: ").append(installerLabel(installer, initiator)).append('\n')
+            append("インストール元: ").append(if (fromPlay) "Google Play（内部アプリ共有・テスト版を含む）" else installerLabel(installer, initiator)).append('\n')
+            if (signer != null) append("署名の証明書（SHA-256）: ").append(signer).append('\n')
             append("Android Auto: ").append(autoVersion ?: "見つかりません").append('\n')
             append("Car App サービス: ").append(if (carServices > 0) "宣言あり" else "見つかりません")
             append(" / 車載アプリ宣言: ").append(if (hasCarMeta) "あり" else "なし").append('\n')
@@ -65,7 +75,11 @@ object AutoDiagnostics {
         }
     }
 
-    fun collect(ctx: Context): Report {
+    /**
+     * いまの状態を調べる。
+     * @param withSigner 署名の証明書も調べる（開発者向け設定の表示だけ。起動のたびの確認では調べない）
+     */
+    fun collect(ctx: Context, withSigner: Boolean = true): Report {
         val pm = ctx.packageManager
         val pkg = ctx.packageName
         val appVersion = try {
@@ -75,11 +89,13 @@ object AutoDiagnostics {
         }
         var installer: String? = null
         var initiator: String? = null
+        var owner: String? = null
         try {
             if (Build.VERSION.SDK_INT >= 30) {
                 val src = pm.getInstallSourceInfo(pkg)
                 installer = src.installingPackageName
                 initiator = src.initiatingPackageName
+                if (Build.VERSION.SDK_INT >= 34) owner = src.updateOwnerPackageName
             } else {
                 @Suppress("DEPRECATION")
                 installer = pm.getInstallerPackageName(pkg)
@@ -115,13 +131,43 @@ object AutoDiagnostics {
             appVersion = appVersion,
             installer = installer,
             initiator = initiator,
-            fromPlay = installer == PLAY_STORE,
+            updateOwner = owner,
+            fromPlay = isFromPlay(installer, initiator, owner),
+            signer = if (withSigner) signerFingerprint(ctx) else null,
             autoVersion = autoVersion,
             autoVersionCode = autoCode,
             carServices = services,
             hasCarMeta = hasMeta,
             android = "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) ${Build.MANUFACTURER} ${Build.MODEL}"
         )
+    }
+
+    /**
+     * Google Play（内部アプリ共有・テスト版を含む）から入れたか（v2.21）。
+     * 内部アプリ共有は、AAB・APK のどちらを上げても Google Play ストアのアプリがインストールする。
+     * 端末によってインストールしたアプリの記録が無いことがあるので、始めたアプリ・更新を受け持つアプリも見る
+     */
+    fun isFromPlay(installer: String?, initiator: String?, updateOwner: String?): Boolean =
+        installer == PLAY_STORE || initiator == PLAY_STORE || updateOwner == PLAY_STORE
+
+    /** このアプリの署名の証明書の SHA-256（「AB:CD:…」の形。読めなければ null） */
+    private fun signerFingerprint(ctx: Context): String? = try {
+        val pm = ctx.packageManager
+        val certs: Array<android.content.pm.Signature>? = if (Build.VERSION.SDK_INT >= 28) {
+            val info = pm.getPackageInfo(ctx.packageName, PackageManager.GET_SIGNING_CERTIFICATES).signingInfo
+            if (info == null) null else if (info.hasMultipleSigners()) info.apkContentsSigners else info.signingCertificateHistory
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getPackageInfo(ctx.packageName, PackageManager.GET_SIGNATURES).signatures
+        }
+        // 鍵を替えた履歴があるときは、いまの鍵（最後）を出す
+        val cert = certs?.lastOrNull()
+        if (cert == null) null else {
+            val d = java.security.MessageDigest.getInstance("SHA-256").digest(cert.toByteArray())
+            d.joinToString(":") { "%02X".format(it.toInt() and 0xFF) }
+        }
+    } catch (e: Exception) {
+        null
     }
 
     fun installerLabel(installer: String?, initiator: String?): String = when (installer) {
@@ -141,11 +187,13 @@ object AutoDiagnostics {
                 append("このアプリの Android Auto 用の情報を読み込めませんでした。Google Play からアプリを入れ直してください。")
             }
             r.fromPlay -> {
-                append("Google Play からインストールされているので、Android Auto で使えます。\n\n")
+                append("Google Play からインストールされているので、Android Auto で使えます（内部アプリ共有で入れた場合も同じです）。\n\n")
                 append("車の画面に出ないときは:\n")
                 append("・スマホの Android Auto の設定 →「ランチャーのカスタマイズ」で「Spectrum ハイウェイ」をオンにする\n")
                 append("・一度 Android Auto の接続を切ってつなぎ直す（車・ケーブル・ワイヤレス）\n")
-                append("・Android Auto と Google Play 開発者サービスを最新にする")
+                append("・Android Auto と Google Play 開発者サービスを最新にする\n\n")
+                append("内部アプリ共有の版は、Google が内部アプリ共有用の鍵で署名し直すため、内部テストの版や APK を直接入れた版とは上書きできません。")
+                append("入れ方を切り替えるときは、設定 →「設定の引き継ぎ」で書き出してから入れ直してください。")
             }
             else -> append(notFromPlayAdvice(r))
         }
@@ -156,7 +204,7 @@ object AutoDiagnostics {
         append("このアプリは Google Play 以外からインストールされているため、")
         append(if (r.autoIsNewValidator) "この Android Auto（${r.autoVersion}）" else "Android Auto 17.7 以降")
         append("では車の画面に表示されません（Android Auto の仕様です）。スマホの画面ではこのまま使えます。\n\n")
-        append("車の画面で使うには、いまのアプリをアンインストールしてから、Google Play ストアからインストールしてください。")
+        append("車の画面で使うには、いまのアプリをアンインストールしてから、Google Play ストア（内部アプリ共有のリンクを含む）からインストールしてください。")
         append("アンインストールの前に、設定 →「設定の引き継ぎ」→「設定を書き出す」で保存しておくと、入れ直したあとに「設定を読み込む」で戻せます。")
     }
 
@@ -166,7 +214,7 @@ object AutoDiagnostics {
      */
     fun maybeShowOnce(a: Activity, prefs: com.example.highwaymode.data.Prefs) {
         val r = try {
-            collect(a)
+            collect(a, withSigner = false)
         } catch (e: Exception) {
             return
         }

@@ -31,7 +31,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = appVersionCode
-        versionName = "2.20.0"
+        versionName = "2.21.0"
         // 地図データ（HWDB）の配布目録。GitHub Actions では自動で設定される:
         //   ./gradlew :app:assembleRelease -Phwdb.manifestUrl=https://github.com/<user>/<repo>/releases/download/hwdb-latest/hwdb-manifest.json
         val manifestUrl = (project.findProperty("hwdb.manifestUrl") as String?) ?: ""
@@ -40,6 +40,9 @@ android {
         // GitHub Actions ではリポジトリ変数 PRIVACY_URL、無ければ GitHub のリポジトリの docs/PRIVACY.md
         val privacyUrl = prop("app.privacyUrl") ?: "https://github.com/namdalou/HighwayModeAPP/blob/main/docs/PRIVACY.md"
         buildConfigField("String", "PRIVACY_POLICY_URL", "\"" + privacyUrl.replace("\"", "") + "\"")
+        // Google Play のアプリ内アップデート・アプリ内レビュー（v2.20）。v2.21 から既定では使わない（内部アプリ共有で配る
+        // ため。内部アプリ共有の版には更新の案内も評価の送信も働かない）。Google Play で公開するときは -Papp.playInApp=true
+        buildConfigField("boolean", "PLAY_IN_APP", (prop("app.playInApp") == "true").toString())
     }
 
     buildFeatures {
@@ -96,6 +99,10 @@ dependencies {
     implementation("androidx.car.app:app:1.8.0-rc01")
     implementation("androidx.car.app:app-projected:1.8.0-rc01")
     implementation("androidx.core:core:1.13.1")
+    // 起動直後から速いコードで動かす（v2.21）: src/main/baseline-prof.txt（このアプリと Car App Library のコード全体）を
+    // アプリに入れ、インストール後に前もって機械語にしておく（Android の実行時の最適化を待たない。起動直後のスペアナのカクつき対策）。
+    // AAB は Google Play がインストール時に使い、APK はこのライブラリが初回の起動時に登録する（端末が空いているときに反映）
+    implementation("androidx.profileinstaller:profileinstaller:1.4.1")
     // Spectrum: パソコンなしで DUMP 権限(音声の番号の読み取り用)を許可するため
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")

@@ -170,7 +170,8 @@ class MainActivity : Activity(), HighwayPanelView.Callbacks, ModeBarView.Callbac
     // ------------------------------------------------------------------ 画面構成
 
     override fun onDualChanged() {
-        dual.setLayout(DualMode.layout, animate = true)
+        // 利用者がボタンで選んだときは、すぐ切り替える（自動の切替だけ短くフェード。v2.21）
+        dual.setLayout(DualMode.layout, animate = !DualMode.changedByUser)
         updateHints()
         // 「高速道路を走行中だけ画面を消さない」の切り替え
         ScreenOptions.applyKeepScreenOn(this, prefs, DualMode.highwayActive)
