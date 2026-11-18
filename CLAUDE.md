@@ -7,7 +7,7 @@
 - Android アプリ「Spectrum ハイウェイ」。スマホと Android Auto（車の画面）に対応。
 - 音楽プレーヤー表示とスペクトラムアナライザーの **Spectrum** と、高速道路の前方の IC / JCT / SA / PA までの距離・到着予定時刻を出す **ハイウェイモード** を 1 つにしたもの。
 - 高速道路の外では Spectrum を全画面表示。高速道路に入ると自動で 2 画面（左 Spectrum : 右ハイウェイ = 4 : 5）。
-- 現在の版は **v2.21.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
+- 現在の版は **v2.22.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
 
 ## 利用者について
 
@@ -130,6 +130,7 @@
   - **Android Auto の審査（v2.21 で調べ直し）**：品質の決まりのうち、NF-1（自分で道案内）・NF-2（地図の面には地図だけ）・**SA-1（動く絵を出さない。運転中に使う分類すべて）**・**ST-1（文字を自動で流さない）**・PC-1 などに合わない。**スペアナを車の画面に出したまま製品版の審査を通す方法は無い**。審査が配布を止めるのはオープン テスト・製品版だけ（内部アプリ共有・内部テストは審査なし、クローズド テストは指摘のメールだけ）。利用者は**内部アプリ共有で使う**ことにした（v2.21）。詳しくは `docs/PLAY_CONSOLE.md` の 8 章。
   - **アプリ内アップデート・レビューは v2.21 から既定で止める**（`BuildConfig.PLAY_IN_APP`。Gradle の `-Papp.playInApp=true` で有効）。内部アプリ共有の版には働かず、内部テストの版（別の鍵）への更新を勧めるおそれがあるため。
 - **内部アプリ共有（v2.21）**：AAB・APK のどちらを上げても Google Play ストアが入れるので、インストール元は Google Play。判定は `AutoDiagnostics.isFromPlay`（installer・initiator・update owner（Android 14 以降）のどれかが `com.android.vending`）。Google が内部アプリ共有用の鍵で署名し直すので、内部テスト・build-app の APK とは上書きし合えない（切り替えは「設定の引き継ぎ」で書き出し → 入れ直し → 読み込み。Shizuku の許可は入れ直しで消える）。開発者向け設定の「Android Auto の状態」に署名の証明書の SHA-256 を出す（起動時の `maybeShowOnce` は `collect(withSigner = false)` で軽く）。手順は README の「内部アプリ共有で入れる」。
+- **内部アプリ共有の条件・クローズド テスト（v2.22）**：Play Console で「未公開のアプリ」（審査前）のままだと内部アプリ共有は「アプリを公開する必要があります」で使えない。セットアップを済ませてリリースを審査に送り、通ると使える。利用者はクローズド テストを始めた（クローズド テストの版は内部テストと同じアプリ署名鍵）。テスターが送れるよう、設定の「その他」に「不具合を報告する」（`SettingsDialogs.shareProblemReport`：`CrashLog.report`・`DualCarScreen.areaInfo`・版を見せてから、共有の画面で利用者が送り先を選ぶ。アプリは自分で送らない）。
 - **起動を速くする（v2.21）**：`app/src/main/baseline-prof.txt`（このアプリの `com/example/**` と `androidx/car/app/**` 全体のワイルドカードの規則）と `androidx.profileinstaller`。AAB は Google Play がインストール時に、APK は初回起動後に端末が空いたとき（bg-dexopt）に前もって機械語にする。
 - **不具合の記録（v2.21）**：`CrashLog`（`HighwayApp`（Application）で `install`）。落ちたとき（捕まえていない例外）に `files/crash_last.txt` へ書いてから Android に任せる。落ちずに済んだ失敗は `CrashLog.note`（最近 30 件。同じものは 10 秒に 1 回）で、車の画面の描画・テンプレート・タップ（`CarTemplates.safe`・`click`、`DualCarScreen`）から呼ぶ。開発者向け設定の「不具合の記録」で表示・コピー・削除。端末の外へは送らない・バックアップに入れない（`backup_rules` は含めるものだけを書いている）。
 - **音声の番号を探す読み取り（v2.21）**：`SpectrumEngine.scanIfNeeded`（DUMP 権限・Shizuku で `dumpsys audio` を読む。出力が大きく重い）は、一時停止中は読まず、見つからない・鳴らないままなら 2→2→4→8→15→30 秒と間隔をあける（`SCAN_BACKOFF_MS`・`scanMisses`。再生開始・アプリの変更・新しい番号で戻す）。v2.20 までは 2 秒ごとに読み続けていた。
@@ -166,9 +167,13 @@
 - 改行コードは `.gitattributes` で LF に統一しています（`*.bat` / `*.cmd` だけ CRLF）。
 - 新しい権限を追加したり、取得するデータを変えたりしたら、`docs/PRIVACY.md` も更新してください。
 
-## 実機で未確認の点（v2.21 時点）
+## 実機で未確認の点（v2.22 時点）
 
 利用者の実機での確認待ちです。報告があればここから調べてください。
+
+v2.22 で入れたもの:
+
+- 設定の「不具合を報告する」：内容が表示され、「送る」でメールなどの共有の画面が開くか。
 
 v2.21 で入れたもの:
 
