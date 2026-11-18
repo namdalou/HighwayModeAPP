@@ -55,6 +55,7 @@
     <!-- 自動バックアップ（v2.19）: 入れ直し・機種変更のときに、設定・登録したオービスを Google アカウントのバックアップから戻す。
          対象は res/xml の backup_rules.xml（Android 11 以前）・data_extraction_rules.xml（Android 12 以降）で、設定とオービスだけ -->
     <application
+        android:name=".HighwayApp"
         android:allowBackup="true"
         android:fullBackupContent="@xml/backup_rules"
         android:dataExtractionRules="@xml/data_extraction_rules"

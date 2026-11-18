@@ -38,8 +38,13 @@ class ModeBarRenderer(var density: Float) {
         private const val MARQUEE_HOLD_END_MS = 1500L
         /** 流す速さ（曲名の文字の大きさの何倍/秒） */
         private const val MARQUEE_EM_PER_SEC = 2.0f
-        /** これより長く描かれなかったら（別の表示に切り替えていた）、先頭からやり直す */
-        private const val MARQUEE_RESET_GAP_MS = 700L
+        /**
+         * これより長く描かれなかったら（別の表示に切り替えていた）、先頭からやり直す。
+         * v2.21 で 700ms → 2000ms: 流す前に止めている間は、スマホも車も最大 1 秒おきにしか描き直さない（車は v2.21 から
+         * バーを記録しておき、変わったとき・1 秒ごとだけ描き直す）ので、700ms では止めている間に毎回先頭へ戻ってしまい、
+         * いつまでも流れ始めなかった（スマホのハイウェイだけの表示では v2.15 から起きていた）
+         */
+        private const val MARQUEE_RESET_GAP_MS = 2000L
     }
 
     enum class Target { MUSIC, SPLIT, HIGHWAY, MENU, PLAY_PAUSE, OPEN_SPLIT }

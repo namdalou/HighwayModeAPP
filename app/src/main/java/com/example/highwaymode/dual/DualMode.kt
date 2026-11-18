@@ -40,6 +40,15 @@ object DualMode {
     var changedAtMs: Long = 0L
         private set
 
+    /**
+     * 最後の画面構成の変更は、利用者がボタンで選んだもの（v2.21）。利用者が選んだときは演出（フェード）をせずにすぐ切り替え、
+     * 高速道路に入った・出たなどの自動の切替だけ短くフェードする（v2.20 までは、どちらも約 0.25 秒かけて暗い所から
+     * 浮かび上がらせていて、押してから切り替わるまでがもっさりして見えた）
+     */
+    @Volatile
+    var changedByUser: Boolean = false
+        private set
+
     /** 下部の切替バーを出すか（対象エリア内、または手動で音楽以外にしているとき） */
     val barVisible: Boolean get() = highwayActive || layout != DualLayout.MUSIC
 
@@ -96,7 +105,7 @@ object DualMode {
     /** 利用者が画面を選んだ */
     fun select(l: DualLayout) {
         if (!onMain { select(l) }) return
-        if (setLayout(l)) notifyListeners()
+        if (setLayout(l, byUser = true)) notifyListeners()
     }
 
     /** 「画面切替」ボタン: 2画面 → ハイウェイ → 音楽 → 2画面 … */
@@ -135,9 +144,10 @@ object DualMode {
         notifyListeners()
     }
 
-    private fun setLayout(l: DualLayout): Boolean {
+    private fun setLayout(l: DualLayout, byUser: Boolean = false): Boolean {
         if (layout == l) return false
         layout = l
+        changedByUser = byUser
         changedAtMs = SystemClock.uptimeMillis()
         return true
     }

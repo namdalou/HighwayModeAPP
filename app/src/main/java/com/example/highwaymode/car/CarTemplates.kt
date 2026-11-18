@@ -41,6 +41,7 @@ internal object CarTemplates {
         build()
     } catch (e: Exception) {
         Log.w(TAG, "template failed: ${e.message}")
+        com.example.highwaymode.CrashLog.note("車の画面: 画面を作る処理（$title）", e)
         error(title)
     }
 
@@ -57,6 +58,7 @@ internal object CarTemplates {
             block()
         } catch (e: Exception) {
             Log.w(TAG, "click failed: ${e.message}")
+            com.example.highwaymode.CrashLog.note("車の画面: 押したときの処理", e)
         }
     }
 

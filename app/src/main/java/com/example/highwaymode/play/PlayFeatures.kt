@@ -4,6 +4,7 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.os.Handler
 import android.os.Looper
+import com.example.highwaymode.BuildConfig
 import com.example.highwaymode.core.engine.EngineStatus
 import com.example.highwaymode.data.LocalState
 import com.example.highwaymode.data.Prefs
@@ -29,6 +30,10 @@ import java.lang.ref.WeakReference
  * どちらも Google Play から入れたときだけ動き、それ以外（APK など）では黙って何もしない。
  * 運転中に出さないよう、スマホの画面で開いていて、ほかの案内が出ていない（画面にフォーカスがある）、
  * 車につながっていない、高速道路を走っていない、止まっている（10km/h 未満）ときだけ出す。
+ *
+ * v2.21: 利用者は内部アプリ共有で配るので、既定では何もしない（[BuildConfig.PLAY_IN_APP]。内部アプリ共有の版には
+ * 更新の案内も評価の送信も働かず、内部テストの版（別の鍵で署名）への更新を勧めてしまうおそれもある）。
+ * Google Play で公開するときは、ビルドの -Papp.playInApp=true で有効にする
  */
 object PlayFeatures {
 
@@ -46,6 +51,7 @@ object PlayFeatures {
     /** スマホの画面が前に出たとき（MainActivity.onStart） */
     fun onStart(a: Activity, prefs: Prefs) {
         if (prefs.firstUseMs == 0L) prefs.firstUseMs = System.currentTimeMillis()
+        if (!BuildConfig.PLAY_IN_APP) return
         val ref = WeakReference(a)
         // 起動直後のほかの案内（権限の確認・地図データのお知らせなど）が先に出るので、少し待ってから
         main.postDelayed({ ref.get()?.let { checkUpdate(it) } }, 4000)

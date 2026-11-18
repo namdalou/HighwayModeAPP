@@ -7,13 +7,13 @@
 - Android アプリ「Spectrum ハイウェイ」。スマホと Android Auto（車の画面）に対応。
 - 音楽プレーヤー表示とスペクトラムアナライザーの **Spectrum** と、高速道路の前方の IC / JCT / SA / PA までの距離・到着予定時刻を出す **ハイウェイモード** を 1 つにしたもの。
 - 高速道路の外では Spectrum を全画面表示。高速道路に入ると自動で 2 画面（左 Spectrum : 右ハイウェイ = 4 : 5）。
-- 現在の版は **v2.20.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
+- 現在の版は **v2.21.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
 
 ## 利用者について
 
 - 利用者は日本語で依頼します。返答・README・画面の文言は日本語で書いてください。
-- 利用者は PC で直接ビルドしていません。GitHub リポジトリ **HighwayModeAPP** の main で GitHub Actions の **build-app** を手動実行し、できた AAB を Play Console の内部テストに上げて実機（スマホ＋車）で確認しています。
-- **作業が終わったら、利用者から別の指示が無い限り、コミット → プッシュ → Pull Request を作って main へマージし、main で GitHub Actions の build-app を実行するところまで行ってください**（利用者の指示。v2.4 から）。build-app が成功したら、実行結果の URL と成果物（Artifacts の `HighwayMode-app` の中の `HighwayMode.aab`）を知らせます。利用者はその AAB を Play Console の内部テストに上げます。
+- 利用者は PC で直接ビルドしていません。GitHub リポジトリ **HighwayModeAPP** の main で GitHub Actions の **build-app** を手動実行し、できた AAB を Play Console の**内部アプリ共有**に上げ（v2.21 から。それまでは内部テスト）、リンクから入れて実機（スマホ＋車）で確認しています。
+- **作業が終わったら、利用者から別の指示が無い限り、コミット → プッシュ → Pull Request を作って main へマージし、main で GitHub Actions の build-app を実行するところまで行ってください**（利用者の指示。v2.4 から）。build-app が成功したら、実行結果の URL と成果物（Artifacts の `HighwayMode-app` の中の `HighwayMode.aab`）を知らせます。利用者はその AAB を Play Console の内部アプリ共有に上げます（APK を上げることもある。どちらも Google Play ストアが入れるので「Google Play から入れた」扱い）。
 - 地図データの作り直し（build-hwdb）は毎週自動で動くので、利用者に頼まれたときだけ手動で実行します（そのときは build-hwdb が終わってから build-app を実行する。build-app は公開済みの最新の地図データを同梱するため）。
 - 利用者は手元のフォルダ（GitHub Desktop、Windows）も使います。古いフォルダの中身で置き換えると `.github`（build-app）などが消えるので（v2.4 の直前に一度消えた）、手元で触る前に「Fetch origin → Pull origin」で main を最新にするよう案内してください。
 - 変更をまとめて渡すときは、README の先頭に「今回の更新（vX.Y）」の表（ご要望 → 対応）を追加し、それまでの「今回の更新」は「vX.Y の更新」に改名してください。版を上げるときは `versionName` も更新してください。
@@ -23,7 +23,7 @@
 | モジュール | 内容 |
 |---|---|
 | `:core` | Android に依存しない演算（純粋な Kotlin/JVM）。地図データ（HWDB）、道路グラフ、マップマッチング、前方経路（カーナビの案内に合わせる `route/NavGuide`、ナビの通知の文字の読み取りと案内かどうかの判定 `route/NavText`。v2.16）、到着予測、渋滞、オービス、エンジン統合（`HighwayEngine`）、電池の節約の判定（`PowerPolicy`）、Android Auto の切断後に常駐を止める判定（`engine/DisconnectPolicy`）、画面の切替判定と区画割り（`dual/HighwayPresence`, `dual/DualGeometry`）、スペアナの解析（`audio/WaveStitcher`・`BandAnalyzer`・`SpectrumMapper`。v2.15。高さと曲の音量は v2.16 で作り直し）、主要バイパスの判定（`graph/BypassClassifier`）、設定の書き出し・読み込みのファイルの形（`backup/SettingsArchive`。v2.19）。**JVM 上でテストできる** |
-| `:app` | Android アプリ。`com.example.spectrum`（Spectrum：音声解析 `SpectrumEngine`、音声の自動探索 `SessionProber`、描画 `PlayerRenderer` / `PlayerView`、スペアナの表示の種類ごとの描画 `SpectrumPainter`、昔のカーオーディオの 3 つの表示 `CarAudioPainter`、ジャケットの色 `ArtPalette`、見た目の設定 `SpectrumStyle`、通知の受け渡し `NotificationHooks`、音楽の画面に出すカーナビの案内 `Guidance`）と `com.example.highwaymode`（スマホ画面、常駐サービス、`engine/EngineHost`、`car/DualCarScreen`（Android Auto）、`ui/PanelRenderer`（ハイウェイ側の描画）、`ui/SettingsActivity`（設定画面）・`ui/DevSettingsActivity`（開発者向け設定）・`ui/SpectrumPickers`（スペアナの見本・選ぶ画面）、`nav/NavNotifications`（ナビのアプリ（Google マップなど）の通知の読み取り）、`car/CarTemplates`（車の画面の決まりと共通の部品）、`CarAutoStop`（切断後に常駐を止める）） |
+| `:app` | Android アプリ。`com.example.spectrum`（Spectrum：音声解析 `SpectrumEngine`、音声の自動探索 `SessionProber`、描画 `PlayerRenderer` / `PlayerView`、スペアナの表示の種類ごとの描画 `SpectrumPainter`、昔のカーオーディオの 3 つの表示 `CarAudioPainter`、ジャケットの色 `ArtPalette`、見た目の設定 `SpectrumStyle`、通知の受け渡し `NotificationHooks`、音楽の画面に出すカーナビの案内 `Guidance`）と `com.example.highwaymode`（スマホ画面、常駐サービス、`engine/EngineHost`、`car/DualCarScreen`（Android Auto）、`ui/PanelRenderer`（ハイウェイ側の描画）、`ui/SettingsActivity`（設定画面）・`ui/DevSettingsActivity`（開発者向け設定）・`ui/SpectrumPickers`（スペアナの見本・選ぶ画面）、`nav/NavNotifications`（ナビのアプリ（Google マップなど）の通知の読み取り）、`car/CarTemplates`（車の画面の決まりと共通の部品）、`CarAutoStop`（切断後に常駐を止める）、`CrashLog`・`HighwayApp`（不具合の記録・起動時の準備。v2.21）） |
 | `:datatool` | PC・CI 用の地図データ（HWDB）作成ツール |
 
 ファイル構成の詳細は README の「ファイル構成」。
@@ -34,9 +34,13 @@
   - **「アップデートを確認」（v2.17）**：利用者の報告「Android Auto で、左上に常に『アップデートを確認』と出て、メニュー・画面切替のボタンが出ない」。右上（右ハンドルの車では左上）のボタンは Android Auto が描く場所で、この文字はアプリのものではない。Car App Library 1.8.0-rc01（2026-08-26）に「セキュリティの修正。古い版なら更新を」とあり、Android Auto が古いライブラリのアプリにボタンの代わりにこれを出していると推測して更新した（**確証は無い**。この環境から Google の Maven につながらないので、ライブラリの API の変化は GitHub Actions のビルドで確かめた）。あわせて、**下部の切替バーを車の画面でもいつも出し、右端に［≡］メニュー**（`ModeBarRenderer.showMenuButton`・`menuAsLines`。押すと `CarMenuScreen`）を付けた（ボタンが出ない車でも画面のタッチで操作できるように）。開発者向け設定の「車の画面の表示範囲（確認用）」の 1 行目に、取り決めた Car App API レベル（`carContext.carAppApiLevel`）を出す。まだ出ると言われたら、その値と Android Auto の版をもらう。
   - **画面の大きさ（v2.17）**：`DualGeometry.car` は、安定した範囲（`onStableAreaChanged`）の下端が上がっていればその上にバーを出し（高さの 60% 以上のときだけ）、縦長の画面（幅が高さの 0.9 倍未満）の 2 画面はスマホの縦画面と同じく上下（上にハイウェイ、下に音楽）。音楽の画面は 800×480・1024×600・1280×720・1920×720 の大きさで描いて確かめた（作業用フォルダの `preview` の `screen_car*`）。
   - **2 画面の下部バー（v2.18）**：利用者の指示「2 画面のとき、下の［音楽］［2画面］［ハイウェイ］を画面の右半分（ハイウェイ側）に収め、音楽側を一番下まで表示して大きく」。`DualGeometry.arrange` の SPLIT（左右）は、バーをハイウェイ側の下だけ（`Box(mx + div, areaB, r, bottom)`）、音楽側と区切り線は表示範囲の下端まで。車・スマホの横画面の両方。音楽だけ・ハイウェイだけ・上下の 2 画面（縦長の画面）は、今までどおり下に横いっぱい。利用者の車（800×480。下に Android Auto の列があり、安定した範囲の下端 383）は、音楽側が 357×323 → 357×383（`vh` 362 → 429）になり、縦長の並び（上に 3 行、中央にジャケット）に変わる。バーは幅 約 440px で `ModeBarRenderer` の `wide` にならないので、左の情報（渋滞の要約・案内）は出ず、ボタンが横いっぱいに並ぶ。テストは `DualModeTest.geometry_splitBarStaysOnHighwaySide`。
-  - 描画は専用スレッド（THREAD_PRIORITY_DISPLAY）で、30fps（一時停止中 15fps、ハイウェイだけのとき 10fps。下のバーの曲名を流している間は 30fps）。
+  - 描画は専用スレッド（THREAD_PRIORITY_DISPLAY）で、30fps（一時停止中 15fps、ハイウェイだけのとき 10fps。下のバーの曲名を流している間は 30fps）。開発者向け設定の「車の画面を 60fps で描く（試験）」（`Prefs.carFps60`。v2.21）で再生中は 60fps（`frameMs`）。
   - **画面へ出す時刻をそろえる（v2.15）**：出す時刻（`postAtNs`。System.nanoTime）は 33.33ms ごとの決まった時刻。描くのにかかる時間の見積もり（`drawCostNs`。最近の最大に近い値）＋余裕だけ前から描き始め（`waitUntil`）、描き終えたら決まった時刻まで待ってから `unlockCanvasAndPost`。Handler は 1ms 刻みなので、少し早めに起こしてもらって `LockSupport.parkNanos` で合わせる。利用者の報告「Android Auto でスペアナがときどきカクつく」への対策（出す時刻のぶれで、スマホの中の画面の合成の区切りをまたぐフレームが出る）。まだカクつくと言われたら、`DRAW_MARGIN_NS`・`drawCostNs` の決め方、解析の間隔（`SpectrumEngine.READ_PERIOD_NS`）を見直す。
-  - ハイウェイモードの画面の記録（RenderNode）は、すぐ反映したいとき（`panelInvalid`：操作・区画の変更）だけその場で描き直し、新しい位置情報・1 秒ごとの描き直し（`panelStale`）は**フレームを出した直後の空き時間**に行う（`refreshPanelNode`）。
+  - ハイウェイモードの画面の記録（RenderNode）は、すぐ反映したいとき（`panelInvalid`：操作・区画の変更）だけ描画スレッドでその場で描き直す（`panelGen` を進める）。新しい位置情報・1 秒ごとの描き直し（`panelStale`）は、**v2.21 から別のスレッド（`car-panel`）で裏の記録に描き**（`schedulePanelRefresh`）、できあがったら描画スレッドが表と入れ替える（`takePanelResult`。世代と区画が同じときだけ。2 枚の記録 `panelFront`・`panelBack` を交互に使うので、別のスレッドが描いている記録を同時に画面へ出すことは無い）。`PanelRenderer` は 1 つなので、描く・`hitAt`・`pageButton`・設定の反映は `panelLock` を取ってから。v2.15〜v2.20 は描き直しを描画スレッドの空き時間に行っていて、描き直しが長いと次のフレームが遅れた（起動直後は 1 秒に 1 回の処理が速いコードにならない・大きい画面は行が多い。利用者の報告「起動時・大きい画面でときどきカクつく」）。
+  - **下部の切替バー（v2.21）**：`drawBar` で記録（`barNode`）に描き、区画・画面構成・エンジンの状態・案内の文・曲名・再生中か・ジャケットが変わったとき、1 秒ごと（`BAR_REFRESH_MS`）、曲名を流している間（`marqueeMoving`）だけ描き直す（v2.20 までは毎フレーム描いていた）。`ModeBarRenderer.MARQUEE_RESET_GAP_MS` は 2000ms（描き直しの間隔 1 秒より長くしないと、流す前に毎回先頭へ戻る。スマホでは v2.15 から起きていた）。
+  - **画面の切り替え（v2.21）**：利用者がボタンで選んだとき（`DualMode.changedByUser`）はフェードしない。自動の切替だけ `AUTO_FADE_MS`（180ms）・`AUTO_FADE_ALPHA`（120）。スマホも同じ（`DualView.setLayout(animate = !changedByUser)`、160ms）。ハイウェイだけにしてからスペアナの解析を止めるまで 30 秒（`SPECTRUM_RELEASE_DELAY_MS`。スマホは `PlayerView.RELEASE_DELAY_MS`。スマホの音楽の View は外さず GONE にする）。
+  - **確認用（v2.21）**：「車の画面の表示範囲（確認用）」（`areaInfo`）の最後に、描画の様子（fps・遅れたフレーム（描き終えたのが出す時刻より 1ms 以上後）・描く時間の平均と最大・ハイウェイ側の描き直しの時間）を出す。カクつくと言われたら、カクつく場面でこれをコピーしてもらう。
+  - 車の画面に描いている間は、スマホの音楽の画面を 30fps に下げる（`PlayerView.carScreenActive`。v2.21）。
   - 「すぐ描く」は `requestFrame()`（`frameRequests` を進めて予約し直す）。フレームの処理の最後で予約するときは、描いている間に依頼が来ていないか `frameRequests` で確かめる（二重に予約しない）。
   - 描くたびに `EngineHost.latest` を読みます（スマホと車で表示がずれないように）。
 - **右上のボタン（ActionStrip）**：`NavigationTemplate` では必須（1 つは必ず要る）。出し入れは Android Auto 側が行い、約 10 秒操作が無いと隠れます（アプリから時間は変えられない）。
@@ -123,7 +127,12 @@
   - プライバシーポリシー：`BuildConfig.PRIVACY_POLICY_URL`（Gradle の `-Papp.privacyUrl`。build-app・build-hwdb はリポジトリ変数 `PRIVACY_URL`、無ければ `https://github.com/<リポジトリ>/blob/main/docs/PRIVACY.md`）を `SettingsDialogs.openPrivacyPolicy` で開く（設定の「その他」・最初の説明・「このアプリについて」）。`docs/PRIVACY.md` を変えたら最終更新日も直す。**新しく端末の外へ送る情報・権限を増やしたら、PRIVACY.md と `docs/PLAY_CONSOLE.md` のデータ セーフティの回答も直す**。
   - アプリ内アップデート・レビュー（`play/PlayFeatures`。`com.google.android.play:app-update`・`review`）：`MainActivity.onStart` から少し待って確かめる。アップデートは Google Play に新しい版が出て `UPDATE_STALE_DAYS`（2）日たったら FLEXIBLE で勧め（1 日 1 回）、ダウンロードが終わったら再起動して更新するかを聞く。レビューは高速道路に入った回数（`Prefs.highwayTrips`。`DualMode` が数える）が 3 回以上・使い始めて 3 日以上で 1 回、次は 120 日後（`Prefs.reviewAskedMs`）。どちらも画面にフォーカスがあり（ほかの案内が出ていない）、車につながっておらず、高速道路を走っておらず、10km/h 未満のときだけ。Google Play 以外から入れたときは黙って何もしない。この作業環境では Google の Maven につながらないので、作業用の小さなビルドには代用品（stubs）を置き、実物の API は GitHub Actions のビルドで確かめる。
   - 入れなかったもの：Firebase（解析・クラッシュの収集。プライバシーの方針と合わない）・広告（AdMob・UMP）・課金。クラッシュは Play Console の Android Vitals で見る。
-  - **Android Auto の審査**：「ナビ」の分類（`androidx.car.app.category.NAVIGATION`）のアプリには、品質の決まりでターンバイターンの道案内（NF-1）が求められ、このアプリには無い。製品版・クローズド テストで Android Auto に配布するときの審査で認められない可能性が高い（内部テストは審査なし）。進め方の案は `docs/PLAY_CONSOLE.md` の 8 章。利用者と方針を決めてから作り直す。
+  - **Android Auto の審査（v2.21 で調べ直し）**：品質の決まりのうち、NF-1（自分で道案内）・NF-2（地図の面には地図だけ）・**SA-1（動く絵を出さない。運転中に使う分類すべて）**・**ST-1（文字を自動で流さない）**・PC-1 などに合わない。**スペアナを車の画面に出したまま製品版の審査を通す方法は無い**。審査が配布を止めるのはオープン テスト・製品版だけ（内部アプリ共有・内部テストは審査なし、クローズド テストは指摘のメールだけ）。利用者は**内部アプリ共有で使う**ことにした（v2.21）。詳しくは `docs/PLAY_CONSOLE.md` の 8 章。
+  - **アプリ内アップデート・レビューは v2.21 から既定で止める**（`BuildConfig.PLAY_IN_APP`。Gradle の `-Papp.playInApp=true` で有効）。内部アプリ共有の版には働かず、内部テストの版（別の鍵）への更新を勧めるおそれがあるため。
+- **内部アプリ共有（v2.21）**：AAB・APK のどちらを上げても Google Play ストアが入れるので、インストール元は Google Play。判定は `AutoDiagnostics.isFromPlay`（installer・initiator・update owner（Android 14 以降）のどれかが `com.android.vending`）。Google が内部アプリ共有用の鍵で署名し直すので、内部テスト・build-app の APK とは上書きし合えない（切り替えは「設定の引き継ぎ」で書き出し → 入れ直し → 読み込み。Shizuku の許可は入れ直しで消える）。開発者向け設定の「Android Auto の状態」に署名の証明書の SHA-256 を出す（起動時の `maybeShowOnce` は `collect(withSigner = false)` で軽く）。手順は README の「内部アプリ共有で入れる」。
+- **起動を速くする（v2.21）**：`app/src/main/baseline-prof.txt`（このアプリの `com/example/**` と `androidx/car/app/**` 全体のワイルドカードの規則）と `androidx.profileinstaller`。AAB は Google Play がインストール時に、APK は初回起動後に端末が空いたとき（bg-dexopt）に前もって機械語にする。
+- **不具合の記録（v2.21）**：`CrashLog`（`HighwayApp`（Application）で `install`）。落ちたとき（捕まえていない例外）に `files/crash_last.txt` へ書いてから Android に任せる。落ちずに済んだ失敗は `CrashLog.note`（最近 30 件。同じものは 10 秒に 1 回）で、車の画面の描画・テンプレート・タップ（`CarTemplates.safe`・`click`、`DualCarScreen`）から呼ぶ。開発者向け設定の「不具合の記録」で表示・コピー・削除。端末の外へは送らない・バックアップに入れない（`backup_rules` は含めるものだけを書いている）。
+- **音声の番号を探す読み取り（v2.21）**：`SpectrumEngine.scanIfNeeded`（DUMP 権限・Shizuku で `dumpsys audio` を読む。出力が大きく重い）は、一時停止中は読まず、見つからない・鳴らないままなら 2→2→4→8→15→30 秒と間隔をあける（`SCAN_BACKOFF_MS`・`scanMisses`。再生開始・アプリの変更・新しい番号で戻す）。v2.20 までは 2 秒ごとに読み続けていた。
 - **公開向けの文言（v2.19）**：利用者の指示「開発向けの文言・ポップアップを、公開しても違和感のないように」。起動時に一度出る Android Auto の案内（`AutoDiagnostics.maybeShowOnce`。Google Play 以外から入れていて Android Auto 17.7 以降のとき）は、利用者向けの短い案内（Google Play から入れ直す・その前に設定を書き出す）にした。調べた内容（インストール元・版など）を出す `AutoDiagnostics.show` は開発者向け設定から。通知へのアクセスの一覧に出る名前（`MediaListenerService` の label）はアプリの名前。スマホの縦画面のハイウェイ側の「方位 ±°」は出さない。地図データの版は日付で出す（`SettingsDialogs.formatVersion`）。**利用者の目に入る文言に、内部テスト・README・ビルド・確認用・版の経緯などを書かない**（確認用の表示は開発者向け設定へ）。
 - **設定画面（v2.4、v2.5 で項目を追加）**：スマホの下部バーの［⋮］で `ui/SettingsActivity`（1 画面にまとめたもの。部品は `ui/SettingsUi`、ダイアログは `ui/SettingsDialogs`）。値は `data/Prefs` に保存し、選んだらすぐ反映（保存ボタンなし）。
   - v2.5 で、音声の読み取り（Shizuku。手順つき `SettingsDialogs.showShizukuGuide`）・渋滞情報（取得元・API キー・取り方の手順 `showKeyGuide`・キーの確認 `testKey`。おすすめは TomTom）・地図データの版（`mapVersion`）・Google マップのナビ連携を通常の設定画面に入れました。
@@ -134,7 +143,7 @@
 
 ## ビルドとテスト
 
-- テスト：`./gradlew :core:test`（JVM のみ。v2.19 時点で 114 件すべて成功）。
+- テスト：`./gradlew :core:test`（JVM のみ。v2.21 時点で 114 件すべて成功）。
 - アプリ：`./gradlew :app:assembleRelease`（Android SDK が必要）。CI（`.github/workflows/build-app.yml`）は `:core:test :app:assembleRelease`（署名鍵があれば `:app:bundleRelease` も）を実行します。
 - 地図データ：`.github/workflows/build-data.yml`（build-hwdb）が毎週作って `hwdb-latest` リリースに公開します。build-app はそれを同梱します。
 - **IC の入口側（v2.17。`FacilityExtractor.resolveEntrances`）**：利用者の報告「バイパスで、IC の出口を過ぎて消えたあと、同じ IC の合流側（下道からの入口）をもう一度 IC として表示した」。原因は OSM の IC の名前の付いた分岐ノードが入口の合流点にもある（「○○IC」「○○IC入口」。`FacilityNameParser` は「入口」を外して同じ IC として読む）こと。IC・SIC の地点ごとに、60m（`Params.rampNearDist`）以内の頂点に本線から出るランプがあれば出口、合流するランプだけなら入口、どちらも無ければ名前の「出口」「入口」（`Parsed.entryWord`）で決め、入口・不明の地点は、同じ車線の前後 3km（`entrancePairDist`。`walkRoad`）に同じ IC の出口があれば消す（入口の地点は、不明の地点（出口の分岐ノードが分岐から離れて登録されたもの）も出口とみなす）。入口だけなら「出口なし」の写し（id + "e"）にする。エンジンでも、通過した IC（いちばん近い前方の IC が一覧から消え、その位置を走り過ぎた）と同じ種別・名前の IC を、同じ向き（90° 以内）で 3km（`REPASS_SUPPRESS_M`）走るまで出さない（`passedIcs`・`notePassedIc`）。テストは `IcEntranceTest`（直す前のコードでは「豊川IC→見附IC→豊川IC→…」と繰り返し出ることを確かめた）。
@@ -152,14 +161,24 @@
 
 - **API キー（渋滞情報の HERE / TomTom / Google など）をリポジトリに入れない**。キーは利用者が端末の設定画面（v2.5 から通常の設定の「渋滞情報（リアルタイム）」。v2.4 は開発者向け設定）で入力し、端末内にだけ保存します。
 - **署名鍵 `upload.jks` とそのパスワードをリポジトリに入れない**。GitHub の Secrets（`UPLOAD_KEYSTORE_BASE64`, `UPLOAD_KEYSTORE_PASSWORD`, `UPLOAD_KEY_ALIAS`, `UPLOAD_KEY_PASSWORD`）にだけ置きます。`.gitignore` の `*.jks` / `*.keystore` の除外を外さないでください。
-- **Android Auto のアプリ検証を回避する方法は使わない・案内しない**。車の画面に出す方法は、Google Play Console の内部テストと、PC の Desktop Head Unit（DHU）だけにします。
+- **Android Auto のアプリ検証を回避する方法は使わない・案内しない**。車の画面に出す方法は、Google Play Console の内部アプリ共有（v2.21 から利用者が使う方法）・内部テストと、PC の Desktop Head Unit（DHU）だけにします。
 - **コミット・プッシュ・main へのマージは利用者の指示に従います**（いまの指示: 作業が終わったら、別の指示が無い限り main へのマージと build-app の実行まで行う）。
 - 改行コードは `.gitattributes` で LF に統一しています（`*.bat` / `*.cmd` だけ CRLF）。
 - 新しい権限を追加したり、取得するデータを変えたりしたら、`docs/PRIVACY.md` も更新してください。
 
-## 実機で未確認の点（v2.20 時点）
+## 実機で未確認の点（v2.21 時点）
 
 利用者の実機での確認待ちです。報告があればここから調べてください。
+
+v2.21 で入れたもの:
+
+- 内部アプリ共有（AAB・APK）で入れたときに「Android Auto で使うには（Google Play 以外から…）」が出ないか。開発者向け設定の「Android Auto の状態」のインストール元・署名の証明書。Android Auto の一覧に出るか。
+- 車の画面のカクつき：起動直後・大きい画面で減ったか（「車の画面の表示範囲（確認用）」の描画の様子: fps・遅れ・描く時間）。ハイウェイ側の画面が約 1 秒ごとに更新されるか（別のスレッドでの描き直し。ずれ・ちらつき・古い内容が出ないか）、施設を押したときの反応。下部のバーの表示（曲名の流し表示・到着予定の時刻・渋滞の要約）が更新されるか。
+- 画面の切り替え：ボタンですぐ切り替わるか（フェードなし）、自動の切替の短いフェード。ハイウェイだけ → 音楽に戻したときにスペアナがすぐ動くか。アナログメーターの目盛り板（描画の記録にした。見た目が前と同じか）。
+- 60fps（試験）にしたとき、なめらかになるか・重くならないか（車・スマホによる）。
+- ベースライン プロファイル：AAB で入れたとき、起動直後のカクつきが減ったか（APK は次の日以降）。
+- 一時停止中・番号が見つからない音楽アプリで、Shizuku の読み取りが続かないか（スペアナの診断画面の読み取りの状態）。
+- 不具合の記録：落ちたときに記録が残るか（開発者向け設定）。
 
 v2.20 で入れたもの:
 

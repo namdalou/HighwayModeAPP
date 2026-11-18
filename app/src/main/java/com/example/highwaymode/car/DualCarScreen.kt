@@ -31,6 +31,7 @@ import androidx.car.app.navigation.model.NavigationTemplate
 import androidx.core.graphics.drawable.IconCompat
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
+import com.example.highwaymode.CrashLog
 import com.example.highwaymode.R
 import com.example.highwaymode.core.dual.Box
 import com.example.highwaymode.core.dual.DualFrame
@@ -51,6 +52,7 @@ import java.util.concurrent.locks.LockSupport
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.max
+import kotlin.math.min
 
 /**
  * 車の画面（Android Auto）。ナビ用テンプレートの地図面に、Spectrum とハイウェイモードを描く。
@@ -76,6 +78,19 @@ import kotlin.math.max
  *    描き終わったら決まった時刻まで待ってから出す。描くのにかかる時間が変わっても、出す時刻は変わらない
  *  - 約 1 秒ごとのハイウェイモードの画面の描き直しは、フレームを出した直後の空き時間に行う（その分だけ遅れるフレームを作らない）
  *
+ * **起動直後・大きい画面のカクつき（v2.21）**: 利用者の報告「Android Auto の起動時や、大きい画面のディスプレイオーディオで、
+ * ときどきスペアナがカクつく」「画面の切り替えがもっさりする」。
+ *  - ハイウェイモードの画面の約 1 秒ごとの描き直しは、v2.15 からフレームを出した直後の空き時間に描画スレッドで行っていたが、
+ *    描き直しにかかる時間が空き時間より長いと次のフレームが遅れる。1 秒に 1 回しか動かない処理は、起動してしばらくは
+ *    速いコードに置き換わらない（Android の実行時の最適化が進まない）うえ、大きい画面では行・文字が多い。そこで、
+ *    描き直しは別のスレッド（car-panel）で裏の記録に描き、できあがったら表と入れ替える（2 枚の記録を交互に使う）。
+ *    すぐ反映したいとき（操作・区画の変更）だけ、これまでどおり描画スレッドでその場で描く
+ *  - 下部の切替バーは毎フレーム描いていた（文字の幅を測る・文字列を作る処理が毎回あった）。記録（RenderNode）に描いておき、
+ *    中身（画面構成・エンジンの状態・曲・案内の文・曲名の流し表示）が変わったとき・1 秒ごとだけ描き直す
+ *  - 利用者がボタンで画面を切り替えたときは、黒からのフェード（約 0.26 秒）をやめてすぐ切り替える（自動の切替だけ短くフェード）
+ *  - 確認用に、描画の様子（1 秒あたりのフレーム数・遅れたフレーム・描く時間）を「車の画面の表示範囲（確認用）」に出す
+ *  - 開発者向け設定で 60fps にもできる（試験。車・スマホによっては、なめらかになる）
+ *
  * 表示する状態は、毎フレーム エンジンの最新の状態（EngineHost.latest）を読む。
  * 画面の状態（他の画面を重ねた・Android Auto の別のアプリを前に出した）によらず、スマホの画面と同じ内容になる。
  *
@@ -91,6 +106,8 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         private const val TAG = "DualCarScreen"
         /** Spectrum が再生中で見えているときの描画間隔（30fps） */
         private const val FRAME_MS = 1000.0 / 30.0
+        /** 開発者向け設定で 60fps を選んだとき（v2.21。試験） */
+        private const val FRAME_MS_60 = 1000.0 / 60.0
         /** Spectrum が見えていて一時停止中の描画間隔（曲名の流し表示用。15fps） */
         private const val PAUSED_FRAME_MS = 1000.0 / 15.0
         /** ハイウェイモードだけのときの描画間隔 */
@@ -115,10 +132,19 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         private const val HEAL_MS = 2000L
         /** ハイウェイモードの画面を描き直す間隔（時計・残り時間） */
         private const val PANEL_REFRESH_MS = 1000L
-        /** 画面構成が変わったときのフェードの長さ */
-        private const val FADE_MS = 260L
-        /** ハイウェイだけにしてから Spectrum の音声解析を止めるまで（すぐ戻す場合に備える） */
-        private const val SPECTRUM_RELEASE_DELAY_MS = 4000L
+        /** 下部の切替バーを描き直す間隔（到着予定の時刻など。中身が変わったときは、すぐ描き直す） */
+        private const val BAR_REFRESH_MS = 1000L
+        /**
+         * 自動の切替（高速道路に入った・出た）のときのフェードの長さと、最初の暗さ（0〜255）。
+         * 利用者がボタンで切り替えたときはフェードしない（v2.21。v2.20 までは 260ms・170 で、もっさりして見えた）
+         */
+        private const val AUTO_FADE_MS = 180L
+        private const val AUTO_FADE_ALPHA = 120
+        /**
+         * ハイウェイだけにしてから Spectrum の音声解析を止めるまで（すぐ戻す場合に備える）。
+         * v2.21 で 4 秒 → 30 秒（戻したときに解析の付け直し・音量の慣らしからやり直さず、すぐ動くように。解析は軽い）
+         */
+        private const val SPECTRUM_RELEASE_DELAY_MS = 30_000L
         /**
          * 右上のボタンが、最後の操作から隠れるまで。Android Auto は約 10 秒操作が無いとボタンを隠す
          * （この時間はアプリからは変えられない）。隠れたことを知らせてこない車でも、この時間で一覧を元に戻す
@@ -126,6 +152,8 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         private const val STRIP_HIDE_MS = 10_000L
         /** 一覧をボタンの下へずらす・戻す動きの時定数（約 0.2 秒で動き終わる） */
         private const val SHIFT_TAU_MS = 70.0
+        /** 車の画面を出してから、メニューの見本の絵を作り始めるまで（起動直後の描画と重ならないように） */
+        private const val PREWARM_DELAY_MS = 8000L
 
         /**
          * 右上のボタンの下端の見積もり [dp]（上の余白 12 ＋ ボタン 60 ＋ 一覧との間 8）。
@@ -226,12 +254,26 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     @Volatile private var panelStale = false
     /** 自動切替の設定（描画スレッドで設定を読まないよう、メインスレッドで写しておく） */
     @Volatile private var autoSwitch = prefs.autoSwitch
+    /** 再生中の描画間隔（30fps。開発者向け設定で 60fps。v2.21） */
+    @Volatile private var frameMs = if (prefs.carFps60) FRAME_MS_60 else FRAME_MS
 
     private var drawThread: HandlerThread? = null
     @Volatile private var drawHandler: Handler? = null
 
-    // ---- ハイウェイモード画面の記録（Android 10 以降）
-    private var panelNode: Any? = null
+    // ---- ハイウェイモード画面の記録（Android 10 以降。v2.21 から 2 枚を交互に使う）
+    /** 描画スレッドが毎フレーム描く記録（表）と、別のスレッドが描き直す記録（裏）。型は RenderNode（Android 9 以前で読み込まないよう Any） */
+    private var panelFront: Any? = null
+    private var panelBack: Any? = null
+    /** 裏の記録を別のスレッドで描き直している最中（描画スレッド専用） */
+    private var panelRecording = false
+    /** 別のスレッドで描き直し終えた裏の記録（別のスレッドが書き、描画スレッドが受け取る） */
+    @Volatile private var panelResult: PanelResult? = null
+    /** 記録の世代（その場で描き直したら増やす。古い世代の描き直しは使わない。描画スレッド専用） */
+    private var panelGen = 0
+    private var panelThread: HandlerThread? = null
+    @Volatile private var panelHandler: Handler? = null
+    /** ハイウェイモードの画面の部品（PanelRenderer）を 2 つのスレッドで同時に使わないための鍵 */
+    private val panelLock = Any()
     private var panelDrawnAt = 0L
     /** 記録したときの区画と画面の大きさ（変わったら描き直す。毎フレーム文字列を作らないよう数値で持つ） */
     private var panelBoxL = -1f
@@ -240,6 +282,40 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     private var panelBoxB = -1f
     private var panelSurfaceW = 0
     private var panelSurfaceH = 0
+    /** 右上のボタンのために空ける幅・一覧を下げる量（描画スレッドが決めた値。記録するときに部品へ渡す） */
+    private var panelReserveW = 0f
+    private var panelShiftH = 0f
+
+    /** 別のスレッドで描き直した記録（node は RenderNode）と、その世代・かかった時間 */
+    private class PanelResult(val node: Any, val gen: Int, val costNs: Long)
+
+    // ---- 下部の切替バーの記録（Android 10 以降。v2.21。中身が変わったときだけ描き直す）
+    private var barNode: Any? = null
+    private var barL = -1f
+    private var barT = -1f
+    private var barR = -1f
+    private var barB = -1f
+    private var barSurfaceW = 0
+    private var barSurfaceH = 0
+    private var barLayout: DualLayout? = null
+    private var barSnap: HighwaySnapshot? = null
+    private var barHint: String? = null
+    private var barTitle: String? = null
+    private var barArtist: String? = null
+    private var barPlaying = false
+    private var barArt: Any? = null
+    /** 次に描き直す時刻（SystemClock.uptimeMillis。曲名を流している間は 0 = 毎フレーム） */
+    private var barNextAt = 0L
+
+    // ---- 描画の様子（確認用。描画スレッド専用。1 秒ごとに文字にする。v2.21）
+    private var statSince = 0L
+    private var statFrames = 0
+    private var statLate = 0
+    private var statDrawSumNs = 0L
+    private var statDrawMaxNs = 0L
+    private var statPanelSyncNs = 0L
+    @Volatile private var statPanelBgNs = 0L
+    private var statText = ""
 
     // ---- Spectrum の音声解析
     private val specListener: (FloatArray) -> Unit = { music.setSpectrum(it) }
@@ -271,18 +347,26 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
                 drawFrame(target)
             } catch (e: Exception) {
                 Log.w(TAG, "draw failed: ${e.message}")
+                CrashLog.note("車の画面: 描画", e)
                 IDLE_FRAME_MS
             }
             val posted = System.nanoTime()
             // 描くのにかかった時間の見積もり（最近の最大に近い値。少しずつ下げる）
             if (frameReadyNs != 0L) {
-                drawCostNs = max(frameReadyNs - t0, drawCostNs - DRAW_COST_DECAY_NS).coerceIn(DRAW_COST_MIN_NS, DRAW_COST_MAX_NS)
+                val cost = frameReadyNs - t0
+                drawCostNs = max(cost, drawCostNs - DRAW_COST_DECAY_NS).coerceIn(DRAW_COST_MIN_NS, DRAW_COST_MAX_NS)
+                // 確認用の数（描き終えたのが出す予定の時刻より 1ms 以上後なら「遅れた」）
+                statFrames++
+                statDrawSumNs += cost
+                if (cost > statDrawMaxNs) statDrawMaxNs = cost
+                if (target != 0L && frameReadyNs - target > 1_000_000L) statLate++
             }
-            // フレームを出した直後の空き時間に、ハイウェイモードの画面の記録を作り直しておく
+            // ハイウェイモードの画面の記録が古くなっていたら、別のスレッドで描き直してもらう（v2.21。描画スレッドは待たない）
             try {
-                refreshPanelNode()
+                schedulePanelRefresh()
             } catch (e: Exception) {
                 Log.w(TAG, "panel refresh failed: ${e.message}")
+                CrashLog.note("車の画面: ハイウェイ側の描き直しの依頼", e)
             }
             // 描いている間に「すぐ描く」の依頼が来ていたら、その予約に任せる
             if (frameRequests != requests) return
@@ -323,10 +407,13 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     /** 表示の設定を読み直す（メインスレッド） */
     private fun reloadSettings() {
         settingsVersion = AppSettings.version
-        panel.displayMode = prefs.displayMode
-        panel.showCamerasInList = prefs.camerasInList
+        synchronized(panelLock) {
+            panel.displayMode = prefs.displayMode
+            panel.showCamerasInList = prefs.camerasInList
+        }
         autoSwitch = prefs.autoSwitch
         stripExtraDp = prefs.stripExtra * 16f
+        frameMs = if (prefs.carFps60) FRAME_MS_60 else FRAME_MS
         panelInvalid = true
     }
 
@@ -378,6 +465,7 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     } catch (e: Exception) {
         // 画面を作る処理で例外が出ると、アプリごと落とされる（CarTemplates の決まり 5）。最小限のボタンで出し直す
         Log.w(TAG, "template failed: ${e.message}")
+        CrashLog.note("車の画面: 右上のボタンを作る処理", e)
         NavigationTemplate.Builder()
             .setActionStrip(
                 ActionStrip.Builder()
@@ -513,19 +601,29 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         } catch (e: Exception) {
             -1
         }
-        panel.density = density
+        synchronized(panelLock) { panel.density = density }
         bar.density = density
         // 表示範囲は新しい描画面に合わせて改めて通知されるので、古い値は捨てる
         synchronized(visible) { visible.setEmpty() }
         panelInvalid = true
         MediaTracker.start(carContext)
         updateSpectrumUse()
+        // 車の画面に描いている間は、スマホの画面の描き直しを 30fps に下げる（車の画面を優先。v2.21）
+        com.example.spectrum.PlayerView.carScreenActive = true
+        // ハイウェイモードの画面を描き直すスレッド（v2.21。描画スレッドを待たせないように。優先度は普通）
+        if (panelThread == null) {
+            val pt = HandlerThread("car-panel", Process.THREAD_PRIORITY_DEFAULT).also { it.start() }
+            panelThread = pt
+            panelHandler = Handler(pt.looper)
+        }
         // 描画スレッドは 1 本だけ（素早い切り替えで多重に起動しないように）
         if (drawThread == null) {
             // 表示用の優先度（エンジンの計算・音声解析より先に描けるように）
             val t = HandlerThread("car-draw", Process.THREAD_PRIORITY_DISPLAY).also { it.start() }
             drawThread = t
             drawHandler = Handler(t.looper).also { it.post(frame) }
+            // メニューの「スペアナの表示」の見本の絵を先に作っておく（開いたときに待たせない。v2.21）
+            main.postDelayed({ CarSpectrumScreen.prewarm() }, PREWARM_DELAY_MS)
         } else {
             requestFrame()
         }
@@ -589,6 +687,7 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
             handleClick(x, y)
         } catch (e: Exception) {
             Log.w(TAG, "click failed: ${e.message}")
+            CrashLog.note("車の画面: タップの処理", e)
         }
     }
 
@@ -618,14 +717,15 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         }
         val h = f.highway
         if (h != null && h.contains(x, y)) {
-            val hit = panel.hitAt(x, y) ?: return
+            // ハイウェイモードの画面の部品は、別のスレッドが描き直している最中のことがあるので、鍵を取ってから触る（v2.21）
+            val hit = synchronized(panelLock) { panel.hitAt(x, y) } ?: return
             val fac = hit.facility
             if (fac != null) {
                 screenManager.push(FacilityDetailScreen(carContext, fac))
                 return
             }
             // ［︿ この先］［現在地へ］［﹀ 手前へ］: さらに先の施設・渋滞を見る / 戻る
-            if (panel.pageButton(hit.button)) {
+            if (synchronized(panelLock) { panel.pageButton(hit.button) }) {
                 panelInvalid = true
                 requestFrame()
             }
@@ -653,6 +753,24 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         } catch (e: InterruptedException) {
             // そのまま後始末を続ける
         }
+        // ハイウェイモードの画面を描き直すスレッドも止める（描きかけの記録は捨てる）
+        val ph = panelHandler
+        val pt = panelThread
+        panelHandler = null
+        panelThread = null
+        ph?.removeCallbacksAndMessages(null)
+        pt?.quitSafely()
+        try {
+            pt?.join(500)
+        } catch (e: InterruptedException) {
+            // そのまま後始末を続ける
+        }
+        com.example.spectrum.PlayerView.carScreenActive = false
+        panelResult = null
+        panelRecording = false
+        panelFront = null
+        panelBack = null
+        barNode = null
         surface?.let { releaseSurface(it) }
         surface = null
         lastFrame = null
@@ -761,16 +879,19 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
         val shiftH = animateShift(targetH, now)
         val shifting = shiftH != targetH
         if (now - areaInfoAt > 1000L) {
+            updateStats(now)
             areaInfoAt = now
             areaInfo = "画面 ${w.toInt()}×${h.toInt()}・密度 ${"%.2f".format(density)}・Car App API レベル ${if (hostApiLevel > 0) hostApiLevel else "不明"}\n" +
                 "表示範囲 ${if (v.isEmpty) "（知らせなし）" else "${v.left},${v.top},${v.right},${v.bottom}"}\n" +
                 "安定した範囲 ${if (sCopy.isEmpty) "（知らせなし）" else "${sCopy.left},${sCopy.top},${sCopy.right},${sCopy.bottom}"}\n" +
                 "ボタン ${if (stripUp) "表示中" else "隠れている"}・一覧を下げる量 ${targetH.toInt()}px（見積もり ${stripBottomEstimate().toInt()}px）\n" +
-                "右上のボタン ${stripLabel(templateStrip)}（タッチ操作 ${if (touchSeen) "確認済み" else "まだ届いていない"}）"
+                "右上のボタン ${stripLabel(templateStrip)}（タッチ操作 ${if (touchSeen) "確認済み" else "まだ届いていない"}）\n" +
+                statText
         }
-        if (reserveW != panel.headerRightReserve || shiftH != panel.topRightReserveH) {
-            panel.headerRightReserve = reserveW
-            panel.topRightReserveH = shiftH
+        // 右上のボタンのための空き・一覧を下げる量が変わったら、ハイウェイモードの画面をその場で描き直す
+        if (reserveW != panelReserveW || shiftH != panelShiftH) {
+            panelReserveW = reserveW
+            panelShiftH = shiftH
             panelInvalid = true
         }
         bar.splitHint = if (DualMode.highwayActive && autoSwitch) "高速道路を出ると自動で音楽に戻ります" else null
@@ -783,17 +904,18 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
                 return IDLE_FRAME_MS
             }
         }
+        // 画面構成が変わった直後のフェード: 自動の切替だけ（利用者がボタンで選んだときは、すぐ切り替える。v2.21）
+        val fadeMs = if (DualMode.changedByUser) 0L else AUTO_FADE_MS
+        val sinceChange = now - DualMode.changedAtMs
         try {
             canvas.drawColor(Color.BLACK)
             f.music?.let { m -> music.draw(canvas, m.l.toInt(), m.t.toInt(), m.w.toInt(), m.h.toInt()) }
             f.highway?.let { hb -> drawPanel(canvas, hb, now) }
             f.divider?.let { d -> canvas.drawRect(d.l, d.t, d.r, d.b, dividerPaint) }
-            f.bar?.let { b -> bar.draw(canvas, b.l, b.t, b.r, b.b, layout, snap) }
-            // 画面構成が変わった直後は、黒から短くフェードイン
-            val dt = now - DualMode.changedAtMs
-            if (dt in 0 until FADE_MS) {
-                val x = 1f - dt.toFloat() / FADE_MS
-                fadePaint.color = Color.argb((x * x * 170).toInt(), 0, 0, 0)
+            f.bar?.let { b -> drawBar(canvas, b, layout, now) }
+            if (sinceChange in 0 until fadeMs) {
+                val x = 1f - sinceChange.toFloat() / fadeMs
+                fadePaint.color = Color.argb((x * x * AUTO_FADE_ALPHA).toInt(), 0, 0, 0)
                 canvas.drawRect(0f, 0f, w, h, fadePaint)
             }
         } finally {
@@ -807,14 +929,30 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
             }
         }
         lastFrame = f
-        val fading = now - DualMode.changedAtMs < FADE_MS
+        val fading = sinceChange in 0 until fadeMs
         return when {
-            fading || shifting -> FRAME_MS
+            fading || shifting -> frameMs
             // ハイウェイだけ: 下のバーの曲名を流している間は 30fps、止まっている間は 10fps
             f.music == null -> if (f.bar != null && bar.marqueeMoving) FRAME_MS else IDLE_FRAME_MS
-            NowPlaying.isPlaying || music.animating -> FRAME_MS
+            NowPlaying.isPlaying || music.animating -> frameMs
             else -> PAUSED_FRAME_MS
         }
+    }
+
+    /** 確認用: この 1 秒ほどの描画の様子を文字にする（描画スレッド。1 秒に 1 回） */
+    private fun updateStats(now: Long) {
+        val span = now - statSince
+        if (statSince != 0L && span > 0L) {
+            val fps = statFrames * 1000.0 / span
+            val avg = if (statFrames > 0) statDrawSumNs / statFrames / 1e6 else 0.0
+            statText = "描画 ${"%.1f".format(fps)}fps（目標 ${(1000.0 / frameMs).toInt()}）・遅れ ${statLate} 回・描く時間 平均 ${"%.1f".format(avg)}ms／最大 ${"%.1f".format(statDrawMaxNs / 1e6)}ms\n" +
+                "ハイウェイ側の描き直し: その場 ${"%.1f".format(statPanelSyncNs / 1e6)}ms・別のスレッド ${"%.1f".format(statPanelBgNs / 1e6)}ms（最後の 1 回）"
+        }
+        statSince = now
+        statFrames = 0
+        statLate = 0
+        statDrawSumNs = 0L
+        statDrawMaxNs = 0L
     }
 
     /**
@@ -858,56 +996,186 @@ class DualCarScreen(carContext: CarContext, private val onReady: () -> Unit) :
     }
 
     /**
-     * ハイウェイモードの画面。記録した描画を再生する（Android 10 以降）。
-     * ここで描き直すのは、すぐ反映したいとき（操作・区画や画面の大きさの変更・記録がまだ無い）だけ。
-     * 約 1 秒ごとの描き直し（時計・残り時間・新しい位置情報）は、フレームを出した直後に [refreshPanelNode] で行う
+     * ハイウェイモードの画面。記録した描画（表）を再生する（Android 10 以降）。
+     *  - 別のスレッドで描き直し終えた記録（裏）があれば、表と入れ替えて使う（同じ世代・同じ区画のときだけ。v2.21）
+     *  - すぐ反映したいとき（操作・区画や画面の大きさの変更・記録がまだ無い）は、この場で表に描き直す
+     *  - 約 1 秒ごとの描き直し（残り時間・新しい位置情報）は、フレームを出した直後に [schedulePanelRefresh] が別のスレッドへ頼む
+     *
+     * 2 枚の記録を交互に使うので、別のスレッドが描いている記録を、描画スレッドが同時に画面へ出すことは無い
+     * （描画スレッドが描くのはいつも表。裏は、前のフレームで出し終えてから別のスレッドに渡す）
      */
     private fun drawPanel(c: Canvas, b: Box, now: Long) {
         if (Build.VERSION.SDK_INT >= 29 && c.isHardwareAccelerated) {
-            val node = (panelNode as? RenderNode) ?: RenderNode("highway-panel").also { panelNode = it }
-            if (panelInvalid || !panelBoxMatches(b) || !node.hasDisplayList()) recordPanel(node, b, now)
+            takePanelResult(b)
+            val node = (panelFront as? RenderNode) ?: RenderNode("highway-panel").also { panelFront = it }
+            if (panelInvalid || !panelBoxMatches(b) || !node.hasDisplayList()) {
+                // 別のスレッドで描き直している最中の記録は、古い世代として使わない
+                panelGen++
+                val sw = width
+                val sh = height
+                val t0 = System.nanoTime()
+                recordPanel(node, b.l, b.t, b.r, b.b, sw, sh, snap, panelReserveW, panelShiftH)
+                statPanelSyncNs = System.nanoTime() - t0
+                panelInvalid = false
+                panelStale = false
+                panelDrawnAt = now
+                panelBoxL = b.l
+                panelBoxT = b.t
+                panelBoxR = b.r
+                panelBoxB = b.b
+                panelSurfaceW = sw
+                panelSurfaceH = sh
+            }
             c.drawRenderNode(node)
         } else {
             panelInvalid = false
             panelStale = false
-            panel.draw(c, b.l, b.t, b.r, b.b, snap, System.currentTimeMillis())
+            synchronized(panelLock) {
+                panel.headerRightReserve = panelReserveW
+                panel.topRightReserveH = panelShiftH
+                panel.draw(c, b.l, b.t, b.r, b.b, snap, System.currentTimeMillis())
+            }
+        }
+    }
+
+    /** 別のスレッドで描き直し終えた記録を受け取る（描画スレッド。Android 10 以降） */
+    private fun takePanelResult(b: Box) {
+        val r = panelResult ?: return
+        panelResult = null
+        panelRecording = false
+        if (r.gen == panelGen && panelBoxMatches(b)) {
+            // 出し終えた表を裏に回し、描き直した記録を表にする
+            panelBack = panelFront
+            panelFront = r.node
+        } else {
+            // 描き直している間に、その場で描き直した・区画が変わった: 古いので使わず、次の描き直しに使う
+            panelBack = r.node
         }
     }
 
     private fun panelBoxMatches(b: Box): Boolean =
         b.l == panelBoxL && b.t == panelBoxT && b.r == panelBoxR && b.b == panelBoxB && width == panelSurfaceW && height == panelSurfaceH
 
-    /** ハイウェイモードの画面を記録し直す（描画スレッド。Android 10 以降） */
-    private fun recordPanel(node: RenderNode, b: Box, now: Long) {
-        panelInvalid = false
-        panelStale = false
-        panelDrawnAt = now
-        panelBoxL = b.l
-        panelBoxT = b.t
-        panelBoxR = b.r
-        panelBoxB = b.b
-        panelSurfaceW = width
-        panelSurfaceH = height
-        node.setPosition(0, 0, width, height)
-        val rc = node.beginRecording(width, height)
-        try {
-            panel.draw(rc, b.l, b.t, b.r, b.b, snap, System.currentTimeMillis())
-        } finally {
-            node.endRecording()
+    /**
+     * ハイウェイモードの画面を記録に描く（描画スレッド・描き直し用のスレッドのどちらからも呼ぶ。Android 10 以降）。
+     * 部品（PanelRenderer）は 1 つなので、鍵を取って 1 つのスレッドずつ使う
+     */
+    private fun recordPanel(
+        node: RenderNode, l: Float, t: Float, r: Float, b: Float, sw: Int, sh: Int,
+        s: HighwaySnapshot?, reserveW: Float, shiftH: Float
+    ) {
+        if (Build.VERSION.SDK_INT < 29) return
+        synchronized(panelLock) {
+            panel.headerRightReserve = reserveW
+            panel.topRightReserveH = shiftH
+            node.setPosition(0, 0, sw, sh)
+            val rc = node.beginRecording(sw, sh)
+            try {
+                panel.draw(rc, l, t, r, b, s, System.currentTimeMillis())
+            } finally {
+                node.endRecording()
+            }
         }
     }
 
     /**
-     * フレームを出した直後の空き時間に、古くなったハイウェイモードの画面の記録を作り直す（次のフレームから使う）。
-     * 記録がまだ無い・区画が変わったときは [drawPanel] が描くので、ここでは何もしない
+     * ハイウェイモードの画面の記録が古くなっていたら（新しい位置情報・約 1 秒たった）、別のスレッドで裏の記録に描き直してもらう
+     * （描画スレッド。フレームを出した直後に呼ぶ。描き直しの最中は重ねて頼まない。v2.21）。
+     * 記録がまだ無い・区画が変わったときは [drawPanel] がその場で描くので、ここでは何もしない
      */
-    private fun refreshPanelNode() {
+    private fun schedulePanelRefresh() {
         if (Build.VERSION.SDK_INT < 29) return
-        val node = panelNode as? RenderNode ?: return
+        if (panelRecording) return
+        val front = panelFront as? RenderNode ?: return
         val b = lastFrame?.highway ?: return
-        if (!node.hasDisplayList() || !panelBoxMatches(b)) return
+        if (!front.hasDisplayList() || !panelBoxMatches(b)) return
         val now = SystemClock.uptimeMillis()
-        if (panelStale || now - panelDrawnAt >= PANEL_REFRESH_MS) recordPanel(node, b, now)
+        if (!panelStale && now - panelDrawnAt < PANEL_REFRESH_MS) return
+        panelStale = false
+        panelDrawnAt = now
+        val s = snap
+        val sw = panelSurfaceW
+        val sh = panelSurfaceH
+        val l = b.l
+        val t = b.t
+        val r = b.r
+        val bb = b.b
+        val reserveW = panelReserveW
+        val shiftH = panelShiftH
+        val ph = panelHandler
+        if (ph == null) {
+            // 描き直し用のスレッドが無い（止めている途中）: これまでどおり、ここで表に描き直す
+            recordPanel(front, l, t, r, bb, sw, sh, s, reserveW, shiftH)
+            return
+        }
+        val node = (panelBack as? RenderNode) ?: RenderNode("highway-panel").also { panelBack = it }
+        val gen = panelGen
+        panelRecording = true
+        val posted = ph.post {
+            val t0 = System.nanoTime()
+            panelResult = try {
+                recordPanel(node, l, t, r, bb, sw, sh, s, reserveW, shiftH)
+                val cost = System.nanoTime() - t0
+                statPanelBgNs = cost
+                PanelResult(node, gen, cost)
+            } catch (e: Exception) {
+                Log.w(TAG, "panel record failed: ${e.message}")
+                CrashLog.note("車の画面: ハイウェイ側の描き直し", e)
+                // 使えない記録として返す（描画スレッドが裏に戻す）
+                PanelResult(node, -1, 0L)
+            }
+        }
+        if (!posted) panelRecording = false
+    }
+
+    /**
+     * 下部の切替バー（v2.21）。記録（RenderNode）に描いておき、中身（区画・画面構成・エンジンの状態・案内の文・曲・再生中か）が
+     * 変わったとき、1 秒ごと（到着予定の時刻など）、曲名を流している間（毎フレーム）だけ描き直す。
+     * v2.20 までは毎フレーム描いていて、文字の幅を測る・文字列を作る処理が 1 秒に 30 回あった
+     */
+    private fun drawBar(c: Canvas, b: Box, layout: DualLayout, now: Long) {
+        if (Build.VERSION.SDK_INT < 29 || !c.isHardwareAccelerated) {
+            bar.draw(c, b.l, b.t, b.r, b.b, layout, snap)
+            return
+        }
+        val node = (barNode as? RenderNode) ?: RenderNode("mode-bar").also { barNode = it }
+        val s = snap
+        val hint = bar.splitHint
+        val title = NowPlaying.title
+        val artist = NowPlaying.artist
+        val playing = NowPlaying.isPlaying
+        val art = NowPlaying.art
+        val sw = width
+        val sh = height
+        val changed = !node.hasDisplayList() || now >= barNextAt ||
+            b.l != barL || b.t != barT || b.r != barR || b.b != barB || sw != barSurfaceW || sh != barSurfaceH ||
+            layout != barLayout || s !== barSnap || hint != barHint ||
+            title != barTitle || artist != barArtist || playing != barPlaying || art !== barArt
+        if (changed) {
+            barL = b.l
+            barT = b.t
+            barR = b.r
+            barB = b.b
+            barSurfaceW = sw
+            barSurfaceH = sh
+            barLayout = layout
+            barSnap = s
+            barHint = hint
+            barTitle = title
+            barArtist = artist
+            barPlaying = playing
+            barArt = art
+            node.setPosition(0, 0, sw, sh)
+            val rc = node.beginRecording(sw, sh)
+            try {
+                bar.draw(rc, b.l, b.t, b.r, b.b, layout, s)
+            } finally {
+                node.endRecording()
+            }
+            // 曲名を流している間は毎フレーム、止まっている間は動き出す時刻か 1 秒後に描き直す
+            barNextAt = if (bar.marqueeMoving) 0L else now + min(bar.marqueeWaitMs, BAR_REFRESH_MS)
+        }
+        c.drawRenderNode(node)
     }
 
     // ================================================================== Spectrum: 再生中のアプリを開く
