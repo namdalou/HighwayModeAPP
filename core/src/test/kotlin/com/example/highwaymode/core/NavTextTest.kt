@@ -44,6 +44,22 @@ class NavTextTest {
     }
 
     @Test
+    fun guidanceInNestedCarNotification() {
+        // v2.23: 車の画面で案内しているとき、スマホの通知の文字欄は決まり文句で、次の案内は Android Auto 用の入れ子の情報
+        // （CarAppExtender の content_title・content_text）だけにある場合
+        val a = parse("title" to "Google マップ", "text" to "Android Auto でナビ中", "car:content_title" to "1.5 km", "car:content_text" to "浜松IC で東名高速道路を降りる")!!
+        assertTrue(a.guidance)
+        assertEquals(1500.0, a.distanceM!!, 0.01)
+        assertTrue(a.instruction.contains("浜松IC"))
+        // 腕時計向けのページの題名も題名として読む
+        val b = parse("subText" to "ナビ", "wear:page:title" to "300 m", "wear:page:text" to "左方向です")!!
+        assertEquals(300.0, b.distanceM!!, 0.01)
+        assertTrue(NavText.isTitle("car:content_title"))
+        assertTrue(NavText.isTitle("wear:page:title"))
+        assertFalse(NavText.isTitle("car:content_text"))
+    }
+
+    @Test
     fun guidanceWithDistanceInTheTitle() {
         val a = parse("title" to "500 m", "text" to "国道1号 を右折")!!
         assertTrue(a.guidance)

@@ -183,9 +183,39 @@ class DevSettingsActivity : Activity() {
         val navRow = ui.actionRow(gm, "最後に受け取ったナビの通知", "アプリの名前・案内として扱ったか・通知の文字（部品の名前つき）・読み取った距離と案内・照合の結果") {
             showNavDebug()
         }
+        ui.actionRow(gm, "最近受け取ったナビの通知（15 件）", "ナビのアプリ・Android Auto の通知を新しい順に（実行中か・種類・判定・文字）。Android Auto の画面で案内しているときに出ない場合は、案内中にここをコピーしてください") {
+            val msg = NavNotifications.recentReport()
+            AlertDialog.Builder(this, SettingsUi.DIALOG_THEME)
+                .setTitle("最近受け取ったナビの通知")
+                .setMessage(msg)
+                .setPositiveButton("閉じる", null)
+                .setNeutralButton("コピー") { _, _ ->
+                    val cm = getSystemService(android.content.ClipboardManager::class.java)
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("ナビの通知", msg))
+                    toast("コピーしました")
+                }
+                .show()
+        }
         refreshers += {
             val at = NavNotifications.lastReadWallMs
             navRow.value(if (at == 0L) "まだありません" else Formats.clock(at) + if (NavNotifications.active) "（ナビ中）" else "", SettingsUi.C_SUB)
+        }
+
+        // ---- 渋滞情報（確認用。v2.23）
+        val tq = ui.section(c, "渋滞情報（確認用）", "渋滞が出ない・違う所に出るときは、その場面でここの内容をコピーして送ってください（取得した件数と、道路との照合の結果が分かります）。")
+        val trRow = ui.actionRow(tq, "最後に取得した渋滞情報", "取得元ごとの件数・道路の流れ・照合の結果・前方の渋滞") {
+            showTrafficDebug()
+        }
+        refreshers += {
+            val t = EngineHost.latest?.traffic
+            trRow.value(
+                when {
+                    t?.fetchedWallMs != null -> Formats.clock(t.fetchedWallMs!!) + "（${t.provider ?: ""}）" + (t.message?.let { "　$it" } ?: "")
+                    t?.message != null -> t.message
+                    else -> "まだありません（高速道路を走行中に取得します）"
+                },
+                SettingsUi.C_SUB
+            )
         }
 
         // ---- 地図データ（詳細）
@@ -304,6 +334,41 @@ class DevSettingsActivity : Activity() {
                 com.example.highwaymode.CrashLog.clear(this)
                 toast("消しました")
                 refreshAll()
+            }
+            .show()
+    }
+
+    /** 渋滞情報の取得・照合の様子（確認用。v2.23） */
+    private fun showTrafficDebug() {
+        val s = EngineHost.latest
+        val t = s?.traffic
+        val msg = buildString {
+            append("取得元: ").append(t?.provider ?: SettingsDialogs.providerName(prefs.trafficProvider)).append('\n')
+            append("取得: ").append(t?.fetchedWallMs?.let { Formats.clock(it) } ?: "まだありません").append('\n')
+            t?.message?.let { append("状態: ").append(it).append('\n') }
+            append("走行: ").append(if (s?.status == com.example.highwaymode.core.engine.EngineStatus.ON_HIGHWAY) "高速道路" else "高速道路の外").append('\n')
+            val jd = t?.nextJamDistanceM
+            val jl = t?.nextJamLengthM
+            append("表示中の渋滞: ").append(
+                if (jd != null && jl != null) "${Formats.distance(jd)}先 ${if (t.nextJamSlowOnly) "混雑" else "渋滞"}${Formats.distance(jl)}" +
+                    (t.nextJamDelaySec?.let { "（遅れ ${(it / 60).toInt()} 分）" } ?: "")
+                else "なし"
+            ).append("\n\n")
+            if (t == null || t.diag.isEmpty()) append("（取得の記録はまだありません）")
+            else t.diag.forEach { append("・").append(it).append('\n') }
+        }
+        AlertDialog.Builder(this, SettingsUi.DIALOG_THEME)
+            .setTitle("渋滞情報（確認用）")
+            .setMessage(msg)
+            .setPositiveButton("閉じる", null)
+            .setNeutralButton("コピー") { _, _ ->
+                val cm = getSystemService(android.content.ClipboardManager::class.java)
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("渋滞情報", msg))
+                toast("コピーしました")
+            }
+            .setNegativeButton("今すぐ取得") { _, _ ->
+                EngineHost.refreshTraffic()
+                toast("取得します（高速道路を走行中のとき）")
             }
             .show()
     }

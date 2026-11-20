@@ -468,7 +468,9 @@ object SettingsDialogs {
             )
             val (ok, msg) = try {
                 val d = prov.fetch(q)
-                true to "使えます（${prov.name}。この区間の情報 ${d.items.size} 件）"
+                // TomTom は「事故・渋滞の一覧」と「道路の流れ」の 2 つを使う。片方だけ使えないときはその旨も出す（v2.23）
+                val part = d.warning?.let { "。ただし$it" } ?: ""
+                true to "使えます（${prov.name}。この区間の情報 ${d.items.size} 件$part）"
             } catch (e: com.example.highwaymode.core.net.HttpStatusException) {
                 false to when (e.code) {
                     400 -> "キーまたは問い合わせが受け付けられませんでした（HTTP 400）。キーを確認してください"

@@ -498,7 +498,7 @@ class PanelRenderer(var density: Float) {
                 val flowColor = when {
                     f.closedBefore -> cDarkRed
                     f.flowBefore < 0.55 || f.jamBeforeM > 1000 -> cRed
-                    f.flowBefore < 0.85 || f.jamBeforeM > 200 -> cOrange
+                    f.flowBefore < 0.85 || f.jamBeforeM > 200 || f.slowBeforeM > 300 -> cOrange
                     else -> 0
                 }
                 if (flowColor != 0) {
@@ -645,7 +645,9 @@ class PanelRenderer(var density: Float) {
             val jd = tr?.nextJamDistanceM
             val jl = tr?.nextJamLengthM
             if (tr != null && jd != null && jl != null && jd < 40_000) {
-                val title = if (jd < 50) "渋滞中 残り${Formats.distance(jl)}" else "${Formats.distance(jd)}先 渋滞${Formats.distance(jl)}"
+                // 渋滞ほど遅くない区間だけなら「混雑」（v2.23）
+                val what = if (tr.nextJamSlowOnly) "混雑" else "渋滞"
+                val title = if (jd < 50) "${what}中 残り${Formats.distance(jl)}" else "${Formats.distance(jd)}先 $what${Formats.distance(jl)}"
                 val parts = ArrayList<String>()
                 tr.nextJamDelaySec?.let { if (it >= 60) parts.add("+${(it / 60).roundToInt()}分") }
                 when (tr.nextJamTrend) {
@@ -656,7 +658,7 @@ class PanelRenderer(var density: Float) {
                     val jamOnly = tr.nextJamDelaySec ?: 0.0
                     if (d >= 120 && d - jamOnly >= 60) parts.add("この先 計+${(d / 60).roundToInt()}分")
                 }
-                val severe = jl >= 1000 || (tr.nextJamDelaySec ?: 0.0) >= 300
+                val severe = !tr.nextJamSlowOnly && jl >= 1000 || (tr.nextJamDelaySec ?: 0.0) >= 300
                 out.add(Info(title, parts.joinToString("・").ifEmpty { null }, if (severe) cRed else cOrange, true))
             }
             // 事故・工事・規制など
@@ -1030,11 +1032,12 @@ class PanelRenderer(var density: Float) {
             return (if (s.routeTruncated) "前方の地図データを読み込み中…" else "この先の施設はありません") to 0xFF8A94A1.toInt()
         }
         val rest = list.subList(from, list.size)
-        val ev = rest.firstOrNull { it.type != FacilityType.CAMERA && (it.closedBefore || it.jamBeforeM >= 200 || it.trafficNote != null) }
+        val ev = rest.firstOrNull { it.type != FacilityType.CAMERA && (it.closedBefore || it.jamBeforeM >= 200 || it.slowBeforeM >= 300 || it.trafficNote != null) }
         if (ev != null) {
             val what = when {
                 ev.closedBefore -> "通行止"
                 ev.jamBeforeM >= 200 -> "渋滞${Formats.distance(ev.jamBeforeM)}"
+                ev.slowBeforeM >= 300 -> "混雑${Formats.distance(ev.slowBeforeM)}"
                 else -> ev.trafficNote ?: "交通情報"
             }
             val color = when {
@@ -1224,6 +1227,7 @@ class PanelRenderer(var density: Float) {
             else f.navNote?.let { note -> tags.add("ナビ " + note.removePrefix("→ ").take(10) to cNav) }
             if (f.noExit) tags.add("出口なし" to cGray)
             if (f.jamBeforeM >= 200) tags.add("渋滞${Formats.distance(f.jamBeforeM)}" to cRed)
+            else if (f.slowBeforeM >= 300) tags.add("混雑${Formats.distance(f.slowBeforeM)}" to cOrange)
             f.trafficNote?.let { if (!f.closedBefore || it != "通行止") tags.add(it to cOrange) }
             if (f.etcOnly) tags.add("ETC専用" to cPurple)
         }
@@ -1307,8 +1311,9 @@ class PanelRenderer(var density: Float) {
                             -1 -> "↓"
                             else -> ""
                         }
-                        val where = if (jd < 50) "渋滞中 残り" else "${Formats.distance(jd)}先 渋滞"
-                        chips.add("$where${Formats.distance(jl)}$trend$delay" to cRed)
+                        val what = if (tr.nextJamSlowOnly) "混雑" else "渋滞"
+                        val where = if (jd < 50) "${what}中 残り" else "${Formats.distance(jd)}先 $what"
+                        chips.add("$where${Formats.distance(jl)}$trend$delay" to if (tr.nextJamSlowOnly) cOrange else cRed)
                     }
                     tr.message != null -> chips.add(tr.message!! to cGray)
                     tr.fetchedWallMs != null -> {

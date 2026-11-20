@@ -45,7 +45,7 @@ class FacilityView(
     val typeInferred: Boolean,
     /** 手前の区間の流れ（自由流所要時間/予測所要時間, 1=順調） */
     val flowBefore: Double,
-    /** 手前の区間（1 つ前の施設から）にある渋滞の長さ [m]（交通情報による） */
+    /** 手前の区間（1 つ前の施設から）にある渋滞の長さ [m]（交通情報による。v2.23 から混雑は [slowBeforeM]） */
     val jamBeforeM: Double = 0.0,
     /** 手前の区間の事故・通行止め・工事など（「事故」「通行止」…） */
     val trafficNote: String? = null,
@@ -62,7 +62,9 @@ class FacilityView(
     /** カーナビの案内で、ここで降りる IC */
     val navExit: Boolean = false,
     /** カーナビの案内（「ここで降ります」「→ 東名高速道路 東京方面」など。無ければ null） */
-    val navNote: String? = null
+    val navNote: String? = null,
+    /** 手前の区間にある混雑（渋滞ほどではない遅い区間）の長さ [m]（v2.23） */
+    val slowBeforeM: Double = 0.0
 )
 
 /** カーナビ（Google マップ）の案内との連携の状態 */
@@ -99,7 +101,11 @@ class TrafficView(
     /** 交通情報を考慮した場合の、考慮しない場合からの遅れ（経路全体）[s] */
     val routeDelaySec: Double?,
     /** 次の渋滞が 伸びている (+1) / 縮んでいる (-1) / 変わらない・不明 (0) */
-    val nextJamTrend: Int = 0
+    val nextJamTrend: Int = 0,
+    /** 次の渋滞が「混雑」だけ（渋滞ほど遅くない区間だけ。表示を「混雑」にする。v2.23） */
+    val nextJamSlowOnly: Boolean = false,
+    /** 取得・照合の様子と前方の渋滞の一覧（開発者向け設定の「渋滞情報（確認用）」。v2.23） */
+    val diag: List<String> = emptyList()
 )
 
 /** 車両の状態（Android Auto 接続時） */

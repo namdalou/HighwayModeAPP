@@ -7,7 +7,7 @@
 - Android アプリ「Spectrum ハイウェイ」。スマホと Android Auto（車の画面）に対応。
 - 音楽プレーヤー表示とスペクトラムアナライザーの **Spectrum** と、高速道路の前方の IC / JCT / SA / PA までの距離・到着予定時刻を出す **ハイウェイモード** を 1 つにしたもの。
 - 高速道路の外では Spectrum を全画面表示。高速道路に入ると自動で 2 画面（左 Spectrum : 右ハイウェイ = 4 : 5）。
-- 現在の版は **v2.22.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
+- 現在の版は **v2.23.0**（`app/build.gradle.kts` の `versionName`）。v2.0 以降の変更点は README の「今回の更新」「v2.x の更新」の表を参照。
 
 ## 利用者について
 
@@ -22,7 +22,7 @@
 
 | モジュール | 内容 |
 |---|---|
-| `:core` | Android に依存しない演算（純粋な Kotlin/JVM）。地図データ（HWDB）、道路グラフ、マップマッチング、前方経路（カーナビの案内に合わせる `route/NavGuide`、ナビの通知の文字の読み取りと案内かどうかの判定 `route/NavText`。v2.16）、到着予測、渋滞、オービス、エンジン統合（`HighwayEngine`）、電池の節約の判定（`PowerPolicy`）、Android Auto の切断後に常駐を止める判定（`engine/DisconnectPolicy`）、画面の切替判定と区画割り（`dual/HighwayPresence`, `dual/DualGeometry`）、スペアナの解析（`audio/WaveStitcher`・`BandAnalyzer`・`SpectrumMapper`。v2.15。高さと曲の音量は v2.16 で作り直し）、主要バイパスの判定（`graph/BypassClassifier`）、設定の書き出し・読み込みのファイルの形（`backup/SettingsArchive`。v2.19）。**JVM 上でテストできる** |
+| `:core` | Android に依存しない演算（純粋な Kotlin/JVM）。地図データ（HWDB）、道路グラフ、マップマッチング、前方経路（カーナビの案内に合わせる `route/NavGuide`、ナビの通知の文字の読み取りと案内かどうかの判定 `route/NavText`。v2.16）、到着予測、渋滞、オービス、エンジン統合（`HighwayEngine`）、電池の節約の判定（`PowerPolicy`）、Android Auto の切断後に常駐を止める判定（`engine/DisconnectPolicy`）、画面の切替判定と区画割り（`dual/HighwayPresence`, `dual/DualGeometry`）、スペアナの解析（`audio/WaveStitcher`・`BandAnalyzer`・`SpectrumMapper`。v2.15。高さと曲の音量は v2.16 で作り直し）、主要バイパスの判定（`graph/BypassClassifier`）、設定の書き出し・読み込みのファイルの形（`backup/SettingsArchive`。v2.19）、TomTom の道路の流れ（`traffic/TomTomFlowTiles`・`TomTomFlowSegments`、ベクトルタイルの読み取り `traffic/VectorTile`、経路の近くだけ残す `traffic/RouteCorridor`。v2.23）。**JVM 上でテストできる** |
 | `:app` | Android アプリ。`com.example.spectrum`（Spectrum：音声解析 `SpectrumEngine`、音声の自動探索 `SessionProber`、描画 `PlayerRenderer` / `PlayerView`、スペアナの表示の種類ごとの描画 `SpectrumPainter`、昔のカーオーディオの 3 つの表示 `CarAudioPainter`、ジャケットの色 `ArtPalette`、見た目の設定 `SpectrumStyle`、通知の受け渡し `NotificationHooks`、音楽の画面に出すカーナビの案内 `Guidance`）と `com.example.highwaymode`（スマホ画面、常駐サービス、`engine/EngineHost`、`car/DualCarScreen`（Android Auto）、`ui/PanelRenderer`（ハイウェイ側の描画）、`ui/SettingsActivity`（設定画面）・`ui/DevSettingsActivity`（開発者向け設定）・`ui/SpectrumPickers`（スペアナの見本・選ぶ画面）、`nav/NavNotifications`（ナビのアプリ（Google マップなど）の通知の読み取り）、`car/CarTemplates`（車の画面の決まりと共通の部品）、`CarAutoStop`（切断後に常駐を止める）、`CrashLog`・`HighwayApp`（不具合の記録・起動時の準備。v2.21）） |
 | `:datatool` | PC・CI 用の地図データ（HWDB）作成ツール |
 
@@ -104,10 +104,18 @@
   - **v2.18（下部バーをハイウェイ側だけにして音楽側が高くなった）**：案内を出すときは、`vh` が 480 未満なら縦長でも `splitWideGuide` を使う（縦長の並びに 2 行の帯と 3 行の文字を足すとスペアナが約 105 しか残らない。利用者の車の `vh` 429 で `splitWideGuide` なら帯 75（2 行）・ジャケット 195・スペアナ 183）。`splitWideGuide` は `vh` 380〜440 で `k` = 0〜1 として、帯（15.5% → 18%、上限 60 → 80）・文字（22・17 → 24・18.5）・操作ボタン・ジャケットの上限（170 → 200）を大きくする（`vh` 380 未満は v2.17.1 と同じ）。メーターの縦の並び（ジャケットの下にメーター 2 つ）は中段の高さ 260 以上から（v2.17.1 は 230。利用者の車の 235 では、左にジャケット・右にメーター 2 つの方が大きい）。
   - アナログメーター（`SpectrumStyle.isMeter`）は重ねない（v2.16 までの並び。案内の帯の扱いだけ新しい）。
   - 案内の有無・メーターかどうかで 4 通りの配置を `splitCaches` に持つ。全画面（`landscapeLayout`・`portraitLayout`）は今までどおり、スペアナの区画の上を帯にする（`guideSplit`）。
+- **渋滞情報（v2.23 で見直し）**：利用者の報告「TomTom の設定で渋滞区間をいくつか通過したが、どれも渋滞表示が無かった（案内板には何 km も手前から出ていた）。減速したときに赤が出た」（赤は自車の速さからの推定）。原因は ①TomTom の「事故・渋滞の一覧」（Incident Details v5）しか使っておらず、流れ（速さ）を見ていなかった、②道路への照合の許容 18m が厳しかった、③JCT で路線が変わっても次の取得まで取り直さなかった。いまは:
+  - `TomTomTrafficProvider`（`core/traffic/Providers.kt`）が 2 つを組み合わせる。一覧（無料枠 月 2,500 回）は `INCIDENT_REUSE_MS`（4.5 分）の間は前回の結果（全件を覚えておき、問い合わせのたびに経路の近く 150m で絞る）を使い回す（3 分ごとの取得では 1 回おき。前回の範囲（bbox）にいまの経路の先 60km が入っているときだけ）。取得できなければ 15 分まで前回の結果。流れは `TomTomFlowTiles`：前方 `DEFAULT_FLOW_RANGE_M`（40km。通信量を抑える設定で 25km）にかかる z12 のタイル（約 8km 四方、6〜10 枚、上限 20）を `https://api.tomtom.com/traffic/map/4/tile/flow/relative/{z}/{x}/{y}.pbf`（`roadTypes=[0,1,2,3]`・`tags=[...]` つき。400 なら付けずに読み直し）で読み、`traffic_level`（0〜1。1.5 を超えたら km/h とみなして 80 で割る）が 0.45 未満を JAM、0.7 未満を SLOW、0.9 未満を FLOW（到着予定だけ）、経路から 60m 以内の線だけ残す（`RouteCorridor`）。`road_closure` の線は使わない（通行止めは一覧の方）。タイルが 401/403/429 なら 30 分（`TILE_BLOCK_MS`）は `TomTomFlowSegments`（Flow Segment Data。前方 30km の決まった 9 地点、confidence 0.5 未満は使わない）に切り替える。どちらか片方だけ取れたら取れた分を使い、`TrafficData.warning` → `trafficMessage`（「渋滞情報: 道路の流れを取得できません（HTTP 403）」など）。**タイルの属性の名前・値の意味（traffic_level・road_closure）は TomTom の資料による想定で、実物では未確認**。開発者向け設定の「渋滞情報（確認用）」に、タイルの枚数・線の数・値の範囲・（値が無いときは）層と属性の名前が出るので、報告があればそれで直す。無料枠は資料によって食い違う（タイル 月 200K と 2.5K の両方の記述があった）。
+  - 照合（`TrafficMapper.annotate`）：許容 `MATCH_DIST_M` 25m。TomTom は順向きと逆向き（分離された車線だけ）の両方で照合し、両方載るときは「逆向きの中央値の距離が順向きの半分未満で 5m 以上近い」ときだけ逆向き（線が実際に重なっている車線）。`EdgeTraffic.matched` は、どこかの車線に載った情報。
+  - 表示：`TrafficKind.SLOW` は「混雑」（橙）。`FacilityView.slowBeforeM`（混雑の長さ）と `jamBeforeM`（渋滞だけ）を分けた。`TrafficView.nextJamSlowOnly`（次の渋滞の範囲に JAM が無い）なら、パネル・下のバー・音声案内（1km 以上のときだけ）で「混雑」。`TrafficView.events` は事故・工事などだけ（v2.23 から渋滞は入れない。流れの細かい区間で事故が押し出されないように）。
+  - 確認用：`TrafficData.notes`（取得元ごとの件数）＋エンジンの `matchDiag`（一覧の渋滞・事故、流れの渋滞・やや遅い区間ごとに「進む車線に／ほかの車線や道路／道路と合わない」）＋`aheadDiag`（前方の渋滞・混雑 6 件）を `TrafficView.diag` に入れ、開発者向け設定の「渋滞情報（確認用）」（コピー・今すぐ取得）で見る。
+  - `TrafficUpdater`：取得元の部品を使い回す（`cachedProvider`。TomTom の一覧の使い回しのため）。前回の取得から 60 秒たっていて、30 秒ごとに、いまの前方経路の先 5km が前回の問い合わせの経路から 150m 以上離れていたら取り直す（`leftQueriedRoute`）。
+  - テストは `TomTomFlowTest`（タイルはテストの中で仕様どおりに作る）。
 - **Google マップのナビ連携（v2.5）**：`MediaListenerService`（通知へのアクセス）が受け取った通知を `NotificationHooks` で `nav/NavNotifications` へ渡し、Google マップの「実行中」の通知から文字（extras と独自の表示 RemoteViews を組み立てた文字）を集めて `NavText.parse` で距離と案内の文にします（1.5 秒にまとめて読む。読み取り待ちは通知ごとに最新の 1 件）。
   - **案内中だけ・ほかのナビアプリ（v2.16）**：利用者の報告「Android Auto につなぐと、案内を始めていないのに『Google マップは運転モード』の帯が出る」。`NavText`（v2.16 から `:core` の `route/`）が案内かどうか（`Parsed.guidance`）も決める：案内地点までの距離が読めれば案内（題名・距離だけの部品・距離で始まる部品「300m先 …」）。読めなければ、曲がる方向・出口・分岐・方面・○○IC/JCT などの言葉（`MANEUVER`・`ROAD_POINT`）があり、案内を始めていないときの言葉（`NOT_GUIDANCE`：運転モード・ナビを開始・ダウンロード・位置情報を共有 など）が無いときだけ案内。案内でない通知は使わず、案内中だった通知（`activeKey`）が案内でなくなったら `CLEAR_AFTER_MS` 6 秒で消す。読む通知は、`NavNotifications.APPS`（Google マップ・Google マップ Go・Yahoo!カーナビ `jp.co.yahoo.android.apps.navi`・moviLink `jp.co.toyotaconnected.tlbsapp`・カーナビタイム `com.navitime.local.carnavitime`・ドライブサポーター `com.navitime.local.navitimedrive`・トラックカーナビ・COCCHi `jp.pioneer.cocchi.android`・Yahoo!マップ・Waze）か、通知の種類が `CATEGORY_NAVIGATION` の「実行中」の通知（このアプリ自身の通知は除く）。案内中のアプリの通知が `KEEP_ACTIVE_MS` 15 秒以内に更新されていれば、ほかのアプリの案内には切り替えない。帯・施設の詳細・設定の状態にはアプリの名前（`Guidance.source`・`NavView.source`）を出し、帯のタップはそのアプリを開く。**Google マップ以外のアプリが案内中にどんな通知を出すかは未確認**（パッケージ名は Web の情報で確かめただけ）。開発者向け設定の「ナビアプリの連携（確認用）」に、アプリの名前・判定（案内として扱ったか・理由）が出るので、報告があればそのコピーで `NavText` の言葉を直す。
   - `EngineHost.setNavInstruction` → `HighwayEngine.setNavInstruction`。案内の文が変わったら前方経路を作り直し、`buildRoute` で `NavGuide.plan`（JCT の乗り換え先を `NavForkChooser` で選び直す）→ `NavGuide.match`（降りる IC）。降りる IC より先の施設は一覧に出しません。結果は `FacilityView.navExit` / `navNote` と `HighwaySnapshot.nav`（`NavView`）。
   - 照合は文を解釈せず、前方経路の施設名・分岐の先の道路名と路線番号・ランプの行き先が案内の文に含まれるかで決めます（言い回しの違いに強くするため）。通知の実際の形は実機で未確認なので、開発者向け設定の「ナビアプリの連携（確認用）」（v2.16 で名前を変更）で受け取った文字（部品の名前つき）を見てもらい、合わない言い回しがあれば `NavText` / `NavGuide` を直してください。
+  - **Android Auto の画面で案内しているとき（v2.23）**：利用者の報告「スマホで案内しているときは出るが、Android Auto の画面の Google マップで案内しているときは出ない」。車の画面で案内しているとき、スマホには「運転モード」などの実行中の通知が出たままで、次の案内は別の通知（車の画面に出す案内の通知など）で届くことがある、と考えて、①読む通知を「知っているナビのアプリ（`APPS`）・Android Auto（`AUTO_PKG` = `com.google.android.projection.gearhead`）・種類が `CATEGORY_NAVIGATION`」の**実行中でないものにも**広げた（実行中でない通知と Android Auto の通知は、距離と `NavText.hasManeuver` の両方があるときだけ案内）、②`texts` で入れ子の Bundle（`androidx.car.app.EXTENSIONS` の `content_title`・`content_text`（Car App Library の CarAppExtender。Android Auto のナビのアプリは、ほかのアプリが前にあるとき案内をこの形の通知で出す決まり）、`android.car.EXTENSIONS`、`android.wearable.EXTENSIONS` のページ）を 3 段までたどり（`nested`。名前は「car:content_title」「wear:page:title」。`TEXT_KEYS`・`SKIP_KEYS` で文字らしい項目だけ）、`tickerText`・`headsUpContentView`、ほかに文字が無いときだけ `publicVersion` も読む。`NavText.isTitle` は「:title」「content_title」で終わる名前も題名として距離を読む、③案内の通知が消えても `CLEAR_AFTER_MS`（6 秒）待ってから消す、④確認用に最近の通知 15 件（`recentReport`。時刻・アプリ・実行中か・種類・チャンネル・番号・判定・部品）。**Google マップが車の画面で案内しているときにスマホへ何を出すかは未確認**。まだ出ないと言われたら、案内中の「最近受け取ったナビの通知（15 件）」のコピーをもらう（通知に案内が無ければ、通知からは読めない）。`APPS` に HERE WeGo・Sygic・TomTom GO・OsmAnd・Magic Earth を足した。
   - このアプリは Android Auto の `NavigationManager.navigationStarted()` を呼びません（呼ぶと、ナビ中のほかのアプリ（Google マップ）のナビが止められる可能性がある）。ナビ連携のため、今後も呼ばないでください。
   - **音楽の画面の案内の帯（v2.6）**：`NavNotifications` が読んだ案内を `com.example.spectrum.Guidance` に入れ（`Prefs.navBanner`。経路合わせ `Prefs.navSync` とは別にオン・オフ）、`PlayerRenderer` がスペアナの区画の上を帯にして描きます（`guideSplit`・`drawGuidance`。一般道でも、スマホ・車の両方）。矢印は通知の大きなアイコン（1 色の図形なら白くする `maneuverIcon`）、無ければ案内の文から `Guidance.arrowFor` で推定して描く。帯のタップはスマホだけ、案内を出しているナビのアプリを開く（`PlayerView.onGuideTap` → `NavNotifications.openNavApp`）。`NavNotifications.install` はエンジンの起動・`MainActivity`・`HighwayCarAppService` のどこから呼んでもよい（エンジンが動いていなくても帯を出すため）。
 - **再生位置のバー（v2.14）**：スマホはバーに触れたら指に合わせて動かし（`PlayerView` → `PlayerRenderer.isSeekAt` / `scrubTo` / `endScrub`。動かしている間は丸いつまみと、上に移る先の時刻の吹き出し）、離した位置へ `NowPlaying.seekToFraction`。v2.13 までは離したときだけ位置が変わっていた。`seekToFraction` は移る先（`pendingSeekMs`）を覚え、音楽アプリが新しい位置を知らせる（`PlaybackState.lastPositionUpdateTime` が新しくなる）まで最大 2 秒はその位置を表示する（一瞬前の位置に戻って見えないように）。車の画面はタップで移る（引きずりの開始位置が分からないため）。
@@ -144,7 +152,7 @@
 
 ## ビルドとテスト
 
-- テスト：`./gradlew :core:test`（JVM のみ。v2.21 時点で 114 件すべて成功）。
+- テスト：`./gradlew :core:test`（JVM のみ。v2.23 時点で 120 件すべて成功）。
 - アプリ：`./gradlew :app:assembleRelease`（Android SDK が必要）。CI（`.github/workflows/build-app.yml`）は `:core:test :app:assembleRelease`（署名鍵があれば `:app:bundleRelease` も）を実行します。
 - 地図データ：`.github/workflows/build-data.yml`（build-hwdb）が毎週作って `hwdb-latest` リリースに公開します。build-app はそれを同梱します。
 - **IC の入口側（v2.17。`FacilityExtractor.resolveEntrances`）**：利用者の報告「バイパスで、IC の出口を過ぎて消えたあと、同じ IC の合流側（下道からの入口）をもう一度 IC として表示した」。原因は OSM の IC の名前の付いた分岐ノードが入口の合流点にもある（「○○IC」「○○IC入口」。`FacilityNameParser` は「入口」を外して同じ IC として読む）こと。IC・SIC の地点ごとに、60m（`Params.rampNearDist`）以内の頂点に本線から出るランプがあれば出口、合流するランプだけなら入口、どちらも無ければ名前の「出口」「入口」（`Parsed.entryWord`）で決め、入口・不明の地点は、同じ車線の前後 3km（`entrancePairDist`。`walkRoad`）に同じ IC の出口があれば消す（入口の地点は、不明の地点（出口の分岐ノードが分岐から離れて登録されたもの）も出口とみなす）。入口だけなら「出口なし」の写し（id + "e"）にする。エンジンでも、通過した IC（いちばん近い前方の IC が一覧から消え、その位置を走り過ぎた）と同じ種別・名前の IC を、同じ向き（90° 以内）で 3km（`REPASS_SUPPRESS_M`）走るまで出さない（`passedIcs`・`notePassedIc`）。テストは `IcEntranceTest`（直す前のコードでは「豊川IC→見附IC→豊川IC→…」と繰り返し出ることを確かめた）。
@@ -167,9 +175,17 @@
 - 改行コードは `.gitattributes` で LF に統一しています（`*.bat` / `*.cmd` だけ CRLF）。
 - 新しい権限を追加したり、取得するデータを変えたりしたら、`docs/PRIVACY.md` も更新してください。
 
-## 実機で未確認の点（v2.22 時点）
+## 実機で未確認の点（v2.23 時点）
 
 利用者の実機での確認待ちです。報告があればここから調べてください。
+
+v2.23 で入れたもの:
+
+- TomTom の道路の流れ：渋滞の手前から（案内板と同じくらい前から）一覧・帯・状態の表示に出るか。流れのタイルが読めるか（「渋滞情報（確認用）」の「道路の流れ（タイル）」の枚数・値の範囲。値が 0〜1 でなければ属性の意味が想定と違う）。混雑（橙）が多すぎないか・渋滞でない所に出ないか（反対車線・並行する一般道・高架の下の道路）。タイルの無料枠（月何枚か）と通信量。
+- 照合の許容を 25m にしたことで、反対車線・分岐の先の渋滞が自分の車線に載らないか。
+- JCT で別の路線に入ったとき、約 1 分で新しい路線の渋滞が出るか。
+- 「キーを確かめる」で「ただし…取得できません」が出ないか（キーで流れのタイルが使えるか）。
+- Android Auto の画面の Google マップで案内しているとき、帯・ハイウェイの一覧の照合が働くか（「最近受け取ったナビの通知（15 件）」で、どの通知に案内が入っているか）。ほかのナビのアプリ（Yahoo!カーナビなど）を Android Auto で使ったとき。お知らせ・宣伝の通知を案内と取り違えないか。案内の通知が消えてから 6 秒残る帯が気にならないか。
 
 v2.22 で入れたもの:
 

@@ -159,6 +159,8 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
     private var routeTrafficFor: RouteAhead? = null
     /** 交通情報の取得状況（ホストが設定。例:「渋滞情報: API キー未設定」） */
     var trafficMessage: String? = null
+    /** 取得・照合の様子（開発者向け設定の「渋滞情報（確認用）」。v2.23） */
+    private var trafficDiag: List<String> = emptyList()
 
     // ---- 車両（Android Auto）
     val vehicle = VehicleState()
@@ -297,20 +299,55 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         jamSpansFor = null
         if (data == null) {
             jamTracker.clear()
+            trafficDiag = emptyList()
             return
         }
         // 前回の取得結果と照合して、渋滞の最後尾が伸びているか・縮んでいるかを求める
         val rt = route
         val pf = profile
         val et = edgeTraffic
-        if (rt != null && pf != null && et != null && rt.graphGeneration == graph.generation) {
+        val routeOk = rt != null && pf != null && et != null && rt.graphGeneration == graph.generation
+        if (routeOk) {
             try {
-                val rtf = TrafficMapper.forRoute(rt, graph, et, pf.cell)
+                val rtf = TrafficMapper.forRoute(rt!!, graph, et!!, pf!!.cell)
                 jamTracker.update(rt, graph, JamModel.spans(rtf, rt, graph, null), data.fetchedWallMs)
             } catch (e: Exception) {
                 // 照合できなくても予測は続ける（伸び縮みは不明として扱う）
             }
         }
+        trafficDiag = matchDiag(data, et, if (routeOk) rt else null)
+    }
+
+    /**
+     * 確認用: 取得元の件数（[TrafficData.notes]）と、道路との照合の結果。
+     * 「進む車線に」= いまの前方経路に載った件数、「ほかの車線や道路」= 反対車線・分岐の先などに載った件数、
+     * 「道路と合わない」= どの車線にも載らなかった件数（多いときは照合がうまくいっていない）。
+     */
+    private fun matchDiag(data: TrafficData, et: EdgeTraffic?, rt: RouteAhead?): List<String> {
+        val out = ArrayList<String>(data.notes)
+        if (et == null) {
+            out.add("照合: 地図データが読み込まれていません")
+            return out
+        }
+        if (rt == null) {
+            out.add("照合: 前方経路が未確定（高速道路の上で次に取得したときに照合します）")
+            return out
+        }
+        val onRoute = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<com.example.highwaymode.core.traffic.TrafficItem, Boolean>())
+        for (seg in rt.segments) et.spans[seg.edge]?.forEach { onRoute.add(it.item) }
+        fun line(label: String, list: List<com.example.highwaymode.core.traffic.TrafficItem>) {
+            if (list.isEmpty()) return
+            val on = list.count { it in onRoute }
+            val other = list.count { it !in onRoute && it in et.matched }
+            out.add("照合（$label ${list.size} 件）: 進む車線に $on・ほかの車線や道路 $other・道路と合わない ${list.size - on - other}")
+        }
+        val src = com.example.highwaymode.core.traffic.TrafficItem.SOURCE_FLOW
+        line("一覧の渋滞・混雑", data.items.filter { it.source != src && (it.kind == TrafficKind.JAM || it.kind == TrafficKind.SLOW) })
+        line("一覧の事故・工事・規制", data.items.filter { it.source != src && it.kind.isEvent })
+        line("流れの渋滞・混雑", data.items.filter { it.source == src && (it.kind == TrafficKind.JAM || it.kind == TrafficKind.SLOW) })
+        line("流れのやや遅い区間", data.items.filter { it.source == src && it.kind == TrafficKind.FLOW })
+        if (data.items.isEmpty()) out.add("照合: 経路の近くに情報はありません")
+        return out
     }
 
     val trafficFetchedWallMs: Long? get() = trafficData?.fetchedWallMs
@@ -954,6 +991,7 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
             ids.add(f.id)
             val from = if (isCam) uf.distance else prevDist
             var jam = 0.0
+            var slow = 0.0
             var note: String? = null
             var closed = false
             for (ev in events) {
@@ -961,9 +999,11 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
                     if (ev.kind == TrafficKind.CLOSURE) closed = true
                 }
                 if (ev.end <= from || ev.start >= uf.distance) continue
-                if (ev.kind == TrafficKind.JAM || ev.kind == TrafficKind.SLOW) {
-                    jam += min(ev.end, uf.distance) - max(ev.start, from)
-                } else if (note == null) note = ev.kind.label
+                when (ev.kind) {
+                    TrafficKind.JAM -> jam += min(ev.end, uf.distance) - max(ev.start, from)
+                    TrafficKind.SLOW -> slow += min(ev.end, uf.distance) - max(ev.start, from)
+                    else -> if (note == null) note = ev.kind.label
+                }
             }
             val v = FacilityView(
                 id = f.id, type = f.type, name = f.listName, displayName = f.displayName,
@@ -972,7 +1012,7 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
                 pois = f.pois.toList(), lat = f.lat, lon = f.lon, exitRef = f.exitRef,
                 destination = f.destination, directionNote = f.directionNote,
                 typeInferred = f.typeInferred, flowBefore = res.flowRatio(prevDist, uf.distance),
-                jamBeforeM = jam, trafficNote = note, closedBefore = closed,
+                jamBeforeM = jam, slowBeforeM = slow, trafficNote = note, closedBefore = closed,
                 maxspeedKmh = f.maxspeedKmh, cameraType = f.cameraType, userDefined = f.userDefined,
                 noExit = f.noExit,
                 navExit = nm?.exitId == f.id,
@@ -1053,7 +1093,7 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
                 f.travelSec, f.amenities, f.etcOnly, f.etcReason, f.pois, f.lat, f.lon,
                 f.exitRef, f.destination, f.directionNote, f.typeInferred, f.flowBefore,
                 f.jamBeforeM, f.trafficNote, f.closedBefore, f.maxspeedKmh, f.cameraType, f.userDefined, f.noExit, f.jamEndM,
-                f.navExit, f.navNote
+                f.navExit, f.navNote, f.slowBeforeM
             )
         }
         val hdg = if (heading.initialized) heading.headingDeg else null
@@ -1107,6 +1147,9 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         var jamLen: Double? = null
         var jamDist: Double? = jam?.let { max(0.0, it.start - progress) }
         var trend = 0
+        // 表示する渋滞の範囲（道のり）。中に「渋滞」が無く「混雑」だけなら、表示を「混雑」にする
+        var jamFrom = Double.NaN
+        var jamTo = Double.NaN
         // 渋滞の伸び縮みがわかれば、いまの最後尾の推定位置から。遅れは到着予測（伸び縮み込み）から
         val useSpans = ext != null && ext.weight > 0.05 && ext.jams.isNotEmpty()
         // 取得からいままでに解消したとみられる渋滞は除く
@@ -1118,6 +1161,8 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
                 jamDist = max(0.0, tailNow - progress)
                 jamLen = span.head - max(tailNow, progress)
                 trend = span.trend
+                jamFrom = span.tail
+                jamTo = span.head
                 // 1 つ手前の渋滞の先頭から、この渋滞の先頭までの遅れ（最後尾が伸びた分を含む）
                 val prevHead = ext.jams.filter { it.head <= span.tail && it.head > progress }.maxOfOrNull { it.head } ?: progress
                 jamDelay = res.delayBetween(max(progress, prevHead), span.head).takeIf { it >= 0.0 }
@@ -1140,7 +1185,11 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
             }
             jamLen = end - max(jam.start, progress)
             jamDelay = if (known) delay else null
+            jamFrom = jam.start
+            jamTo = end
         }
+        val slowOnly = jamLen != null && !jamFrom.isNaN() &&
+            ev.none { it.kind == TrafficKind.JAM && it.end > jamFrom + 1 && it.start < jamTo - 1 }
         val routeDelay = if (res != null && rtf != null && rtf.hasCoverage) {
             var d = 0.0
             for (k in res.vPred.indices) {
@@ -1152,10 +1201,38 @@ class HighwayEngine(val config: EngineConfig = EngineConfig()) {
         return TrafficView(
             provider = td?.provider, fetchedWallMs = td?.fetchedWallMs, message = trafficMessage,
             nextJamDistanceM = if (jamLen != null) jamDist else null, nextJamLengthM = jamLen, nextJamDelaySec = jamDelay,
-            events = ev.filter { it.kind.isEvent || it.kind == TrafficKind.JAM }.take(8).map { Triple(max(0.0, it.start - progress), it.kind, it.description) },
+            // 事故・工事・通行止めなど（v2.23 から渋滞は入れない。道路の流れの細かい渋滞の区間で、事故などが押し出されないように）
+            events = ev.filter { it.kind.isEvent }.take(8).map { Triple(max(0.0, it.start - progress), it.kind, it.description) },
             routeDelaySec = routeDelay,
-            nextJamTrend = trend
+            nextJamTrend = trend,
+            nextJamSlowOnly = slowOnly,
+            diag = if (td == null) emptyList() else trafficDiag + aheadDiag(ev, progress, rtf != null && trafficWeight(wallMs) > 0.05)
         )
+    }
+
+    /** 確認用: いまの前方経路に載っている渋滞・混雑（近い順に 6 件） */
+    private fun aheadDiag(ev: List<TrafficMapper.RouteEvent>, progress: Double, onRoute: Boolean): List<String> {
+        if (!onRoute) return listOf("前方: 経路に対応づけていません（高速道路の外、または取得から 30 分以上）")
+        val jams = ev.filter { (it.kind == TrafficKind.JAM || it.kind == TrafficKind.SLOW) && it.end > progress }
+        if (jams.isEmpty()) return listOf("前方: 渋滞・混雑なし")
+        // 隣り合う区間（300m 以内）はまとめる
+        val merged = ArrayList<DoubleArray>()
+        val hasJam = ArrayList<Boolean>()
+        for (e in jams.sortedBy { it.start }) {
+            val last = merged.lastOrNull()
+            if (last != null && e.start <= last[1] + 300.0) {
+                last[1] = max(last[1], e.end)
+                if (e.kind == TrafficKind.JAM) hasJam[hasJam.size - 1] = true
+            } else {
+                merged.add(doubleArrayOf(e.start, e.end))
+                hasJam.add(e.kind == TrafficKind.JAM)
+            }
+        }
+        val parts = merged.take(6).mapIndexed { i, m ->
+            val d = max(0.0, m[0] - progress)
+            String.format(java.util.Locale.US, "%.1fkm先 %.1fkm（%s）", d / 1000, (m[1] - max(m[0], progress)) / 1000, if (hasJam[i]) "渋滞" else "混雑")
+        }
+        return listOf("前方: " + parts.joinToString("、") + if (merged.size > 6) " ほか ${merged.size - 6} か所" else "")
     }
 
     private fun vehicleView(t: Long, rt: RouteAhead?, progress: Double): VehicleView? {

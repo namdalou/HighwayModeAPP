@@ -106,14 +106,15 @@ class AlertManager(context: Context) : TextToSpeech.OnInitListener {
         val tr = s.traffic
         val jd = tr?.nextJamDistanceM
         val jl = tr?.nextJamLengthM
-        if (jd != null && jl != null && jd < 10_000 && jl >= 500) {
+        // 混雑（渋滞ほど遅くない区間）だけのときは 1km 以上のときだけ（v2.23）
+        if (jd != null && jl != null && jd < 10_000 && jl >= (if (tr.nextJamSlowOnly) 1000.0 else 500.0)) {
             // 走行距離（オドメーター）上の位置で、案内済みの渋滞より先にある渋滞だけを案内する
             if (odometer + jd > announcedJamEnd + 500) {
                 announcedJamEnd = odometer + jd + jl
                 if (prefs.voiceJam) {
                     val delay = tr.nextJamDelaySec?.let { if (it >= 60) "、およそ${(it / 60).roundToInt()}分の遅れです" else "" } ?: ""
                     val trend = if (tr.nextJamTrend == 1) "。渋滞は伸びています" else ""
-                    speak("この先${km(jd)}、渋滞${km(jl)}$delay$trend", "jam")
+                    speak("この先${km(jd)}、${if (tr.nextJamSlowOnly) "混雑" else "渋滞"}${km(jl)}$delay$trend", "jam")
                     return
                 }
             }

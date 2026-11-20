@@ -44,6 +44,10 @@ object NavText {
     /** 「〇〇IC」「〇〇JCT」など（英字の単語の一部は除く） */
     private val ROAD_POINT = Regex("(?<![A-Za-z])(IC|JCT|SIC|SA|PA)(?![A-Za-z])")
 
+    /** 題名の部品か（標準の題名・ナビのアプリの独自の表示の題名・入れ子の情報の題名） */
+    fun isTitle(name: String): Boolean =
+        name == "nav_title" || name == "title" || name.endsWith(":title") || name.endsWith("content_title")
+
     fun distanceOf(s: String): Double? {
         val m = DIST.find(s) ?: return null
         val v = m.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
@@ -91,10 +95,11 @@ object NavText {
      */
     fun parse(pieces: List<Pair<String, String>>): Parsed? {
         if (pieces.isEmpty()) return null
-        // 距離: 題名の部品（nav_title・title）→ 距離だけの部品 → 距離で始まる部品
+        // 距離: 題名の部品（nav_title・title、v2.23 から入れ子の題名「car:content_title」「wear:page:title」なども）
+        // → 距離だけの部品 → 距離で始まる部品
         var dist: Double? = null
         for ((name, t) in pieces) {
-            if ((name == "nav_title" || name == "title") && !isEta(t)) {
+            if (isTitle(name) && !isEta(t)) {
                 distanceOf(t)?.let { dist = it }
                 if (dist != null) break
             }

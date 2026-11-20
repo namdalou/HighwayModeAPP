@@ -154,6 +154,7 @@ class FacilityListScreen(carContext: CarContext, private val restOnly: Boolean =
                         append("　").append(if (f.closedBefore) "通行止" else Formats.etaLabel(f.etaEpochMs))
                         if (f.navExit) append("　ナビ: ここで降りる")
                         if (f.jamBeforeM >= 200) append("　手前に渋滞").append(Formats.distance(f.jamBeforeM))
+                        else if (f.slowBeforeM >= 300) append("　手前に混雑").append(Formats.distance(f.slowBeforeM))
                         f.trafficNote?.let { append("　").append(it) }
                         if (!f.navExit) f.navNote?.let { append("　ナビ ").append(it.removePrefix("→ ")) }
                     }

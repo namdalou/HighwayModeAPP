@@ -32,12 +32,19 @@ class TrafficItem(
     val delaySec: Double? = null,
     val description: String? = null,
     /** 0〜4（4=最も深刻） */
-    val severity: Int = 0
+    val severity: Int = 0,
+    /** 情報の出どころ（事故・渋滞の一覧 [SOURCE_LIST] か、道路の流れ [SOURCE_FLOW] か。確認用の集計に使う。v2.23） */
+    val source: Int = SOURCE_LIST
 ) {
     val length: Double by lazy {
         var s = 0.0
         for (i in 0 until lat.size - 1) s += Geo.distance(lat[i], lon[i], lat[i + 1], lon[i + 1])
         s
+    }
+
+    companion object {
+        const val SOURCE_LIST = 0
+        const val SOURCE_FLOW = 1
     }
 }
 
@@ -54,7 +61,11 @@ class TrafficData(
     val coveredLat: DoubleArray,
     val coveredLon: DoubleArray,
     /** 経路全体の遅れ（Google の duration − staticDuration 等）[s] */
-    val totalDelaySec: Double? = null
+    val totalDelaySec: Double? = null,
+    /** 取得の様子（件数・失敗。開発者向け設定の「渋滞情報（確認用）」に出す。v2.23） */
+    val notes: List<String> = emptyList(),
+    /** 一部が取得できなかったときの説明（取得できた分は使う。v2.23） */
+    val warning: String? = null
 )
 
 /** 交通情報の問い合わせ範囲（エンジンが前方経路から作る） */

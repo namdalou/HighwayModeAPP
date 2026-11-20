@@ -318,7 +318,9 @@ class ModeBarRenderer(var density: Float) {
             -1 -> "（縮んでいます）"
             else -> ""
         }
-        return if (d < 50) "渋滞中 残り${Formats.distance(len)}$delay$trend" else "${Formats.distance(d)}先 渋滞${Formats.distance(len)}$delay$trend"
+        // 渋滞ほど遅くない区間だけなら「混雑」（v2.23。道路の流れの情報で、少し遅い区間も出るようになったため）
+        val what = if (tr.nextJamSlowOnly) "混雑" else "渋滞"
+        return if (d < 50) "${what}中 残り${Formats.distance(len)}$delay$trend" else "${Formats.distance(d)}先 $what${Formats.distance(len)}$delay$trend"
     }
 
     /** 次の施設（注意があればそちらを優先）。タップで 2 画面へ */
@@ -358,8 +360,8 @@ class ModeBarRenderer(var density: Float) {
                 sub = Formats.distance(navExit.distanceM) + "  " + Formats.etaLabel(navExit.etaEpochMs)
             }
             jamD != null && jamL != null && jamD < 10_000 -> {
-                badge = "渋滞"
-                badgeColor = if (jamL >= 1000) cRed else cOrange
+                badge = if (tr.nextJamSlowOnly) "混雑" else "渋滞"
+                badgeColor = if (jamL >= 1000 && !tr.nextJamSlowOnly) cRed else cOrange
                 main = "${Formats.distance(jamD)}先 ${Formats.distance(jamL)}"
                 sub = tr.nextJamDelaySec?.let { if (it >= 60) "+${(it / 60).roundToInt()}分" else null }
             }
