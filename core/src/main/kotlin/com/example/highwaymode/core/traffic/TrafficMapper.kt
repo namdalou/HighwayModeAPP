@@ -15,9 +15,17 @@ class EdgeSpan(val start: Double, val end: Double, val item: TrafficItem)
  * 取得した交通情報（座標列）を道路グラフの有向エッジに対応づける。
  *  - 情報の座標列を 40m ごとに区切り、近く（maxDist 以内）で進行方位が合うエッジに載せる
  *  - 進行方向が逆（対向車線の情報）や、並行する一般道・高架下の道路の情報は載らない
- *  - 交通情報が逆向きの座標列で届く API（TomTom）は、分離された車線に限り逆向きでも照合する
+ *  - 交通情報が逆向きの座標列で届くことがある API（TomTom）は、分離された車線に限り逆向きでも照合し、
+ *    線が実際に重なっている方（逆向きの方がずっと近いときだけ逆向き）を使う
+ * [matched] は、どこかの車線に載った情報（確認用の集計に使う）。
  */
-class EdgeTraffic(val data: TrafficData, val graphGeneration: Long, val spans: Map<Int, List<EdgeSpan>>, val coveredEdges: Set<Int>) {
+class EdgeTraffic(
+    val data: TrafficData,
+    val graphGeneration: Long,
+    val spans: Map<Int, List<EdgeSpan>>,
+    val coveredEdges: Set<Int>,
+    val matched: Set<TrafficItem> = emptySet()
+) {
     val isEmpty: Boolean get() = spans.isEmpty()
 }
 
@@ -25,24 +33,41 @@ object TrafficMapper {
 
     private const val STEP = 40.0
 
-    fun annotate(graph: RoadGraph, data: TrafficData, maxDist: Double = 18.0, tryReverse: Boolean = data.provider == "TomTom"): EdgeTraffic {
+    /**
+     * 照合の許容距離 [m]。v2.22 までは 18m で、取得元の地図と OpenStreetMap の道路の線が少しずれている所
+     * （高架・分岐の近くなど）の渋滞が載らないことがあった。上下線の間隔（約 13〜17m）より大きいが、
+     * 方位が合う車線のうち近い方に載せるので、反対車線には載らない
+     */
+    const val MATCH_DIST_M = 25.0
+
+    fun annotate(graph: RoadGraph, data: TrafficData, maxDist: Double = MATCH_DIST_M, tryReverse: Boolean = data.provider == "TomTom"): EdgeTraffic {
         val spans = HashMap<Int, MutableList<EdgeSpan>>()
+        val matched = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<TrafficItem, Boolean>())
         for (item in data.items) {
             if (item.lat.size == 1) {
                 // 地点情報（事故など）: 近い車線のうち最も近い 1 本だけ
                 val near = graph.nearby(item.lat[0], item.lon[0], maxDist * 1.5)
                 val best = near.minByOrNull { it.dist } ?: continue
                 spans.getOrPut(best.edge) { ArrayList() }.add(EdgeSpan(max(0.0, best.offset - 50), best.offset + 50, item))
+                matched.add(item)
                 continue
             }
-            var res = mapLine(graph, item.lat, item.lon, maxDist, allowBidirectional = true)
-            if (tryReverse && res.matched < res.samples * 0.4) {
-                val rl = item.lat.reversedArray()
-                val ro = item.lon.reversedArray()
-                val rev = mapLine(graph, rl, ro, maxDist, allowBidirectional = false)
-                if (rev.matched > res.matched) res = rev
+            val fwd = mapLine(graph, item.lat, item.lon, maxDist, allowBidirectional = true)
+            var res = fwd
+            if (tryReverse) {
+                val rev = mapLine(graph, item.lat.reversedArray(), item.lon.reversedArray(), maxDist, allowBidirectional = false)
+                val need = max(1, fwd.samples / 4)
+                val fwdOk = fwd.matched >= need
+                val revOk = rev.matched >= need
+                res = when {
+                    // どちらでも載る（上下線が近い）: 線がずっと近い方。迷うときは座標列の向きのとおり
+                    fwdOk && revOk -> if (rev.medianDist < fwd.medianDist * 0.5 && fwd.medianDist - rev.medianDist > 5.0) rev else fwd
+                    revOk -> rev
+                    else -> fwd
+                }
             }
             if (res.matched < max(1, res.samples / 4)) continue
+            matched.add(item)
             for ((edge, range) in res.ranges) spans.getOrPut(edge) { ArrayList() }.add(EdgeSpan(range[0], range[1], item))
         }
         // 経路上の「問い合わせ済み」エッジ（coverageAll の API で、情報が無い＝順調とみなす範囲）
@@ -51,16 +76,18 @@ object TrafficMapper {
             val res = mapLine(graph, data.coveredLat, data.coveredLon, 25.0, allowBidirectional = true)
             covered.addAll(res.ranges.keys)
         }
-        return EdgeTraffic(data, graph.generation, spans, covered)
+        return EdgeTraffic(data, graph.generation, spans, covered, matched)
     }
 
-    private class LineMatch(val samples: Int, val matched: Int, val ranges: Map<Int, DoubleArray>)
+    /** 線の照合の結果。medianDist は載った点の道路からの距離の中央値 [m] */
+    private class LineMatch(val samples: Int, val matched: Int, val ranges: Map<Int, DoubleArray>, val medianDist: Double)
 
     private fun mapLine(graph: RoadGraph, lat: DoubleArray, lon: DoubleArray, maxDist: Double, allowBidirectional: Boolean): LineMatch {
         val ranges = LinkedHashMap<Int, DoubleArray>()
         var samples = 0
         var matched = 0
         var prevEdge = -1
+        val dists = ArrayList<Double>()
         for (i in 0 until lat.size - 1) {
             val segLen = Geo.distance(lat[i], lon[i], lat[i + 1], lon[i + 1])
             if (segLen < 0.5) continue
@@ -78,6 +105,7 @@ object TrafficMapper {
                     continue
                 }
                 matched++
+                dists.add(best.dist)
                 val half = segLen / n / 2
                 val r = ranges.getOrPut(best.edge) { doubleArrayOf(Double.MAX_VALUE, -Double.MAX_VALUE) }
                 r[0] = min(r[0], max(0.0, best.offset - half))
@@ -93,7 +121,8 @@ object TrafficMapper {
                 prevEdge = best.edge
             }
         }
-        return LineMatch(samples, matched, ranges)
+        dists.sort()
+        return LineMatch(samples, matched, ranges, if (dists.isEmpty()) Double.MAX_VALUE else dists[dists.size / 2])
     }
 
     /**

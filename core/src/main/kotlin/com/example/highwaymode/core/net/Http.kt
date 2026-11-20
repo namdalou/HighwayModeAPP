@@ -100,6 +100,20 @@ object Http {
     fun getText(url: String, headers: Map<String, String> = emptyMap(), cancel: CancelToken? = null, timeoutMs: Int = 30_000): String =
         execute(Request(url, headers = headers, readTimeoutMs = timeoutMs), cancel) { _, _, body -> readText(body, Int.MAX_VALUE) }
 
+    /** 本文をそのまま（地図タイルなど。v2.23）。maxBytes を超えたら IOException */
+    fun getBytes(url: String, headers: Map<String, String> = emptyMap(), cancel: CancelToken? = null, timeoutMs: Int = 30_000, maxBytes: Int = 8 shl 20): ByteArray =
+        execute(Request(url, headers = headers, readTimeoutMs = timeoutMs), cancel) { _, _, body ->
+            val out = ByteArrayOutputStream(64 * 1024)
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+                val n = body.read(buf)
+                if (n < 0) break
+                out.write(buf, 0, n)
+                if (out.size() > maxBytes) throw IOException("応答が大きすぎます")
+            }
+            out.toByteArray()
+        }
+
     fun postText(url: String, body: String, contentType: String, headers: Map<String, String> = emptyMap(), cancel: CancelToken? = null, timeoutMs: Int = 30_000): String =
         execute(
             Request(url, "POST", body.toByteArray(Charsets.UTF_8), headers + ("Content-Type" to contentType), readTimeoutMs = timeoutMs),

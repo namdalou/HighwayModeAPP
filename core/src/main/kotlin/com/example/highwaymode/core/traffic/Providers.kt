@@ -310,17 +310,79 @@ class HereTrafficProvider(private val apiKey: String, private val includeInciden
 }
 
 /**
- * TomTom Traffic API（Incident Details v5）。渋滞（遅れ時間つき）・事故・通行止め・工事など。
+ * TomTom Traffic API。v2.23 から 2 つを組み合わせる:
+ *  - 事故・渋滞の一覧（Incident Details v5）: 渋滞（遅れ時間つき）・事故・通行止め・工事など。
+ *    bbox は 1 回 10,000km² までなので、経路を区切って複数回に分けて問い合わせる。無料枠が小さい（月 2,500 回）ので、
+ *    続けて取り直すとき（3 分ごと・路線が変わったとき）は、[INCIDENT_REUSE_MS] の間は前回の結果を使い回す。
+ *  - 道路の流れ（Vector Flow Tiles。[TomTomFlowTiles]）: 前方 [flowRangeM] までの区間ごとの速さ。一覧に「渋滞」として
+ *    載っていない渋滞・混雑も出す（v2.22 までは一覧だけで、案内板に出ている渋滞が表示されないことがあった）。
+ * どちらかが取得できれば、取得できた分を使う（[TrafficData.warning] に取得できなかった方を書く）。
  * 渋滞情報が無い区間は順調とみなせる（coverageAll）。
- * bbox は 1 回 10,000km² までなので、経路を区切って複数回に分けて問い合わせる。
  */
-class TomTomTrafficProvider(private val apiKey: String) : TrafficProvider {
+class TomTomTrafficProvider(
+    private val apiKey: String,
+    private val flowRangeM: Double = DEFAULT_FLOW_RANGE_M,
+    private val useFlow: Boolean = true
+) : TrafficProvider {
     override val name = "TomTom"
 
+    private val flow = TomTomFlowTiles(apiKey)
+    private var incCache: List<TrafficItem>? = null
+    private var incCacheWallMs = 0L
+    private var incCacheBoxes: List<DoubleArray> = emptyList()
+
     override fun fetch(q: TrafficQuery, cancel: CancelToken?): TrafficData {
+        val now = System.currentTimeMillis()
+        val corridor = RouteCorridor(q)
+        val notes = ArrayList<String>()
+        val items = ArrayList<TrafficItem>()
+        // ---- 1) 事故・渋滞の一覧
+        var incErr: Exception? = null
+        val cached = incCache
+        val reuse = cached != null && now - incCacheWallMs in 0 until INCIDENT_REUSE_MS && covers(incCacheBoxes, q)
+        val all: List<TrafficItem>? = if (reuse) cached else try {
+            val boxes = boxes(q)
+            fetchIncidents(boxes, cancel).also {
+                incCache = it
+                incCacheWallMs = now
+                incCacheBoxes = boxes
+            }
+        } catch (e: Exception) {
+            if (e is com.example.highwaymode.core.net.CancelledException) throw e
+            incErr = e
+            // 取得できなくても、少し前（15 分まで）の結果があれば使う
+            if (cached != null && now - incCacheWallMs < INCIDENT_KEEP_MS) cached else null
+        }
+        if (all != null) {
+            val near = all.filter { corridor.lineNear(it.lat, it.lon, INCIDENT_NEAR_M) }
+            items.addAll(near)
+            notes.add(
+                "事故・渋滞の一覧: " + (if (reuse || incErr != null) "${(now - incCacheWallMs) / 1000} 秒前の結果・" else "") +
+                    "${all.size} 件（経路の近く ${near.size} 件" + (if (near.isEmpty()) "" else ": " + kindSummary(near)) + "）"
+            )
+        }
+        incErr?.let { notes.add("事故・渋滞の一覧: 取得できません（${TomTomFlowTiles.short(it)}）") }
+        // ---- 2) 道路の流れ
+        var flowErr: Exception? = null
+        if (useFlow && flowRangeM > 0) {
+            val r = flow.fetch(q, min(flowRangeM, q.lengthM), corridor, cancel)
+            items.addAll(r.items)
+            notes.add(r.note)
+            flowErr = r.error
+        }
+        if (incErr != null && all == null && (!useFlow || flowErr != null)) throw incErr
+        val warning = when {
+            incErr != null -> "事故・規制の情報を取得できません（${TomTomFlowTiles.short(incErr)}）"
+            flowErr != null -> "道路の流れを取得できません（${TomTomFlowTiles.short(flowErr)}）"
+            else -> null
+        }
+        return TrafficData(name, now, items, true, q.lat, q.lon, null, notes, warning)
+    }
+
+    private fun fetchIncidents(boxes: List<DoubleArray>, cancel: CancelToken?): List<TrafficItem> {
         val items = ArrayList<TrafficItem>()
         val seen = HashSet<String>()
-        for (box in boxes(q)) {
+        for (box in boxes) {
             val url = "https://api.tomtom.com/traffic/services/5/incidentDetails?key=" + URLEncoder.encode(apiKey, "UTF-8") +
                 "&bbox=" + String.format(Locale.US, "%.5f,%.5f,%.5f,%.5f", box[1], box[0], box[3], box[2]) +
                 "&fields=" + URLEncoder.encode(FIELDS, "UTF-8") +
@@ -328,7 +390,20 @@ class TomTomTrafficProvider(private val apiKey: String) : TrafficProvider {
             val json = Http.getText(url, cancel = cancel, timeoutMs = 30_000)
             for ((id, item) in parse(json)) if (id == null || seen.add(id)) items.add(item)
         }
-        return TrafficData(name, System.currentTimeMillis(), items, true, q.lat, q.lon)
+        return items
+    }
+
+    /** 前回問い合わせた範囲（boxes）に、いまの経路の先 [REUSE_COVER_M] までが入っているか */
+    private fun covers(boxes: List<DoubleArray>, q: TrafficQuery): Boolean {
+        if (boxes.isEmpty()) return false
+        val limit = min(q.lengthM, REUSE_COVER_M)
+        for (i in q.lat.indices) {
+            if (q.dist.getOrElse(i) { 0.0 } > limit) break
+            val la = q.lat[i]
+            val lo = q.lon[i]
+            if (boxes.none { la >= it[0] && la <= it[2] && lo >= it[1] && lo <= it[3] }) return false
+        }
+        return true
     }
 
     /** 経路を 1 辺 90km 以内の範囲に分ける。[south, west, north, east] */
@@ -361,6 +436,21 @@ class TomTomTrafficProvider(private val apiKey: String) : TrafficProvider {
     }
 
     companion object {
+        /** 道路の流れを読む範囲（現在地から）[m]。タイル 約 6〜10 枚（1 枚 約 8km 四方） */
+        const val DEFAULT_FLOW_RANGE_M = 40_000.0
+        /** 事故・渋滞の一覧を使い回す時間（3 分ごとの取得では 1 回おき。5 分ごとでは毎回取得） */
+        const val INCIDENT_REUSE_MS = 270_000L
+        /** 取得できなかったときに、前回の一覧を使い続ける時間 */
+        const val INCIDENT_KEEP_MS = 900_000L
+        /** 使い回すとき、前回の範囲に入っていないといけない経路の長さ [m] */
+        const val REUSE_COVER_M = 60_000.0
+        /** 一覧のうち、経路からこの距離の中にあるものだけを使う [m]（道路との照合の前の粗いふるい） */
+        const val INCIDENT_NEAR_M = 150.0
+
+        /** 確認用: 種類ごとの件数（「渋滞 2・工事 3」） */
+        fun kindSummary(items: List<TrafficItem>): String =
+            items.groupingBy { it.kind }.eachCount().entries.sortedBy { it.key.ordinal }.joinToString("・") { "${it.key.label} ${it.value}" }
+
         private const val FIELDS = "{incidents{type,geometry{type,coordinates},properties{id,iconCategory,magnitudeOfDelay," +
             "events{description,code,iconCategory},startTime,endTime,from,to,length,delay,roadNumbers}}}"
 
